@@ -25,17 +25,21 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
-          text = path.read_text()
-          old = '''                        reZygiskMode = enabled
-                              },
-                              onStartReZygisk = installViewModel::startReZygisk,'''
-          new = '''                        reZygiskMode = enabled
-                              installViewModel.refresh()
-                              },
-                              onStartReZygisk = installViewModel::startReZygisk,'''
-          if old not in text:
-              raise SystemExit('target callback not found')
-          path.write_text(text.replace(old, new, 1))
+          lines = path.read_text().splitlines()
+          inserted = False
+          for index, line in enumerate(lines):
+              if (
+                  line.strip() == 'reZygiskMode = enabled'
+                  and index > 0
+                  and lines[index - 1].strip() == 'AppPreferences.setReZygiskMode(this, enabled)'
+              ):
+                  indent = line[:len(line) - len(line.lstrip())]
+                  lines.insert(index + 1, indent + 'installViewModel.refresh()')
+                  inserted = True
+                  break
+          if not inserted:
+              raise SystemExit('ReZygisk toggle callback not found')
+          path.write_text('\n'.join(lines) + '\n')
           PY
           rm -f .github/apply-toggle-refresh .github/workflows/apply-toggle-refresh.yml
           cat > .github/workflows/build-rezygisk-late-load.yml <<'YAML'
@@ -110,19 +114,6 @@ jobs:
           git add -A
           git commit -m "Refresh ReZygisk state when the toggle changes"
           git push origin HEAD:agent/rezygisk-late-load
-      - name: Export editable sources
-        uses: actions/upload-artifact@v4
-        with:
-          name: root-my-galaxy-editable-sources
-          path: |
-            app/src/main/AndroidManifest.xml
-            app/src/main/assets/rezygisk-late-load.sh
-            app/src/main/java/dev/busung/s25uroot/AppPreferences.kt
-            app/src/main/java/dev/busung/s25uroot/InstallActivity.kt
-            app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
-            app/src/main/java/dev/busung/s25uroot/MainActivity.kt
-            app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
-            app/src/main/res/values/strings.xml
       - name: Validate ReZygisk bootstrap shell
         run: sh -n app/src/main/assets/rezygisk-late-load.sh
       - uses: actions/setup-java@v4
