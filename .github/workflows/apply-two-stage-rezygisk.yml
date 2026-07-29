@@ -5,7 +5,7 @@ on:
     branches:
       - agent/rezygisk-late-load
     paths:
-      - .github/patches/two-stage-rezygisk.patch
+      - .github/patches/apply-two-stage
 
 permissions:
   contents: write
@@ -20,8 +20,12 @@ jobs:
           fetch-depth: 0
       - name: Apply two-stage source changes
         run: |
-          git apply --check .github/patches/two-stage-rezygisk.patch
-          git apply .github/patches/two-stage-rezygisk.patch
+          for patch in .github/patches/two-stage-*.patch; do
+            git apply --check "$patch"
+          done
+          for patch in .github/patches/two-stage-*.patch; do
+            git apply "$patch"
+          done
           cp .github/patches/ReZygiskLateLoad.kt \
             app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
       - name: Commit source changes
