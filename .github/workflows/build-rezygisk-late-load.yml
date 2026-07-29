@@ -28,7 +28,7 @@ jobs:
             app/src/main/java/dev/busung/s25uroot/InstallActivity.kt
             app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
             app/src/main/java/dev/busung/s25uroot/MainActivity.kt
-            app/src/main/java/dev/busung/s25uroot/ReZygiskBootstrapProvider.kt
+            app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
             app/src/main/res/values/strings.xml
       - name: Validate ReZygisk bootstrap shell
         run: sh -n app/src/main/assets/rezygisk-late-load.sh
