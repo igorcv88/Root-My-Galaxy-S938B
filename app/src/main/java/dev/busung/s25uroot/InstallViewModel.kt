@@ -102,7 +102,24 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     private fun publishInstalledState(probe: String) {
         val bootId = currentBootToken()
-        if (bootId != null && AppPreferences.isReZygiskPending(app, bootId)) {
+        if (bootId != null && AppPreferences.isReZygiskActive(app, bootId)) {
+            mutableState.value = InstallUiState(
+                phase = InstallPhase.ReZygiskActive,
+                message = app.getString(R.string.status_rezygisk_active),
+                probeOutput = probe,
+                log = probe,
+            )
+            return
+        }
+
+        val pendingSecondStage = bootId != null && (
+            AppPreferences.isReZygiskPending(app, bootId) || AppPreferences.reZygiskMode(app)
+        )
+        if (pendingSecondStage) {
+            checkNotNull(bootId)
+            if (!AppPreferences.isReZygiskPending(app, bootId)) {
+                AppPreferences.markReZygiskPending(app, bootId)
+            }
             if (!ReZygiskLateLoad.hasAuthorizedRoot(app)) {
                 ReZygiskLateLoad.requestRootAuthorization(app)
                 mutableState.value = InstallUiState(
@@ -152,12 +169,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        val reZygiskActive = bootId != null && AppPreferences.isReZygiskActive(app, bootId)
         mutableState.value = InstallUiState(
-            phase = if (reZygiskActive) InstallPhase.ReZygiskActive else InstallPhase.Installed,
-            message = app.getString(
-                if (reZygiskActive) R.string.status_rezygisk_active else R.string.status_ksu_active,
-            ),
+            phase = InstallPhase.Installed,
+            message = app.getString(R.string.status_ksu_active),
             probeOutput = probe,
             log = probe,
         )
