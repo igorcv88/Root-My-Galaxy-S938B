@@ -20,7 +20,10 @@ internal object ReZygiskLateLoad {
     private const val SCRIPT_NAME = "rezygisk-late-load.sh"
     private const val REMOTE_SCRIPT = "/data/local/tmp/rmg-rezygisk-late-load.sh"
     private const val SCHEDULED_MARKER = "RMG_REZYGISK_SCHEDULED=1"
-    private const val MODULE_NOT_FOUND_MARKER = "RMG_REZYGISK_NOT_FOUND=1"
+    private const val ACTIVE_MARKER = "RMG_REZYGISK_ACTIVE="
+    private const val PENDING_MARKER = "RMG_REZYGISK_PENDING="
+    private const val DISABLED_MARKER = "RMG_REZYGISK_DISABLED="
+    private const val REMOVAL_MARKER = "RMG_REZYGISK_REMOVAL="
     private const val ACTIVATION_PREFS = "rezygisk_activation"
     private const val ACTIVATION_BOOT_ID = "scheduled_boot_id"
     private const val ACTIVATION_DETAIL = "detail"
@@ -77,16 +80,32 @@ internal object ReZygiskLateLoad {
         context: Context,
         onStage: (ReZygiskActivationStage) -> Unit,
     ): ReZygiskActivationResult {
-        val moduleProbe = runKernelSuCommand(MODULE_PROBE_COMMAND)
+        val moduleProbe = runKernelSuCommand(moduleProbeCommand())
         if (moduleProbe.code != 0) {
-            return if (moduleProbe.output.contains(MODULE_NOT_FOUND_MARKER)) {
-                ReZygiskActivationResult.NotInstalled
-            } else {
+            return ReZygiskActivationResult.Failed(
+                moduleProbe.output.ifBlank {
+                    "ReZygisk module discovery exited with ${moduleProbe.code}"
+                },
+            )
+        }
+
+        markerValue(moduleProbe.output, DISABLED_MARKER)?.let { path ->
+            return ReZygiskActivationResult.Failed("ReZygisk is disabled at $path")
+        }
+        markerValue(moduleProbe.output, REMOVAL_MARKER)?.let { path ->
+            return ReZygiskActivationResult.Failed("ReZygisk is pending removal at $path")
+        }
+
+        val activePath = markerValue(moduleProbe.output, ACTIVE_MARKER)
+        if (activePath == null) {
+            val pendingPath = markerValue(moduleProbe.output, PENDING_MARKER)
+            return if (pendingPath != null) {
                 ReZygiskActivationResult.Failed(
-                    moduleProbe.output.ifBlank {
-                        "ReZygisk module probe exited with ${moduleProbe.code}"
-                    },
+                    "ReZygisk is installed but remains pending at $pendingPath. " +
+                        "KernelSU late-load did not promote it into /data/adb/modules for this boot.",
                 )
+            } else {
+                ReZygiskActivationResult.NotInstalled
             }
         }
         onStage(ReZygiskActivationStage.Detected)
@@ -99,9 +118,11 @@ internal object ReZygiskLateLoad {
             "Unable to mark the ReZygisk bootstrap executable"
         }
 
+        val modulePathReplacement = "s|^MODULE_DIR=.*|MODULE_DIR=${escapeSedReplacement(activePath)}|"
         val stageCommand =
             "/system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT && " +
                 "/system/bin/chmod 700 $REMOTE_SCRIPT && " +
+                "/system/bin/sed -i ${shellQuote(modulePathReplacement)} $REMOTE_SCRIPT && " +
                 "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
         onStage(ReZygiskActivationStage.StartingMonitor)
         val result = runKernelSuCommand(stageCommand)
@@ -114,6 +135,48 @@ internal object ReZygiskLateLoad {
             )
         }
     }
+
+    private fun moduleProbeCommand(): String = """
+        uid=${'$'}(/system/bin/id -u 2>/dev/null)
+        echo "RMG_ROOT_UID=${'$'}uid"
+        if [ "${'$'}uid" != "0" ]; then
+            exit 125
+        fi
+        if ! /system/bin/ls /data/adb/modules >/dev/null 2>&1; then
+            echo "ReZygisk probe cannot read /data/adb/modules"
+            exit 41
+        fi
+        for root in /data/adb/modules /data/adb/modules_update; do
+            [ -d "${'$'}root" ] || continue
+            for dir in "${'$'}root"/*; do
+                [ -d "${'$'}dir" ] || continue
+                prop="${'$'}dir/module.prop"
+                [ -f "${'$'}prop" ] || continue
+                module_id=${'$'}(/system/bin/sed -n 's/^id=//p' "${'$'}prop" | /system/bin/head -n 1)
+                module_name=${'$'}(/system/bin/sed -n 's/^name=//p' "${'$'}prop" | /system/bin/head -n 1)
+                if [ "${'$'}module_id" = "rezygisk" ] || [ "${'$'}module_name" = "ReZygisk" ]; then
+                    if [ "${'$'}root" = "/data/adb/modules" ]; then
+                        if [ -e "${'$'}dir/disable" ]; then
+                            echo "$DISABLED_MARKER${'$'}dir"
+                        elif [ -e "${'$'}dir/remove" ]; then
+                            echo "$REMOVAL_MARKER${'$'}dir"
+                        else
+                            echo "$ACTIVE_MARKER${'$'}dir"
+                        fi
+                    else
+                        echo "$PENDING_MARKER${'$'}dir"
+                    fi
+                fi
+            done
+        done
+        exit 0
+    """.trimIndent()
+
+    private fun markerValue(output: String, marker: String): String? = output.lineSequence()
+        .firstOrNull { it.startsWith(marker) }
+        ?.removePrefix(marker)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
 
     private fun runKernelSuCommand(command: String): CommandResult {
         val candidates = listOf(
@@ -152,17 +215,12 @@ internal object ReZygiskLateLoad {
             .takeIf(String::isNotBlank)
     }.getOrNull()
 
+    private fun escapeSedReplacement(value: String): String = value
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("&", "\\&")
+
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
     private data class CommandResult(val code: Int, val output: String)
-
-    private const val MODULE_PROBE_COMMAND =
-        "uid=\$(/system/bin/id -u 2>/dev/null); echo RMG_ROOT_UID=\$uid; " +
-            "if [ \"\$uid\" != 0 ]; then exit 125; fi; " +
-            "if [ -d /data/adb/modules/rezygisk ] && " +
-            "[ -f /data/adb/modules/rezygisk/module.prop ] && " +
-            "[ ! -e /data/adb/modules/rezygisk/disable ] && " +
-            "[ ! -e /data/adb/modules/rezygisk/remove ]; then " +
-            "echo RMG_REZYGISK_MODULE=/data/adb/modules/rezygisk; exit 0; fi; " +
-            "echo RMG_REZYGISK_NOT_FOUND=1; exit 44"
 }
