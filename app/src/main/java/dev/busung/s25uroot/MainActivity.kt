@@ -166,6 +166,7 @@ class MainActivity : ComponentActivity() {
                     onReZygiskModeChanged = { enabled ->
                         AppPreferences.setReZygiskMode(this, enabled)
                         reZygiskMode = enabled
+                        installViewModel.refresh()
                     },
                     onStartReZygisk = installViewModel::startReZygisk,
                     openInstaller = { profileId, includeReZygisk ->
