@@ -17,10 +17,10 @@ internal enum class ReZygiskActivationStage {
 }
 
 internal object ReZygiskLateLoad {
-    private const val HELPER_NAME = "libcve43499root.so"
     private const val SCRIPT_NAME = "rezygisk-late-load.sh"
     private const val REMOTE_SCRIPT = "/data/local/tmp/rmg-rezygisk-late-load.sh"
     private const val SCHEDULED_MARKER = "RMG_REZYGISK_SCHEDULED=1"
+    private const val MODULE_NOT_FOUND_MARKER = "RMG_REZYGISK_NOT_FOUND=1"
     private const val ACTIVATION_PREFS = "rezygisk_activation"
     private const val ACTIVATION_BOOT_ID = "scheduled_boot_id"
     private const val ACTIVATION_DETAIL = "detail"
@@ -38,8 +38,7 @@ internal object ReZygiskLateLoad {
         return synchronized(activationLock) {
             val activation = appContext.getSharedPreferences(ACTIVATION_PREFS, Context.MODE_PRIVATE)
             if (activation.getString(ACTIVATION_BOOT_ID, null) == bootId) {
-                val activeSchedule = runRootCommand(
-                    appContext,
+                val activeSchedule = runKernelSuCommand(
                     "[ -S /data/adb/rezygisk/init_monitor ] || " +
                         "/system/bin/grep -qE '^(pending|success)$' " +
                         "/data/local/tmp/rmg-rezygisk-result 2>/dev/null",
@@ -78,13 +77,18 @@ internal object ReZygiskLateLoad {
         context: Context,
         onStage: (ReZygiskActivationStage) -> Unit,
     ): ReZygiskActivationResult {
-        val moduleProbe = runRootCommand(
-            context,
-            "[ -d /data/adb/modules/rezygisk ] && " +
-                "[ ! -e /data/adb/modules/rezygisk/disable ] && " +
-                "[ ! -e /data/adb/modules/rezygisk/remove ]",
-        )
-        if (moduleProbe.code != 0) return ReZygiskActivationResult.NotInstalled
+        val moduleProbe = runKernelSuCommand(MODULE_PROBE_COMMAND)
+        if (moduleProbe.code != 0) {
+            return if (moduleProbe.output.contains(MODULE_NOT_FOUND_MARKER)) {
+                ReZygiskActivationResult.NotInstalled
+            } else {
+                ReZygiskActivationResult.Failed(
+                    moduleProbe.output.ifBlank {
+                        "ReZygisk module probe exited with ${moduleProbe.code}"
+                    },
+                )
+            }
+        }
         onStage(ReZygiskActivationStage.Detected)
 
         val localScript = File(context.cacheDir, SCRIPT_NAME)
@@ -100,7 +104,7 @@ internal object ReZygiskLateLoad {
                 "/system/bin/chmod 700 $REMOTE_SCRIPT && " +
                 "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
         onStage(ReZygiskActivationStage.StartingMonitor)
-        val result = runRootCommand(context, stageCommand)
+        val result = runKernelSuCommand(stageCommand)
         return if (result.code == 0 && result.output.contains(SCHEDULED_MARKER)) {
             onStage(ReZygiskActivationStage.SoftRebootScheduled)
             ReZygiskActivationResult.Scheduled(result.output)
@@ -111,14 +115,34 @@ internal object ReZygiskLateLoad {
         }
     }
 
-    private fun runRootCommand(context: Context, command: String): CommandResult {
-        val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
-        if (!helper.canExecute()) return CommandResult(126, "bootstrap helper is unavailable")
-        val process = ProcessBuilder(helper.absolutePath, "-c", command)
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-        return CommandResult(process.waitFor(), output)
+    private fun runKernelSuCommand(command: String): CommandResult {
+        val candidates = listOf(
+            listOf("/system/bin/su", "-c", command),
+            listOf("/system/xbin/su", "-c", command),
+            listOf("su", "-c", command),
+        )
+        val failures = mutableListOf<String>()
+
+        for (candidate in candidates) {
+            val result = try {
+                val process = ProcessBuilder(candidate)
+                    .redirectErrorStream(true)
+                    .start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+                CommandResult(process.waitFor(), output)
+            } catch (error: Throwable) {
+                failures += "${candidate.first()}: ${error.message ?: error.javaClass.simpleName}"
+                null
+            } ?: continue
+
+            if (result.code != 126 && result.code != 127) return result
+            failures += "${candidate.first()}: ${result.output.ifBlank { "exit ${result.code}" }}"
+        }
+
+        return CommandResult(
+            126,
+            "KernelSU su shell is unavailable (${failures.joinToString("; ")})",
+        )
     }
 
     private fun currentBootId(): String? = runCatching {
@@ -131,4 +155,14 @@ internal object ReZygiskLateLoad {
     private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
 
     private data class CommandResult(val code: Int, val output: String)
+
+    private const val MODULE_PROBE_COMMAND =
+        "uid=\$(/system/bin/id -u 2>/dev/null); echo RMG_ROOT_UID=\$uid; " +
+            "if [ \"\$uid\" != 0 ]; then exit 125; fi; " +
+            "if [ -d /data/adb/modules/rezygisk ] && " +
+            "[ -f /data/adb/modules/rezygisk/module.prop ] && " +
+            "[ ! -e /data/adb/modules/rezygisk/disable ] && " +
+            "[ ! -e /data/adb/modules/rezygisk/remove ]; then " +
+            "echo RMG_REZYGISK_MODULE=/data/adb/modules/rezygisk; exit 0; fi; " +
+            "echo RMG_REZYGISK_NOT_FOUND=1; exit 44"
 }
