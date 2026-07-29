@@ -1,12 +1,7 @@
 name: Build ReZygisk late-load
 
 on:
-  push:
-    branches:
-      - agent/rezygisk-late-load
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
