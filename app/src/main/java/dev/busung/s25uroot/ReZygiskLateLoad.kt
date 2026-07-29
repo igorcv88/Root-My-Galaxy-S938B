@@ -17,6 +17,7 @@ internal enum class ReZygiskActivationStage {
 }
 
 internal object ReZygiskLateLoad {
+    private const val HELPER_NAME = "libcve43499root.so"
     private const val SCRIPT_NAME = "rezygisk-late-load.sh"
     private const val REMOTE_SCRIPT = "/data/local/tmp/rmg-rezygisk-late-load.sh"
     private const val SCHEDULED_MARKER = "RMG_REZYGISK_SCHEDULED=1"
@@ -39,7 +40,8 @@ internal object ReZygiskLateLoad {
         return synchronized(activationLock) {
             val activation = appContext.getSharedPreferences(ACTIVATION_PREFS, Context.MODE_PRIVATE)
             if (activation.getString(ACTIVATION_BOOT_ID, null) == bootId) {
-                val activeSchedule = runKernelSuCommand(
+                val activeSchedule = runPrivilegedCommand(
+                    appContext,
                     "[ -S /data/adb/rezygisk/init_monitor ] || " +
                         "/system/bin/grep -qE '^(pending|success)$' " +
                         "/data/local/tmp/rmg-rezygisk-result 2>/dev/null",
@@ -78,7 +80,7 @@ internal object ReZygiskLateLoad {
         context: Context,
         onStage: (ReZygiskActivationStage) -> Unit,
     ): ReZygiskActivationResult {
-        val moduleProbe = discoverModule()
+        val moduleProbe = discoverModule(context)
         if (moduleProbe.code != 0) {
             return ReZygiskActivationResult.Failed(
                 moduleProbe.output.ifBlank {
@@ -116,7 +118,7 @@ internal object ReZygiskLateLoad {
                 "/system/bin/sed -i ${shellQuote(modulePathReplacement)} $REMOTE_SCRIPT && " +
                 "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
         onStage(ReZygiskActivationStage.StartingMonitor)
-        val result = runKernelSuCommand(stageCommand)
+        val result = runPrivilegedCommand(context, stageCommand)
         return if (result.code == 0 && result.output.contains(SCHEDULED_MARKER)) {
             onStage(ReZygiskActivationStage.SoftRebootScheduled)
             ReZygiskActivationResult.Scheduled(result.output)
@@ -127,12 +129,12 @@ internal object ReZygiskLateLoad {
         }
     }
 
-    private fun discoverModule(): CommandResult {
+    private fun discoverModule(context: Context): CommandResult {
         val command = """
             uid=${'$'}(/system/bin/id -u 2>/dev/null)
             echo "RMG_ROOT_UID=${'$'}uid"
             if [ "${'$'}uid" != "0" ]; then
-                echo "KernelSU su did not provide uid 0"
+                echo "privileged command runner did not provide uid 0"
                 exit 125
             fi
             if ! /system/bin/ls /data/adb/modules >/dev/null 2>&1; then
@@ -163,7 +165,7 @@ internal object ReZygiskLateLoad {
             done
             exit 0
         """.trimIndent()
-        return runKernelSuCommand(command)
+        return runPrivilegedCommand(context, command)
     }
 
     private fun markerValue(output: String, marker: String): String? = output.lineSequence()
@@ -172,12 +174,17 @@ internal object ReZygiskLateLoad {
         ?.trim()
         ?.takeIf(String::isNotBlank)
 
-    private fun runKernelSuCommand(command: String): CommandResult {
-        val candidates = listOf(
-            listOf("/system/bin/su", "-c", command),
-            listOf("/system/xbin/su", "-c", command),
-            listOf("su", "-c", command),
-        )
+    private fun runPrivilegedCommand(context: Context, command: String): CommandResult {
+        val checkedCommand =
+            "uid=${'$'}(/system/bin/id -u 2>/dev/null); " +
+                "[ \"${'$'}uid\" = \"0\" ] || exit 125; " + command
+        val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
+        val candidates = buildList {
+            if (helper.canExecute()) add(listOf(helper.absolutePath, "-c", checkedCommand))
+            add(listOf("/system/bin/su", "-c", checkedCommand))
+            add(listOf("/system/xbin/su", "-c", checkedCommand))
+            add(listOf("su", "-c", checkedCommand))
+        }
         val failures = mutableListOf<String>()
 
         for (candidate in candidates) {
@@ -192,13 +199,13 @@ internal object ReZygiskLateLoad {
                 null
             } ?: continue
 
-            if (result.code != 126 && result.code != 127) return result
+            if (result.code !in setOf(125, 126, 127)) return result
             failures += "${candidate.first()}: ${result.output.ifBlank { "exit ${result.code}" }}"
         }
 
         return CommandResult(
             126,
-            "KernelSU su shell is unavailable (${failures.joinToString("; ")})",
+            "privileged shell is unavailable (${failures.joinToString("; ")})",
         )
     }
 
