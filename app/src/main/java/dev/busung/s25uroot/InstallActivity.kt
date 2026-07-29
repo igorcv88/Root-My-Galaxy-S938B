@@ -158,7 +158,7 @@ private fun InstallScreen(
                 )
             }
 
-            InstallerStatusCard(installState)
+            InstallerStatusCard(installState, includeReZygisk)
             InstallerSteps(installState.phase, includeReZygisk)
             InstallerLog(
                 output = installState.log,
@@ -201,7 +201,10 @@ private fun InstallScreen(
 }
 
 @Composable
-private fun InstallerStatusCard(installState: InstallUiState) {
+private fun InstallerStatusCard(
+    installState: InstallUiState,
+    includeReZygisk: Boolean,
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
