@@ -1,0 +1,6 @@
+id=rmg_rezygisk_bridge
+name=Root My Galaxy ReZygisk Bridge
+version=v0.1.0
+versionCode=1
+author=igorcv88
+description=KernelSU late-load bridge that starts ReZygisk only when armed by Root My Galaxy, then performs a controlled zygote restart with validation and rollback.
