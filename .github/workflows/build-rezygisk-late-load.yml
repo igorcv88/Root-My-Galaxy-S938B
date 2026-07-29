@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -17,39 +17,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: agent/rezygisk-late-load
-          fetch-depth: 0
-      - name: Apply immediate toggle refresh
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
-          lines = path.read_text().splitlines()
-          inserted = False
-          for index, line in enumerate(lines):
-              if (
-                  line.strip() == 'reZygiskMode = enabled'
-                  and index > 0
-                  and lines[index - 1].strip() == 'AppPreferences.setReZygiskMode(this, enabled)'
-              ):
-                  indent = line[:len(line) - len(line.lstrip())]
-                  if index + 1 < len(lines) and lines[index + 1].strip() != 'installViewModel.refresh()':
-                      lines.insert(index + 1, indent + 'installViewModel.refresh()')
-                  inserted = True
-                  break
-          if not inserted:
-              raise SystemExit('ReZygisk toggle callback not found')
-          path.write_text('\n'.join(lines) + '\n')
-          PY
-          rm -f .github/apply-toggle-refresh
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/dev/busung/s25uroot/MainActivity.kt .github/apply-toggle-refresh
-          if ! git diff --cached --quiet; then
-            git commit -m "Refresh ReZygisk state when the toggle changes"
-            git push origin HEAD:agent/rezygisk-late-load
-          fi
       - name: Export editable sources
         uses: actions/upload-artifact@v4
         with:
