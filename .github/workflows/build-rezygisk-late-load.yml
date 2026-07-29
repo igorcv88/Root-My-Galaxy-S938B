@@ -34,6 +34,12 @@ jobs:
           unzip -q /tmp/commandlinetools.zip -d /tmp/android-command-line-tools
           mv /tmp/android-command-line-tools/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+      - name: Inspect Android SDK catalog
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" --list --channel=3 | tee /tmp/sdk-catalog.txt
+          echo "---- Android 37 / Cinnamon candidates ----"
+          grep -iE 'android[-; ]?37|cinnamon|api[^0-9]*37' /tmp/sdk-catalog.txt || true
       - name: Install Android SDK components
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
