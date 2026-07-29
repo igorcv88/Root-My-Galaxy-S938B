@@ -1,0 +1,1 @@
+Apply the migration that recognizes an enabled two-stage toggle on an already-active KernelSU boot.
