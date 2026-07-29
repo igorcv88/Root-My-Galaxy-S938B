@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
     private var accentColor by mutableStateOf(AccentColor.Dynamic)
     private var themeMode by mutableStateOf(AppThemeMode.System)
     private var advancedMode by mutableStateOf(false)
+    private var reZygiskMode by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -141,6 +142,7 @@ class MainActivity : ComponentActivity() {
         accentColor = AppPreferences.accentColor(this)
         themeMode = AppPreferences.themeMode(this)
         advancedMode = AppPreferences.advancedMode(this)
+        reZygiskMode = AppPreferences.reZygiskMode(this)
         setContent {
             RootMyGalaxyTheme(accentColor = accentColor, themeMode = themeMode) {
                 RootApp(
@@ -148,6 +150,7 @@ class MainActivity : ComponentActivity() {
                     accentColor = accentColor,
                     themeMode = themeMode,
                     advancedMode = advancedMode,
+                    reZygiskMode = reZygiskMode,
                     onAccentColorChanged = { color ->
                         AppPreferences.setAccentColor(this, color)
                         accentColor = color
@@ -160,9 +163,14 @@ class MainActivity : ComponentActivity() {
                         AppPreferences.setAdvancedMode(this, enabled)
                         advancedMode = enabled
                     },
-                    openInstaller = { profileId ->
+                    onReZygiskModeChanged = { enabled ->
+                        AppPreferences.setReZygiskMode(this, enabled)
+                        reZygiskMode = enabled
+                    },
+                    openInstaller = { profileId, includeReZygisk ->
                         val installer = Intent(this, InstallActivity::class.java)
                             .putExtra(InstallActivity.EXTRA_INSTALL_REQUEST_ID, UUID.randomUUID().toString())
+                            .putExtra(InstallActivity.EXTRA_INCLUDE_REZYGISK, includeReZygisk)
                         if (profileId != null) {
                             installer.putExtra(InstallActivity.EXTRA_PROFILE_ID, profileId)
                         }
@@ -209,10 +217,12 @@ private fun RootApp(
     accentColor: AccentColor,
     themeMode: AppThemeMode,
     advancedMode: Boolean,
+    reZygiskMode: Boolean,
     onAccentColorChanged: (AccentColor) -> Unit,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
-    openInstaller: (String?) -> Unit,
+    onReZygiskModeChanged: (Boolean) -> Unit,
+    openInstaller: (String?, Boolean) -> Unit,
 ) {
     val installState by installViewModel.state.collectAsStateWithLifecycle()
     val history by installViewModel.history.collectAsStateWithLifecycle()
@@ -314,11 +324,21 @@ private fun RootApp(
                 DialogDimAmount(0.24f)
                 Text(stringResource(R.string.install_confirm_title))
             },
-            text = { Text(stringResource(R.string.install_confirm_body)) },
+            text = {
+                Text(
+                    stringResource(
+                        if (reZygiskMode) {
+                            R.string.install_confirm_body_rezygisk
+                        } else {
+                            R.string.install_confirm_body
+                        },
+                    ),
+                )
+            },
             confirmButton = {
                 FilledTonalButton(onClick = {
                     showInstallConfirmation = false
-                    openInstaller(selectedProfile?.profileId)
+                    openInstaller(selectedProfile?.profileId, reZygiskMode)
                     selectedProfile = null
                 }) {
                     Text(stringResource(R.string.action_confirm))
@@ -374,9 +394,11 @@ private fun RootApp(
                     accentColor = accentColor,
                     themeMode = themeMode,
                     advancedMode = advancedMode,
+                    reZygiskMode = reZygiskMode,
                     onAccentColorChanged = onAccentColorChanged,
                     onThemeModeChanged = onThemeModeChanged,
                     onAdvancedModeChanged = onAdvancedModeChanged,
+                    onReZygiskModeChanged = onReZygiskModeChanged,
                 )
             }
         }
@@ -791,13 +813,16 @@ private fun SettingsPage(
     accentColor: AccentColor,
     themeMode: AppThemeMode,
     advancedMode: Boolean,
+    reZygiskMode: Boolean,
     onAccentColorChanged: (AccentColor) -> Unit,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
+    onReZygiskModeChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showReZygiskWarning by remember { mutableStateOf(false) }
     var languageMenuTop by remember { mutableStateOf(32.dp) }
     var colorMenuTop by remember { mutableStateOf(32.dp) }
     val density = LocalDensity.current
@@ -830,6 +855,33 @@ private fun SettingsPage(
                 onAccentColorChanged(colors[index])
             },
             onDismiss = { showColorDialog = false },
+        )
+    }
+
+    if (showReZygiskWarning) {
+        AlertDialog(
+            onDismissRequest = { showReZygiskWarning = false },
+            icon = { Icon(Icons.Rounded.Warning, contentDescription = null) },
+            title = {
+                DialogDimAmount(0.30f)
+                Text(stringResource(R.string.rezygisk_warning_title))
+            },
+            text = { Text(stringResource(R.string.rezygisk_warning_body)) },
+            confirmButton = {
+                FilledTonalButton(
+                    onClick = {
+                        showReZygiskWarning = false
+                        onReZygiskModeChanged(true)
+                    },
+                ) {
+                    Text(stringResource(R.string.action_enable))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReZygiskWarning = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
         )
     }
 
@@ -886,8 +938,22 @@ private fun SettingsPage(
                     title = stringResource(R.string.advanced_mode),
                     description = stringResource(R.string.advanced_mode_description),
                     checked = advancedMode,
-                    position = SettingsCardPosition.GroupedSingle,
+                    position = SettingsCardPosition.Top,
                     onCheckedChange = onAdvancedModeChanged,
+                )
+                SettingsSwitchCard(
+                    icon = Icons.Rounded.Security,
+                    title = stringResource(R.string.rezygisk_mode),
+                    description = stringResource(R.string.rezygisk_mode_description),
+                    checked = reZygiskMode,
+                    position = SettingsCardPosition.Bottom,
+                    onCheckedChange = { enabled ->
+                        if (enabled) {
+                            showReZygiskWarning = true
+                        } else {
+                            onReZygiskModeChanged(false)
+                        }
+                    },
                 )
             }
         }

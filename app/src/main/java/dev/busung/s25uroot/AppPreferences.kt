@@ -33,6 +33,7 @@ object AppPreferences {
     private const val ACCENT_COLOR = "accent_color"
     private const val THEME_MODE = "theme_mode"
     private const val ADVANCED_MODE = "advanced_mode"
+    private const val REZYGISK_MODE = "rezygisk_mode"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
@@ -67,6 +68,17 @@ object AppPreferences {
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(ADVANCED_MODE, enabled)
+            .apply()
+    }
+
+    fun reZygiskMode(context: Context): Boolean =
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(REZYGISK_MODE, false)
+
+    fun setReZygiskMode(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(REZYGISK_MODE, enabled)
             .apply()
     }
 

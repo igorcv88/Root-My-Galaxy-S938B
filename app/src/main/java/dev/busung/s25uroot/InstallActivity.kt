@@ -64,6 +64,7 @@ class InstallActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val profileId = intent.getStringExtra(EXTRA_PROFILE_ID)
+        val includeReZygisk = intent.getBooleanExtra(EXTRA_INCLUDE_REZYGISK, false)
         val startInstall = savedInstanceState == null && AppPreferences.consumeInstallRequest(
             this,
             intent.getStringExtra(EXTRA_INSTALL_REQUEST_ID),
@@ -76,12 +77,13 @@ class InstallActivity : ComponentActivity() {
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
                 BackHandler(enabled = installState.busy) {}
-                LaunchedEffect(startInstall, profileId) {
-                    if (startInstall) installViewModel.install(profileId)
+                LaunchedEffect(startInstall, profileId, includeReZygisk) {
+                    if (startInstall) installViewModel.install(profileId, includeReZygisk)
                 }
                 InstallScreen(
                     installState = installState,
-                    onRetry = { installViewModel.install(profileId) },
+                    includeReZygisk = includeReZygisk,
+                    onRetry = { installViewModel.install(profileId, includeReZygisk) },
                     onClose = ::finish,
                 )
             }
@@ -91,6 +93,7 @@ class InstallActivity : ComponentActivity() {
     companion object {
         const val EXTRA_INSTALL_REQUEST_ID = "install_request_id"
         const val EXTRA_PROFILE_ID = "profile_id"
+        const val EXTRA_INCLUDE_REZYGISK = "include_rezygisk"
     }
 }
 
@@ -100,16 +103,26 @@ private data class InstallerStep(
     val icon: ImageVector,
 )
 
-private val installerSteps = listOf(
-    InstallerStep(R.string.step_support_title, R.string.step_support_detail, Icons.Rounded.Security),
-    InstallerStep(R.string.step_download_title, R.string.step_download_detail, Icons.Rounded.CloudDownload),
-    InstallerStep(R.string.step_exploit_title, R.string.step_exploit_detail, Icons.Rounded.Memory),
-    InstallerStep(R.string.step_ksu_title, R.string.step_ksu_detail, Icons.Rounded.Check),
-)
+private fun installerSteps(includeReZygisk: Boolean): List<InstallerStep> = buildList {
+    add(InstallerStep(R.string.step_support_title, R.string.step_support_detail, Icons.Rounded.Security))
+    add(InstallerStep(R.string.step_download_title, R.string.step_download_detail, Icons.Rounded.CloudDownload))
+    add(InstallerStep(R.string.step_exploit_title, R.string.step_exploit_detail, Icons.Rounded.Memory))
+    add(InstallerStep(R.string.step_ksu_title, R.string.step_ksu_detail, Icons.Rounded.Check))
+    if (includeReZygisk) {
+        add(
+            InstallerStep(
+                R.string.step_rezygisk_title,
+                R.string.step_rezygisk_detail,
+                Icons.Rounded.Security,
+            ),
+        )
+    }
+}
 
 @Composable
 private fun InstallScreen(
     installState: InstallUiState,
+    includeReZygisk: Boolean,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -146,7 +159,7 @@ private fun InstallScreen(
             }
 
             InstallerStatusCard(installState)
-            InstallerSteps(installState.phase)
+            InstallerSteps(installState.phase, includeReZygisk)
             InstallerLog(
                 output = installState.log,
                 modifier = Modifier.weight(1f),
@@ -236,7 +249,7 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                 }
             }
             LinearProgressIndicator(
-                progress = { installProgress(installState.phase) },
+                progress = { installProgress(installState.phase, includeReZygisk) },
                 modifier = Modifier.fillMaxWidth(),
                 drawStopIndicator = {},
             )
@@ -245,7 +258,7 @@ private fun InstallerStatusCard(installState: InstallUiState) {
 }
 
 @Composable
-private fun InstallerSteps(phase: InstallPhase) {
+private fun InstallerSteps(phase: InstallPhase, includeReZygisk: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -257,7 +270,7 @@ private fun InstallerSteps(phase: InstallPhase) {
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            installerSteps.forEachIndexed { index, step ->
+            installerSteps(includeReZygisk).forEachIndexed { index, step ->
                 val stepState = stepState(phase, index)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -345,17 +358,19 @@ private fun installPhaseDetail(phase: InstallPhase): String = stringResource(
         InstallPhase.Downloading -> R.string.phase_downloading
         InstallPhase.Exploiting -> R.string.phase_exploiting
         InstallPhase.LoadingKernelSu -> R.string.phase_loading_ksu
+        InstallPhase.PreparingReZygisk -> R.string.phase_preparing_rezygisk
         InstallPhase.Installed -> R.string.phase_installed
         InstallPhase.Failed -> R.string.phase_failed
     },
 )
 
-private fun installProgress(phase: InstallPhase): Float = when (phase) {
+private fun installProgress(phase: InstallPhase, includeReZygisk: Boolean): Float = when (phase) {
     InstallPhase.Checking -> 0.1f
     InstallPhase.Ready -> 0f
     InstallPhase.Downloading -> 0.3f
     InstallPhase.Exploiting -> 0.6f
-    InstallPhase.LoadingKernelSu -> 0.85f
+    InstallPhase.LoadingKernelSu -> if (includeReZygisk) 0.78f else 0.85f
+    InstallPhase.PreparingReZygisk -> 0.92f
     InstallPhase.Installed -> 1f
     InstallPhase.Failed -> 0f
 }
@@ -367,7 +382,8 @@ private fun stepState(phase: InstallPhase, stepIndex: Int): Int {
         InstallPhase.Downloading -> 1
         InstallPhase.Exploiting -> 2
         InstallPhase.LoadingKernelSu -> 3
-        InstallPhase.Installed -> 4
+        InstallPhase.PreparingReZygisk -> 4
+        InstallPhase.Installed -> 5
     }
     return when {
         stepIndex < activeIndex -> 2

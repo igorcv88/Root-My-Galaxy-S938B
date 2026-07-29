@@ -20,6 +20,7 @@ enum class InstallPhase {
     Downloading,
     Exploiting,
     LoadingKernelSu,
+    PreparingReZygisk,
     Installed,
     Failed,
 }
@@ -36,6 +37,7 @@ data class InstallUiState(
             InstallPhase.Downloading,
             InstallPhase.Exploiting,
             InstallPhase.LoadingKernelSu,
+            InstallPhase.PreparingReZygisk,
         )
 
 }
@@ -121,7 +123,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun install(profileId: String? = null) {
+    fun install(profileId: String? = null, includeReZygisk: Boolean = false) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
         discoveryJob?.cancel()
         installJob = viewModelScope.launch(Dispatchers.IO) {
@@ -148,6 +150,28 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
                 installKernelSu(payloads)
+
+                if (includeReZygisk) {
+                    setPhase(
+                        InstallPhase.PreparingReZygisk,
+                        app.getString(R.string.status_rezygisk_preparing),
+                    )
+                    when (val result = ReZygiskLateLoad.scheduleAfterKernelSu(app)) {
+                        ReZygiskActivationResult.NotInstalled -> error(
+                            app.getString(R.string.error_rezygisk_not_installed),
+                        )
+                        is ReZygiskActivationResult.Failed -> error(
+                            app.getString(R.string.error_rezygisk_schedule, result.message),
+                        )
+                        is ReZygiskActivationResult.Scheduled -> {
+                            appendLog(app.getString(R.string.log_rezygisk_scheduled))
+                            if (result.message.isNotBlank()) appendLog(result.message)
+                        }
+                        is ReZygiskActivationResult.AlreadyScheduled -> {
+                            appendLog(app.getString(R.string.log_rezygisk_already_scheduled))
+                        }
+                    }
+                }
 
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
                 appendLog(app.getString(R.string.log_install_complete))
