@@ -86,7 +86,7 @@ class ReZygiskBootstrapProvider : ContentProvider() {
         val stageCommand =
             "/system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT && " +
                 "/system/bin/chmod 700 $REMOTE_SCRIPT && " +
-                "$REMOTE_SCRIPT schedule"
+                "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
         val result = runRootCommand(context, stageCommand)
         return if (result.code == 0 && result.output.contains(SCHEDULED_MARKER)) {
             ActivationResult.Scheduled(result.output)
