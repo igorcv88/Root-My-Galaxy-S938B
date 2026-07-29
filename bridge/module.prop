@@ -1,6 +1,6 @@
 id=rmg_rezygisk_bridge
 name=Root My Galaxy ReZygisk Bridge
-version=v0.2.0
-versionCode=2
+version=v0.3.0
+versionCode=3
 author=igorcv88
-description=KernelSU late-load bridge that starts ReZygisk only when armed by Root My Galaxy, then performs a supervised signal-based zygote restart with system_server validation and rollback.
+description=KernelSU late-load/service bridge with token relabeling, idempotent fallback, supervised zygote restart, system_server validation, and rollback.
