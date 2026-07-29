@@ -12,20 +12,45 @@ permissions:
   contents: read
 
 jobs:
-  tree:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: agent/rezygisk-late-load
-          fetch-depth: 1
-      - name: Export current Git object IDs
+      - name: Apply explicit ReZygisk mode patch
         run: |
-          git rev-parse HEAD > commit-sha.txt
-          git rev-parse 'HEAD^{tree}' > tree-sha.txt
+          base64 -d scripts/rezygisk-toggle.patch.gz.b64 | gzip -d > /tmp/rezygisk-toggle.patch
+          git apply --check /tmp/rezygisk-toggle.patch
+          git apply /tmp/rezygisk-toggle.patch
+          sh -n app/src/main/assets/rezygisk-late-load.sh
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Update Android command-line tools
+        run: |
+          curl -fsSL \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+            -o /tmp/commandlinetools.zip
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/commandlinetools.zip" | sha256sum -c -
+          rm -rf "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+          unzip -q /tmp/commandlinetools.zip -d /tmp/android-command-line-tools
+          mv /tmp/android-command-line-tools/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          "$SDKMANAGER" --channel=3 "platforms;android-37.0" "cmake;3.22.1"
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: root-my-galaxy-git-object-ids
-          path: |
-            commit-sha.txt
-            tree-sha.txt
+          name: root-my-galaxy-rezygisk-toggle-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
