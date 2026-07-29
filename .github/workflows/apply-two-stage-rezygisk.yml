@@ -1,0 +1,33 @@
+name: Apply two-stage ReZygisk source patch
+
+on:
+  push:
+    branches:
+      - agent/rezygisk-late-load
+    paths:
+      - .github/patches/two-stage-rezygisk.patch
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rezygisk-late-load
+          fetch-depth: 0
+      - name: Apply two-stage source changes
+        run: |
+          git apply --check .github/patches/two-stage-rezygisk.patch
+          git apply .github/patches/two-stage-rezygisk.patch
+          cp .github/patches/ReZygiskLateLoad.kt \
+            app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
+      - name: Commit source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main
+          git commit -m "Use authorized two-stage ReZygisk flow"
+          git push origin HEAD:agent/rezygisk-late-load
