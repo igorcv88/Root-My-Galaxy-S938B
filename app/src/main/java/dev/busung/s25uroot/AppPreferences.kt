@@ -34,6 +34,8 @@ object AppPreferences {
     private const val THEME_MODE = "theme_mode"
     private const val ADVANCED_MODE = "advanced_mode"
     private const val REZYGISK_MODE = "rezygisk_mode"
+    private const val REZYGISK_PENDING_BOOT = "rezygisk_pending_boot"
+    private const val REZYGISK_ACTIVE_BOOT = "rezygisk_active_boot"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
@@ -80,6 +82,37 @@ object AppPreferences {
             .edit()
             .putBoolean(REZYGISK_MODE, enabled)
             .apply()
+    }
+
+    fun markReZygiskPending(context: Context, bootId: String): Boolean =
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(REZYGISK_PENDING_BOOT, bootId)
+            .remove(REZYGISK_ACTIVE_BOOT)
+            .commit()
+
+    fun isReZygiskPending(context: Context, bootId: String): Boolean {
+        val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        val stored = preferences.getString(REZYGISK_PENDING_BOOT, null)
+        if (stored == bootId) return true
+        if (stored != null) preferences.edit().remove(REZYGISK_PENDING_BOOT).apply()
+        return false
+    }
+
+    fun markReZygiskActive(context: Context, bootId: String) {
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .remove(REZYGISK_PENDING_BOOT)
+            .putString(REZYGISK_ACTIVE_BOOT, bootId)
+            .apply()
+    }
+
+    fun isReZygiskActive(context: Context, bootId: String): Boolean {
+        val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        val stored = preferences.getString(REZYGISK_ACTIVE_BOOT, null)
+        if (stored == bootId) return true
+        if (stored != null) preferences.edit().remove(REZYGISK_ACTIVE_BOOT).apply()
+        return false
     }
 
     @Synchronized
