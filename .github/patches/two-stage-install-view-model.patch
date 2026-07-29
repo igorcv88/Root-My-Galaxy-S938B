@@ -1,0 +1,307 @@
+diff --git a/app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt b/app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
+index 82cb6fef6e384b3cee6e1e10c513c0870aaabbb9..af6818af3a1d45dc85e43d4ab09f3419f53de15d 100644
+--- a/app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
++++ b/app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
+@@ -20,7 +20,11 @@ enum class InstallPhase {
+     Downloading,
+     Exploiting,
+     LoadingKernelSu,
++    AwaitingRootGrant,
++    ReZygiskReady,
+     PreparingReZygisk,
++    ReZygiskActive,
++    ReZygiskFailed,
+     Installed,
+     Failed,
+ }
+@@ -39,7 +43,6 @@ data class InstallUiState(
+             InstallPhase.LoadingKernelSu,
+             InstallPhase.PreparingReZygisk,
+         )
+-
+ }
+ 
+ data class TargetCatalogUiState(
+@@ -75,12 +78,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         discoveryJob = viewModelScope.launch(Dispatchers.IO) {
+             val probe = NativeProbe.run()
+             if (detectInstalled()) {
+-                mutableState.value = InstallUiState(
+-                    phase = InstallPhase.Installed,
+-                    message = app.getString(R.string.status_ksu_active),
+-                    probeOutput = probe,
+-                    log = probe,
+-                )
++                publishInstalledState(probe)
+                 return@launch
+             }
+             try {
+@@ -102,6 +100,69 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         }
+     }
+ 
++    private fun publishInstalledState(probe: String) {
++        val bootId = currentBootToken()
++        if (bootId != null && AppPreferences.isReZygiskPending(app, bootId)) {
++            if (!ReZygiskLateLoad.hasAuthorizedRoot(app)) {
++                ReZygiskLateLoad.requestRootAuthorization(app)
++                mutableState.value = InstallUiState(
++                    phase = InstallPhase.AwaitingRootGrant,
++                    message = app.getString(R.string.status_rezygisk_root_required),
++                    probeOutput = probe,
++                    log = "$probe\n${app.getString(R.string.log_rezygisk_permission_required)}",
++                )
++                return
++            }
++
++            when (val runtime = ReZygiskLateLoad.runtimeState(app)) {
++                ReZygiskRuntimeState.Success -> {
++                    AppPreferences.markReZygiskActive(app, bootId)
++                    mutableState.value = InstallUiState(
++                        phase = InstallPhase.ReZygiskActive,
++                        message = app.getString(R.string.status_rezygisk_active),
++                        probeOutput = probe,
++                        log = "$probe\n${app.getString(R.string.log_rezygisk_verified)}",
++                    )
++                }
++                ReZygiskRuntimeState.Pending -> {
++                    mutableState.value = InstallUiState(
++                        phase = InstallPhase.PreparingReZygisk,
++                        message = app.getString(R.string.status_soft_reboot_scheduled),
++                        probeOutput = probe,
++                        log = "$probe\n${app.getString(R.string.log_soft_reboot_scheduled)}",
++                    )
++                }
++                is ReZygiskRuntimeState.Failed -> {
++                    mutableState.value = InstallUiState(
++                        phase = InstallPhase.ReZygiskFailed,
++                        message = app.getString(R.string.status_rezygisk_failed),
++                        probeOutput = probe,
++                        log = "$probe\n[-] ${runtime.message}",
++                    )
++                }
++                ReZygiskRuntimeState.None -> {
++                    mutableState.value = InstallUiState(
++                        phase = InstallPhase.ReZygiskReady,
++                        message = app.getString(R.string.status_rezygisk_ready),
++                        probeOutput = probe,
++                        log = "$probe\n${app.getString(R.string.log_rezygisk_ready)}",
++                    )
++                }
++            }
++            return
++        }
++
++        val reZygiskActive = bootId != null && AppPreferences.isReZygiskActive(app, bootId)
++        mutableState.value = InstallUiState(
++            phase = if (reZygiskActive) InstallPhase.ReZygiskActive else InstallPhase.Installed,
++            message = app.getString(
++                if (reZygiskActive) R.string.status_rezygisk_active else R.string.status_ksu_active,
++            ),
++            probeOutput = probe,
++            log = probe,
++        )
++    }
++
+     fun loadTargetCatalog() {
+         if (mutableTargetCatalog.value.loading) return
+         viewModelScope.launch(Dispatchers.IO) {
+@@ -124,7 +185,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+     }
+ 
+     fun install(profileId: String? = null, includeReZygisk: Boolean = false) {
+-        if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
++        if (installJob?.isActive == true || mutableState.value.phase in KERNEL_SU_ACTIVE_PHASES) return
+         discoveryJob?.cancel()
+         installJob = viewModelScope.launch(Dispatchers.IO) {
+             mutableState.value = InstallUiState(
+@@ -149,46 +210,20 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+                 executeExploit(payloads.exploit)
+ 
+                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
+-                val reZygiskPreparation = installKernelSu(payloads, includeReZygisk)
++                installKernelSu(payloads)
+ 
+                 if (includeReZygisk) {
++                    val bootId = currentBootToken() ?: error(app.getString(R.string.error_boot_id))
++                    require(AppPreferences.markReZygiskPending(app, bootId)) {
++                        app.getString(R.string.error_rezygisk_pending_receipt)
++                    }
++                    ReZygiskLateLoad.requestRootAuthorization(app)
++                    appendLog(app.getString(R.string.log_rezygisk_permission_required))
+                     mutableState.value = mutableState.value.copy(
+-                        phase = InstallPhase.PreparingReZygisk,
+-                        message = app.getString(R.string.status_rezygisk_preparing),
++                        phase = InstallPhase.AwaitingRootGrant,
++                        message = app.getString(R.string.status_rezygisk_root_required),
+                     )
+-                    when (val result = requireNotNull(reZygiskPreparation)) {
+-                        ReZygiskActivationResult.NotInstalled -> error(
+-                            app.getString(R.string.error_rezygisk_not_installed),
+-                        )
+-                        is ReZygiskActivationResult.Failed -> error(
+-                            app.getString(R.string.error_rezygisk_schedule, result.message),
+-                        )
+-                        is ReZygiskActivationResult.Scheduled -> {
+-                            setAdvancedStage(
+-                                R.string.status_rezygisk_detected,
+-                                R.string.log_rezygisk_detected,
+-                            )
+-                            setAdvancedStage(
+-                                R.string.status_rezygisk_starting_monitor,
+-                                R.string.log_rezygisk_starting_monitor,
+-                            )
+-                            setAdvancedStage(
+-                                R.string.status_soft_reboot_scheduled,
+-                                R.string.log_soft_reboot_scheduled,
+-                            )
+-                            appendLog(app.getString(R.string.log_rezygisk_scheduled))
+-                            finishHistory(InstallRunResult.Succeeded)
+-                            waitForAdvancedHandoff()
+-                        }
+-                        is ReZygiskActivationResult.AlreadyScheduled -> {
+-                            setAdvancedStage(
+-                                R.string.status_soft_reboot_scheduled,
+-                                R.string.log_rezygisk_already_scheduled,
+-                            )
+-                            finishHistory(InstallRunResult.Succeeded)
+-                            waitForAdvancedHandoff()
+-                        }
+-                    }
++                    finishHistory(InstallRunResult.Succeeded)
+                     return@launch
+                 }
+ 
+@@ -203,6 +238,82 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         }
+     }
+ 
++    fun startReZygisk() {
++        if (installJob?.isActive == true) return
++        discoveryJob?.cancel()
++        installJob = viewModelScope.launch(Dispatchers.IO) {
++            val bootId = currentBootToken()
++            if (bootId == null || !detectInstalled() || !AppPreferences.isReZygiskPending(app, bootId)) {
++                refresh()
++                return@launch
++            }
++
++            if (!ReZygiskLateLoad.hasAuthorizedRoot(app)) {
++                ReZygiskLateLoad.requestRootAuthorization(app)
++                mutableState.value = mutableState.value.copy(
++                    phase = InstallPhase.AwaitingRootGrant,
++                    message = app.getString(R.string.status_rezygisk_root_required),
++                    log = (mutableState.value.log + "\n" +
++                        app.getString(R.string.log_rezygisk_permission_required)).trim(),
++                )
++                return@launch
++            }
++
++            startHistory()
++            mutableState.value = InstallUiState(
++                phase = InstallPhase.PreparingReZygisk,
++                message = app.getString(R.string.status_rezygisk_preparing),
++                probeOutput = NativeProbe.run(),
++                log = app.getString(R.string.log_rezygisk_second_stage_started),
++            )
++            updateHistoryLog()
++
++            try {
++                val result = ReZygiskLateLoad.scheduleAfterAuthorization(app) { stage ->
++                    when (stage) {
++                        ReZygiskActivationStage.Detected -> setAdvancedStage(
++                            R.string.status_rezygisk_detected,
++                            R.string.log_rezygisk_detected,
++                        )
++                        ReZygiskActivationStage.StartingMonitor -> setAdvancedStage(
++                            R.string.status_rezygisk_starting_monitor,
++                            R.string.log_rezygisk_starting_monitor,
++                        )
++                        ReZygiskActivationStage.SoftRebootScheduled -> setAdvancedStage(
++                            R.string.status_soft_reboot_scheduled,
++                            R.string.log_soft_reboot_scheduled,
++                        )
++                    }
++                }
++                when (result) {
++                    ReZygiskActivationResult.NotInstalled -> error(
++                        app.getString(R.string.error_rezygisk_not_installed),
++                    )
++                    is ReZygiskActivationResult.Failed -> error(
++                        app.getString(R.string.error_rezygisk_schedule, result.message),
++                    )
++                    is ReZygiskActivationResult.Scheduled -> {
++                        if (result.message.isNotBlank()) appendLog(result.message)
++                        finishHistory(InstallRunResult.Succeeded)
++                        waitForAdvancedHandoff()
++                    }
++                    is ReZygiskActivationResult.AlreadyScheduled -> {
++                        appendLog(app.getString(R.string.log_rezygisk_already_scheduled))
++                        finishHistory(InstallRunResult.Succeeded)
++                        waitForAdvancedHandoff()
++                    }
++                }
++            } catch (error: Throwable) {
++                appendLog("[-] ${error.message ?: error.javaClass.simpleName}")
++                mutableState.value = mutableState.value.copy(
++                    phase = InstallPhase.ReZygiskFailed,
++                    message = app.getString(R.string.status_rezygisk_failed),
++                )
++                finishHistory(InstallRunResult.Failed)
++            }
++        }
++    }
++
+     private fun setAdvancedStage(
+         @androidx.annotation.StringRes status: Int,
+         @androidx.annotation.StringRes log: Int,
+@@ -289,10 +400,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         updateHistoryLog()
+     }
+ 
+-    private fun installKernelSu(
+-        payloads: VerifiedPayloads,
+-        includeReZygisk: Boolean,
+-    ): ReZygiskActivationResult? {
++    private fun installKernelSu(payloads: VerifiedPayloads) {
+         val source = shellQuote(payloads.kernelSu.absolutePath)
+         val stageCommand =
+             "/system/bin/cp $source /data/local/tmp/ksud-s25u-kdp && " +
+@@ -302,14 +410,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         require(stage.code == 0) { app.getString(R.string.error_ksu_stage, stage.output) }
+         appendLog(app.getString(R.string.log_ksu_staged))
+ 
+-        // Prepare a detached bootstrap-root worker before --late-load. Once KernelSU is active,
+-        // the app can no longer connect to the temporary bootstrap su socket.
+-        val reZygiskPreparation = if (includeReZygisk) {
+-            ReZygiskLateLoad.prepareBeforeKernelSu(app)
+-        } else {
+-            null
+-        }
+-
+         val lateLoad = runHelper("--late-load")
+         require(lateLoad.code == 0) {
+             app.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
+@@ -317,7 +417,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         if (lateLoad.output.isNotBlank()) appendLog(lateLoad.output)
+         storeInstallReceipt()
+         appendLog(app.getString(R.string.log_ksu_control_verified))
+-        return reZygiskPreparation
+     }
+ 
+     private fun detectInstalled(): Boolean {
+@@ -445,6 +544,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
+         private val P0_OFFSET_PATTERN = Regex(
+             "slide-kaslr-ok[^\\n]*slide=([0-9a-fA-F]{16})",
+         )
++        private val KERNEL_SU_ACTIVE_PHASES = setOf(
++            InstallPhase.AwaitingRootGrant,
++            InstallPhase.ReZygiskReady,
++            InstallPhase.PreparingReZygisk,
++            InstallPhase.ReZygiskActive,
++            InstallPhase.ReZygiskFailed,
++            InstallPhase.Installed,
++        )
+ 
+         private fun stripAnsi(value: String): String = ANSI_ESCAPE.replace(value, "").replace("\r", "")
+     }
