@@ -6,7 +6,7 @@
     <string name="nav_settings">Settings</string>
     <string name="install_confirm_title">Install KernelSU?</string>
     <string name="install_confirm_body">The app will verify the support profile, then download and run the exploit and KernelSU payload from GitHub. ReZygisk will not be started.</string>
-    <string name="install_confirm_body_rezygisk">The app will run the kernel exploit and late-load KernelSU. ReZygisk is a separate second stage: close this app, grant Root My Galaxy superuser access in KernelSU, return to this app, and tap the ReZygisk action.</string>
+    <string name="install_confirm_body_rezygisk">The app will run the kernel exploit, arm the installed ReZygisk Bridge, late-load KernelSU, then automatically start the monitor and perform the controlled zygote restart.</string>
     <string name="action_confirm">Confirm</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>
@@ -30,7 +30,7 @@
     <string name="language">Language</string>
     <string name="language_description">Choose the app language</string>
     <string name="appearance">Appearance</string>
-    <string name="theme_system">System</string>
+    <string name="theme_system">Follow system</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
     <string name="material_color">Material color</string>
@@ -70,7 +70,7 @@
     <string name="step_ksu_title">Load KernelSU</string>
     <string name="step_ksu_detail">Late-load module and verify control channel</string>
     <string name="step_rezygisk_title">Activate ReZygisk</string>
-    <string name="step_rezygisk_detail">Grant root, return to the app, then start monitor and controlled zygote restart</string>
+    <string name="step_rezygisk_detail">Use the KernelSU late-load bridge to start the monitor and restart zygote</string>
     <string name="phase_checking">Checking the supported device and firmware</string>
     <string name="phase_ready">Ready to install</string>
     <string name="phase_downloading">Downloading commit-pinned payloads from GitHub</string>
@@ -78,9 +78,9 @@
     <string name="phase_loading_ksu">Loading KernelSU with the acquired bootstrap root</string>
     <string name="phase_awaiting_root_grant">KernelSU is active. Close this app, grant Root My Galaxy root access in KernelSU, then return.</string>
     <string name="phase_rezygisk_ready">Root permission verified. Return to the home screen and tap the ReZygisk action.</string>
-    <string name="phase_preparing_rezygisk">Starting the monitor and scheduling the controlled zygote restart</string>
+    <string name="phase_preparing_rezygisk">The KernelSU bridge is starting the monitor and scheduling the controlled zygote restart</string>
     <string name="phase_rezygisk_active">ReZygisk injection and daemon verified for this boot</string>
-    <string name="phase_rezygisk_failed">KernelSU remains active. Review the ReZygisk failure and retry from the home screen.</string>
+    <string name="phase_rezygisk_failed">KernelSU remains active. Review the ReZygisk failure and retry after a full reboot.</string>
     <string name="phase_installed">KernelSU module and control channel verified</string>
     <string name="phase_failed">Review the failure point in the log below</string>
 
@@ -106,6 +106,7 @@
     <string name="log_bootstrap_root">[+] Bootstrap root acquired</string>
     <string name="log_ksu_staged">[+] KernelSU staging complete</string>
     <string name="log_ksu_control_verified">[+] KernelSU Active</string>
+    <string name="log_rezygisk_bridge_armed">[+] ReZygisk Bridge armed for this boot</string>
     <string name="log_rezygisk_permission_required">[*] ReZygisk second stage pending: grant Root My Galaxy superuser access in KernelSU, then return to the app</string>
     <string name="log_rezygisk_ready">[+] KernelSU root permission granted; ReZygisk is ready to start</string>
     <string name="log_rezygisk_second_stage_started">[+] KernelSU Active
@@ -125,10 +126,12 @@
     <string name="error_ksu_verify">KernelSU late-load or control verification failed (rc=%1$d): %2$s</string>
     <string name="error_boot_id">Unable to read the current boot_id</string>
     <string name="error_receipt">Unable to save the installation verification receipt</string>
+    <string name="error_rezygisk_bridge_arm">Unable to arm the ReZygisk Bridge before KernelSU late-load: %1$s</string>
+    <string name="error_rezygisk_bridge_missing">The ReZygisk Bridge did not report from KernelSU late-load. Install and enable the Root My Galaxy ReZygisk Bridge module, reboot fully, and retry the advanced process.</string>
     <string name="error_rezygisk_pending_receipt">Unable to save the pending ReZygisk second-stage state</string>
     <string name="error_rezygisk_not_installed">Advanced process selected, but the ReZygisk module is not installed and enabled. KernelSU is active; install or enable ReZygisk before retrying the advanced process.</string>
     <string name="error_rezygisk_schedule">KernelSU is active, but ReZygisk activation could not be scheduled: %1$s</string>
-    <string name="error_soft_reboot_not_started">The ReZygisk monitor was scheduled, but the controlled zygote restart did not begin within 45 seconds. Do not run post-fs-data manually; review the ReZygisk logs.</string>
+    <string name="error_soft_reboot_not_started">The ReZygisk bridge did not complete the controlled zygote restart within 60 seconds. Do not run post-fs-data manually; review the bridge logs.</string>
 
     <string name="artifact_exploit">exploit</string>
     <string name="artifact_kernelsu">KernelSU</string>
@@ -152,29 +155,26 @@
     <string name="advanced_mode">Advanced mode</string>
     <string name="advanced_mode_description">Manually choose a kernel and firmware profile during installation</string>
     <string name="rezygisk_mode">Enable advanced ReZygisk process</string>
-    <string name="rezygisk_mode_description">After KernelSU, require a normal root grant and expose a separate ReZygisk action</string>
+    <string name="rezygisk_mode_description">Arm the installed KernelSU bridge to start ReZygisk automatically during late-load</string>
     <string name="rezygisk_warning_title">Enable the advanced ReZygisk process?</string>
-    <string name="rezygisk_warning_body">This enables a two-stage KernelSU + ReZygisk process.
+    <string name="rezygisk_warning_body">This enables the automatic KernelSU + ReZygisk process.
 
-Stage 1:
-• The app runs the normal exploit and late-loads KernelSU.
-• It does not touch the zygote or start the ReZygisk monitor yet.
-• When KernelSU is active, the app asks you to close it and open KernelSU.
+Requirements:
+• Install and enable the Root My Galaxy ReZygisk Bridge module in KernelSU before rebooting.
+• Install and enable ReZygisk.
+• Remove or disable NeoZygisk, Zygisk Next, BreZygisk, and every other Zygisk provider.
+• For the first test, disable Vector, TreatWheel, NoHello, and all other Zygisk modules.
 
-Stage 2:
-• Grant Root My Galaxy superuser access in KernelSU.
-• Return to Root My Galaxy. The home card will change to “KernelSU active — ReZygisk ready”.
-• Tap the card to start the monitor, schedule the controlled zygote restart, verify injection and system_server, or roll back on failure.
+What happens:
+1. The app runs the normal exploit and prepares KernelSU.
+2. It writes a one-boot activation token for the bridge.
+3. During ksud late-load, the bridge runs in the KernelSU SELinux domain, detects ReZygisk, starts its ptrace monitor, and schedules a controlled zygote restart.
+4. The bridge verifies the monitor, daemon, zygote64 injection, and system_server.
+5. On failure, it stops the monitor, disables ReZygisk, and performs a clean zygote restart only when necessary.
 
-Before starting:
-1. Install and enable ReZygisk in KernelSU.
-2. Remove or disable NeoZygisk, Zygisk Next, BreZygisk, and every other Zygisk provider.
-3. For the first test, disable Vector, TreatWheel, NoHello, and all other Zygisk modules.
-4. Do not run post-fs-data scripts manually and do not perform a soft reboot yourself.
-
-A full watchdog reboot is still possible during the injection stage and would remove runtime root.</string>
+The bridge remains inert when this option is disabled. Do not run post-fs-data manually or perform a soft reboot yourself. A full Samsung watchdog reboot is still possible and would remove runtime root.</string>
     <string name="rezygisk_root_dialog_title">KernelSU is active</string>
-    <string name="rezygisk_root_dialog_body">The exploit stage is complete. Close Root My Galaxy completely, open KernelSU, grant Root My Galaxy superuser access, and return to Root My Galaxy. The home card will then let you start the ReZygisk process.</string>
+    <string name="rezygisk_root_dialog_body">The automatic ReZygisk bridge did not start. Install and enable the bridge module, perform a full reboot, and retry the advanced process.</string>
     <string name="repo_profile_missing">Support profile %1$s is no longer available</string>
     <string name="select_device_title">Choose a support profile</string>
     <string name="select_device_description">Select the kernel and firmware profile to use for this installation.</string>
