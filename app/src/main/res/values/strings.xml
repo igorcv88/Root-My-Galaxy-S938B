@@ -6,16 +6,21 @@
     <string name="nav_settings">Settings</string>
     <string name="install_confirm_title">Install KernelSU?</string>
     <string name="install_confirm_body">The app will verify the support profile, then download and run the exploit and KernelSU payload from GitHub. ReZygisk will not be started.</string>
-    <string name="install_confirm_body_rezygisk">The app will run the kernel exploit, late-load KernelSU, then start the ReZygisk ptrace monitor, restart zygote, verify injection and system_server, and automatically roll back if verification fails.</string>
+    <string name="install_confirm_body_rezygisk">The app will run the kernel exploit and late-load KernelSU. ReZygisk is a separate second stage: close this app, grant Root My Galaxy superuser access in KernelSU, return to this app, and tap the ReZygisk action.</string>
     <string name="action_confirm">Confirm</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>
     <string name="action_retry">Try again</string>
     <string name="action_done">Done</string>
+    <string name="action_close_open_kernelsu">Close app and open KernelSU</string>
     <string name="action_back">Back</string>
     <string name="install_tap_manager">Tap to install KernelSU Manager</string>
     <string name="install_tap_retry">Tap to try again</string>
     <string name="install_tap_start">Tap to install KernelSU</string>
+    <string name="install_tap_grant_root">Tap to open KernelSU and grant Root My Galaxy superuser access</string>
+    <string name="install_tap_start_rezygisk">Tap to start the ReZygisk process</string>
+    <string name="install_tap_retry_rezygisk">Tap to retry the ReZygisk process</string>
+    <string name="install_rezygisk_active">KernelSU and ReZygisk are active</string>
     <string name="device">Device</string>
     <string name="firmware">Firmware</string>
     <string name="system">System</string>
@@ -65,13 +70,17 @@
     <string name="step_ksu_title">Load KernelSU</string>
     <string name="step_ksu_detail">Late-load module and verify control channel</string>
     <string name="step_rezygisk_title">Activate ReZygisk</string>
-    <string name="step_rezygisk_detail">Start monitor, restart zygote, verify injection, or roll back</string>
+    <string name="step_rezygisk_detail">Grant root, return to the app, then start monitor and controlled zygote restart</string>
     <string name="phase_checking">Checking the supported device and firmware</string>
     <string name="phase_ready">Ready to install</string>
     <string name="phase_downloading">Downloading commit-pinned payloads from GitHub</string>
     <string name="phase_exploiting">This may take 10 minutes or longer. Your device may become hot or stop responding.</string>
     <string name="phase_loading_ksu">Loading KernelSU with the acquired bootstrap root</string>
-    <string name="phase_preparing_rezygisk">The advanced process continues automatically; do not close the app or tap anything</string>
+    <string name="phase_awaiting_root_grant">KernelSU is active. Close this app, grant Root My Galaxy root access in KernelSU, then return.</string>
+    <string name="phase_rezygisk_ready">Root permission verified. Return to the home screen and tap the ReZygisk action.</string>
+    <string name="phase_preparing_rezygisk">Starting the monitor and scheduling the controlled zygote restart</string>
+    <string name="phase_rezygisk_active">ReZygisk injection and daemon verified for this boot</string>
+    <string name="phase_rezygisk_failed">KernelSU remains active. Review the ReZygisk failure and retry from the home screen.</string>
     <string name="phase_installed">KernelSU module and control channel verified</string>
     <string name="phase_failed">Review the failure point in the log below</string>
 
@@ -82,7 +91,11 @@
     <string name="status_downloading_payload">Downloading payloads</string>
     <string name="status_exploit_running">Running kernel exploit</string>
     <string name="status_ksu_loading">Late-loading KernelSU</string>
-    <string name="status_rezygisk_preparing">Preparing advanced injection</string>
+    <string name="status_rezygisk_root_required">KernelSU active — root permission required</string>
+    <string name="status_rezygisk_ready">KernelSU active — ReZygisk ready</string>
+    <string name="status_rezygisk_preparing">Preparing ReZygisk injection</string>
+    <string name="status_rezygisk_active">KernelSU + ReZygisk active</string>
+    <string name="status_rezygisk_failed">ReZygisk activation failed</string>
     <string name="status_rezygisk_detected">ReZygisk detected</string>
     <string name="status_rezygisk_starting_monitor">Starting ReZygisk monitor…</string>
     <string name="status_soft_reboot_scheduled">Soft reboot scheduled…</string>
@@ -93,6 +106,11 @@
     <string name="log_bootstrap_root">[+] Bootstrap root acquired</string>
     <string name="log_ksu_staged">[+] KernelSU staging complete</string>
     <string name="log_ksu_control_verified">[+] KernelSU Active</string>
+    <string name="log_rezygisk_permission_required">[*] ReZygisk second stage pending: grant Root My Galaxy superuser access in KernelSU, then return to the app</string>
+    <string name="log_rezygisk_ready">[+] KernelSU root permission granted; ReZygisk is ready to start</string>
+    <string name="log_rezygisk_second_stage_started">[+] KernelSU Active
+[*] Starting the authorized ReZygisk second stage</string>
+    <string name="log_rezygisk_verified">[+] ReZygisk injection verified</string>
     <string name="log_rezygisk_scheduled">[+] ReZygisk monitor and rollback worker scheduled</string>
     <string name="log_rezygisk_detected">[+] ReZygisk detected</string>
     <string name="log_rezygisk_starting_monitor">[*] Starting ReZygisk monitor…</string>
@@ -107,6 +125,7 @@
     <string name="error_ksu_verify">KernelSU late-load or control verification failed (rc=%1$d): %2$s</string>
     <string name="error_boot_id">Unable to read the current boot_id</string>
     <string name="error_receipt">Unable to save the installation verification receipt</string>
+    <string name="error_rezygisk_pending_receipt">Unable to save the pending ReZygisk second-stage state</string>
     <string name="error_rezygisk_not_installed">Advanced process selected, but the ReZygisk module is not installed and enabled. KernelSU is active; install or enable ReZygisk before retrying the advanced process.</string>
     <string name="error_rezygisk_schedule">KernelSU is active, but ReZygisk activation could not be scheduled: %1$s</string>
     <string name="error_soft_reboot_not_started">The ReZygisk monitor was scheduled, but the controlled zygote restart did not begin within 45 seconds. Do not run post-fs-data manually; review the ReZygisk logs.</string>
@@ -132,26 +151,30 @@
     <string name="advanced">Advanced</string>
     <string name="advanced_mode">Advanced mode</string>
     <string name="advanced_mode_description">Manually choose a kernel and firmware profile during installation</string>
-    <string name="rezygisk_mode">Include ReZygisk in exploit process</string>
-    <string name="rezygisk_mode_description">Immediately after KernelSU, start ReZygisk, restart zygote, and use the rollback watchdog</string>
+    <string name="rezygisk_mode">Enable advanced ReZygisk process</string>
+    <string name="rezygisk_mode_description">After KernelSU, require a normal root grant and expose a separate ReZygisk action</string>
     <string name="rezygisk_warning_title">Enable the advanced ReZygisk process?</string>
-    <string name="rezygisk_warning_body">This changes the next installation from KernelSU-only to KernelSU + ReZygisk.
+    <string name="rezygisk_warning_body">This enables a two-stage KernelSU + ReZygisk process.
 
-What will happen:
-• The normal kernel exploit and KernelSU late-load run first.
-• The app then starts the ReZygisk ptrace monitor and confirms that it attached to init.
-• After a short delay, a detached worker restarts zygote to trigger injection.
-• It verifies the KernelSU backend, ReZygisk daemon, zygote64 injection, and system_server.
-• If injection fails, the watchdog exits the monitor, disables ReZygisk, and restarts a clean zygote. A full watchdog reboot is still possible, which removes runtime root.
+Stage 1:
+• The app runs the normal exploit and late-loads KernelSU.
+• It does not touch the zygote or start the ReZygisk monitor yet.
+• When KernelSU is active, the app asks you to close it and open KernelSU.
+
+Stage 2:
+• Grant Root My Galaxy superuser access in KernelSU.
+• Return to Root My Galaxy. The home card will change to “KernelSU active — ReZygisk ready”.
+• Tap the card to start the monitor, schedule the controlled zygote restart, verify injection and system_server, or roll back on failure.
 
 Before starting:
 1. Install and enable ReZygisk in KernelSU.
 2. Remove or disable NeoZygisk, Zygisk Next, BreZygisk, and every other Zygisk provider.
 3. For the first test, disable Vector, TreatWheel, NoHello, and all other Zygisk modules.
-4. Do not run post-fs-data scripts manually and do not perform a soft reboot during the process.
-5. Keep the installer open until it reports completion or the controlled zygote restart closes it.
+4. Do not run post-fs-data scripts manually and do not perform a soft reboot yourself.
 
-This option does not install ReZygisk and cannot preserve root across a full reboot.</string>
+A full watchdog reboot is still possible during the injection stage and would remove runtime root.</string>
+    <string name="rezygisk_root_dialog_title">KernelSU is active</string>
+    <string name="rezygisk_root_dialog_body">The exploit stage is complete. Close Root My Galaxy completely, open KernelSU, grant Root My Galaxy superuser access, and return to Root My Galaxy. The home card will then let you start the ReZygisk process.</string>
     <string name="repo_profile_missing">Support profile %1$s is no longer available</string>
     <string name="select_device_title">Choose a support profile</string>
     <string name="select_device_description">Select the kernel and firmware profile to use for this installation.</string>

@@ -10,82 +10,98 @@ internal sealed interface ReZygiskActivationResult {
     data class Failed(val message: String) : ReZygiskActivationResult
 }
 
+internal enum class ReZygiskActivationStage {
+    Detected,
+    StartingMonitor,
+    SoftRebootScheduled,
+}
+
+internal sealed interface ReZygiskRuntimeState {
+    data object None : ReZygiskRuntimeState
+    data object Pending : ReZygiskRuntimeState
+    data object Success : ReZygiskRuntimeState
+    data class Failed(val message: String) : ReZygiskRuntimeState
+}
+
 internal object ReZygiskLateLoad {
     private const val HELPER_NAME = "libcve43499root.so"
     private const val SCRIPT_NAME = "rezygisk-late-load.sh"
     private const val REMOTE_SCRIPT = "/data/local/tmp/rmg-rezygisk-late-load.sh"
-    private const val PRELOAD_LOG = "/data/local/tmp/rmg-rezygisk-preload.log"
-    private const val PRELOAD_PID = "/data/local/tmp/rmg-rezygisk-preload.pid"
     private const val RESULT_FILE = "/data/local/tmp/rmg-rezygisk-result"
-    private const val PREPARED_MARKER = "RMG_REZYGISK_PREPARED=1"
-    private const val ACTIVATION_PREFS = "rezygisk_activation"
-    private const val ACTIVATION_BOOT_ID = "scheduled_boot_id"
-    private const val ACTIVATION_DETAIL = "detail"
+    private const val SCHEDULED_MARKER = "RMG_REZYGISK_SCHEDULED=1"
+    private const val ROOT_READY_MARKER = "RMG_AUTHORIZED_ROOT=1"
     private const val ACTIVE_MARKER = "RMG_REZYGISK_ACTIVE="
     private const val PENDING_MARKER = "RMG_REZYGISK_PENDING="
 
-    private val activationLock = Any()
-
-    /**
-     * Must run while the exploit's temporary root socket is still available, before --late-load.
-     * The detached worker keeps uid 0, waits for KernelSU to appear, and performs the ReZygisk
-     * monitor handoff without requiring a KernelSU superuser grant for this app.
-     */
-    fun prepareBeforeKernelSu(context: Context): ReZygiskActivationResult {
-        val appContext = context.applicationContext
-        val bootId = currentBootId()
-            ?: return ReZygiskActivationResult.Failed("current boot ID is unavailable")
-
-        return synchronized(activationLock) {
-            val activation = appContext.getSharedPreferences(ACTIVATION_PREFS, Context.MODE_PRIVATE)
-            if (activation.getString(ACTIVATION_BOOT_ID, null) == bootId) {
-                val activeSchedule = runBootstrapRootCommand(
-                    appContext,
-                    """
-                    if [ -r $PRELOAD_PID ]; then
-                        worker_pid=${'$'}(/system/bin/cat $PRELOAD_PID 2>/dev/null)
-                        [ -n "${'$'}worker_pid" ] && /system/bin/toybox kill -0 "${'$'}worker_pid" 2>/dev/null && exit 0
-                    fi
-                    [ -S /data/adb/rezygisk/init_monitor ] && exit 0
-                    /system/bin/grep -qE '^(pending|success)$' $RESULT_FILE 2>/dev/null
-                    """.trimIndent(),
-                )
-                if (activeSchedule.code == 0) {
-                    return@synchronized ReZygiskActivationResult.AlreadyScheduled(
-                        activation.getString(ACTIVATION_DETAIL, null)
-                            ?: "ReZygisk bootstrap worker was already scheduled for this boot",
-                    )
-                }
-                activation.edit().clear().commit()
-            }
-
-            when (val result = stageBootstrapWorker(appContext)) {
-                ReZygiskActivationResult.NotInstalled -> result
-                is ReZygiskActivationResult.Failed -> result
-                is ReZygiskActivationResult.AlreadyScheduled -> result
-                is ReZygiskActivationResult.Scheduled -> {
-                    val stored = activation.edit()
-                        .putString(ACTIVATION_BOOT_ID, bootId)
-                        .putString(ACTIVATION_DETAIL, result.message)
-                        .commit()
-                    if (stored) {
-                        result
-                    } else {
-                        ReZygiskActivationResult.Failed(
-                            "unable to persist the ReZygisk bootstrap receipt",
-                        )
-                    }
-                }
-            }
+    fun requestRootAuthorization(context: Context) {
+        val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
+        if (!helper.canExecute()) return
+        runCatching {
+            val process = ProcessBuilder(
+                helper.absolutePath,
+                "-c",
+                "/system/bin/id -u >/dev/null 2>&1",
+            ).redirectErrorStream(true).start()
+            process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
         }
     }
 
-    private fun stageBootstrapWorker(context: Context): ReZygiskActivationResult {
+    fun hasAuthorizedRoot(context: Context): Boolean {
+        val result = runAuthorizedCommand(context, ":")
+        return result.code == 0
+    }
+
+    fun runtimeState(context: Context): ReZygiskRuntimeState {
+        val result = runAuthorizedCommand(
+            context,
+            """
+            if [ -r $RESULT_FILE ]; then
+                value=${'$'}(/system/bin/cat $RESULT_FILE 2>/dev/null)
+                echo "RMG_RESULT=${'$'}value"
+            elif [ -S /data/adb/rezygisk/init_monitor ]; then
+                echo "RMG_RESULT=pending"
+            else
+                echo "RMG_RESULT=none"
+            fi
+            """.trimIndent(),
+        )
+        if (result.code != 0) return ReZygiskRuntimeState.None
+        val value = result.output.lineSequence()
+            .firstOrNull { it.startsWith("RMG_RESULT=") }
+            ?.removePrefix("RMG_RESULT=")
+            ?.trim()
+            .orEmpty()
+        return when {
+            value == "success" -> ReZygiskRuntimeState.Success
+            value == "pending" -> ReZygiskRuntimeState.Pending
+            value.startsWith("failure:") || value.startsWith("rollback") -> {
+                ReZygiskRuntimeState.Failed(value)
+            }
+            else -> ReZygiskRuntimeState.None
+        }
+    }
+
+    fun scheduleAfterAuthorization(
+        context: Context,
+        onStage: (ReZygiskActivationStage) -> Unit = {},
+    ): ReZygiskActivationResult {
+        val existing = runAuthorizedCommand(
+            context,
+            "[ -S /data/adb/rezygisk/init_monitor ] || " +
+                "/system/bin/grep -qE '^(pending|success)$' $RESULT_FILE 2>/dev/null",
+        )
+        if (existing.code == 0) {
+            return ReZygiskActivationResult.AlreadyScheduled(
+                "ReZygisk activation is already running for this boot",
+            )
+        }
+
         val moduleProbe = discoverModule(context)
         if (moduleProbe.code != 0) {
             return ReZygiskActivationResult.Failed(
                 moduleProbe.output.ifBlank {
-                    "bootstrap root could not inspect /data/adb/modules " +
+                    "authorized root could not inspect /data/adb/modules " +
                         "(probe exited with ${moduleProbe.code})"
                 },
             )
@@ -97,12 +113,13 @@ internal object ReZygiskLateLoad {
             return if (pendingPath != null) {
                 ReZygiskActivationResult.Failed(
                     "ReZygisk is installed but still pending at $pendingPath; " +
-                        "it is not enabled in /data/adb/modules for this boot.",
+                        "enable it in KernelSU before retrying.",
                 )
             } else {
                 ReZygiskActivationResult.NotInstalled
             }
         }
+        onStage(ReZygiskActivationStage.Detected)
 
         val localScript = File(context.cacheDir, SCRIPT_NAME)
         context.assets.open(SCRIPT_NAME).use { input ->
@@ -113,46 +130,25 @@ internal object ReZygiskLateLoad {
         }
 
         val modulePathReplacement = "s|^MODULE_DIR=.*|MODULE_DIR=${escapeSedReplacement(activePath)}|"
-        val stageCommand = """
-            set -e
-            /system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT
-            /system/bin/chmod 700 $REMOTE_SCRIPT
-            /system/bin/sed -i ${shellQuote(modulePathReplacement)} $REMOTE_SCRIPT
-            /system/bin/rm -f $PRELOAD_LOG $PRELOAD_PID $RESULT_FILE
-            TMP_PATH=/data/adb/rezygisk /system/bin/toybox setsid \
-                $REMOTE_SCRIPT preload >>$PRELOAD_LOG 2>&1 </dev/null &
-            worker_pid=${'$'}!
-            echo "${'$'}worker_pid" > $PRELOAD_PID
-            /system/bin/sleep 1
-            if ! /system/bin/toybox kill -0 "${'$'}worker_pid" 2>/dev/null; then
-                /system/bin/cat $PRELOAD_LOG 2>/dev/null
-                exit 43
-            fi
-            echo "$PREPARED_MARKER"
-        """.trimIndent()
-
-        val result = runBootstrapRootCommand(context, stageCommand)
-        return if (result.code == 0 && result.output.contains(PREPARED_MARKER)) {
+        val stageCommand =
+            "/system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT && " +
+                "/system/bin/chmod 700 $REMOTE_SCRIPT && " +
+                "/system/bin/sed -i ${shellQuote(modulePathReplacement)} $REMOTE_SCRIPT && " +
+                "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
+        onStage(ReZygiskActivationStage.StartingMonitor)
+        val result = runAuthorizedCommand(context, stageCommand)
+        return if (result.code == 0 && result.output.contains(SCHEDULED_MARKER)) {
+            onStage(ReZygiskActivationStage.SoftRebootScheduled)
             ReZygiskActivationResult.Scheduled(result.output)
         } else {
             ReZygiskActivationResult.Failed(
-                result.output.ifBlank { "bootstrap worker exited with ${result.code}" },
+                result.output.ifBlank { "bootstrap exited with ${result.code}" },
             )
         }
     }
 
     private fun discoverModule(context: Context): CommandResult {
         val command = """
-            uid=${'$'}(/system/bin/id -u 2>/dev/null)
-            echo "RMG_ROOT_UID=${'$'}uid"
-            if [ "${'$'}uid" != "0" ]; then
-                echo "bootstrap command runner did not provide uid 0"
-                exit 125
-            fi
-            if ! /system/bin/ls /data/adb/modules >/dev/null 2>&1; then
-                echo "ReZygisk probe cannot read /data/adb/modules"
-                exit 41
-            fi
             for root in /data/adb/modules /data/adb/modules_update; do
                 [ -d "${'$'}root" ] || continue
                 for dir in "${'$'}root"/*; do
@@ -169,10 +165,6 @@ internal object ReZygiskLateLoad {
                     if [ "${'$'}root" = "/data/adb/modules" ]; then
                         [ -e "${'$'}dir/disable" ] && continue
                         [ -e "${'$'}dir/remove" ] && continue
-                        [ -x "${'$'}dir/bin/zygisk-ptrace64" ] || {
-                            echo "ReZygisk tracer binary is missing at ${'$'}dir/bin/zygisk-ptrace64"
-                            exit 44
-                        }
                         echo "$ACTIVE_MARKER${'$'}dir"
                     else
                         echo "$PENDING_MARKER${'$'}dir"
@@ -181,7 +173,48 @@ internal object ReZygiskLateLoad {
             done
             exit 0
         """.trimIndent()
-        return runBootstrapRootCommand(context, command)
+        return runAuthorizedCommand(context, command)
+    }
+
+    private fun runAuthorizedCommand(context: Context, command: String): CommandResult {
+        val checkedCommand = """
+            uid=${'$'}(/system/bin/id -u 2>/dev/null)
+            [ "${'$'}uid" = "0" ] || exit 125
+            /system/bin/ls /data/adb/modules >/dev/null 2>&1 || exit 126
+            echo "$ROOT_READY_MARKER"
+            $command
+        """.trimIndent()
+        val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
+        val candidates = buildList {
+            if (helper.canExecute()) add(listOf(helper.absolutePath, "-c", checkedCommand))
+            add(listOf("/system/bin/su", "-c", checkedCommand))
+            add(listOf("/system/xbin/su", "-c", checkedCommand))
+            add(listOf("su", "-c", checkedCommand))
+        }
+        val failures = mutableListOf<String>()
+
+        for (candidate in candidates) {
+            val result = try {
+                val process = ProcessBuilder(candidate)
+                    .redirectErrorStream(true)
+                    .start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+                CommandResult(process.waitFor(), output)
+            } catch (error: Throwable) {
+                failures += "${candidate.first()}: ${error.message ?: error.javaClass.simpleName}"
+                null
+            } ?: continue
+
+            if (result.output.contains(ROOT_READY_MARKER)) {
+                return result.copy(output = result.output.replace(ROOT_READY_MARKER, "").trim())
+            }
+            failures += "${candidate.first()}: ${result.output.ifBlank { "exit ${result.code}" }}"
+        }
+
+        return CommandResult(
+            126,
+            "KernelSU root permission is unavailable (${failures.joinToString("; ")})",
+        )
     }
 
     private fun markerValue(output: String, marker: String): String? = output.lineSequence()
@@ -189,36 +222,6 @@ internal object ReZygiskLateLoad {
         ?.removePrefix(marker)
         ?.trim()
         ?.takeIf(String::isNotBlank)
-
-    private fun runBootstrapRootCommand(context: Context, command: String): CommandResult {
-        val checkedCommand =
-            "uid=${'$'}(/system/bin/id -u 2>/dev/null); " +
-                "[ \"${'$'}uid\" = \"0\" ] || exit 125; " + command
-        val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
-        if (!helper.canExecute()) {
-            return CommandResult(126, "bootstrap helper is unavailable")
-        }
-
-        return try {
-            val process = ProcessBuilder(helper.absolutePath, "-c", checkedCommand)
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            CommandResult(process.waitFor(), output)
-        } catch (error: Throwable) {
-            CommandResult(
-                126,
-                "bootstrap root command failed: ${error.message ?: error.javaClass.simpleName}",
-            )
-        }
-    }
-
-    private fun currentBootId(): String? = runCatching {
-        File("/proc/sys/kernel/random/boot_id")
-            .readText(Charsets.US_ASCII)
-            .trim()
-            .takeIf(String::isNotBlank)
-    }.getOrNull()
 
     private fun escapeSedReplacement(value: String): String = value
         .replace("\\", "\\\\")

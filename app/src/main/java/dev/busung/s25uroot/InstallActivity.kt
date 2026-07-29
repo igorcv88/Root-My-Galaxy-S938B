@@ -1,5 +1,7 @@
 package dev.busung.s25uroot
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -85,12 +88,24 @@ class InstallActivity : ComponentActivity() {
                     includeReZygisk = includeReZygisk,
                     onRetry = { installViewModel.install(profileId, includeReZygisk) },
                     onClose = ::finish,
+                    onCloseForRootGrant = ::closeAndOpenKernelSuManager,
                 )
             }
         }
     }
 
+    private fun closeAndOpenKernelSuManager() {
+        val managerIntent = packageManager.getLaunchIntentForPackage(KERNEL_SU_MANAGER_PACKAGE)
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse(KERNEL_SU_MANAGER_URL))
+        managerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        startActivity(managerIntent)
+        finishAndRemoveTask()
+    }
+
     companion object {
+        private const val KERNEL_SU_MANAGER_PACKAGE = "me.weishu.kernelsu"
+        private const val KERNEL_SU_MANAGER_URL =
+            "https://github.com/tiann/KernelSU/releases/download/v3.2.5/KernelSU_v3.2.5_32525-release.apk"
         const val EXTRA_INSTALL_REQUEST_ID = "install_request_id"
         const val EXTRA_PROFILE_ID = "profile_id"
         const val EXTRA_INCLUDE_REZYGISK = "include_rezygisk"
@@ -125,11 +140,26 @@ private fun InstallScreen(
     includeReZygisk: Boolean,
     onRetry: () -> Unit,
     onClose: () -> Unit,
+    onCloseForRootGrant: () -> Unit,
 ) {
     val logScrollState = rememberScrollState()
     LaunchedEffect(installState.log) {
         delay(40)
         logScrollState.scrollTo(logScrollState.maxValue)
+    }
+
+    if (includeReZygisk && installState.phase == InstallPhase.AwaitingRootGrant) {
+        AlertDialog(
+            onDismissRequest = {},
+            icon = { Icon(Icons.Rounded.Security, contentDescription = null) },
+            title = { Text(stringResource(R.string.rezygisk_root_dialog_title)) },
+            text = { Text(stringResource(R.string.rezygisk_root_dialog_body)) },
+            confirmButton = {
+                Button(onClick = onCloseForRootGrant) {
+                    Text(stringResource(R.string.action_close_open_kernelsu))
+                }
+            },
+        )
     }
 
     Scaffold { padding ->
@@ -186,7 +216,10 @@ private fun InstallScreen(
                         ) {
                             Text(stringResource(R.string.action_retry))
                         }
-                    } else if (installState.phase == InstallPhase.Installed) {
+                    } else if (installState.phase in setOf(
+                        InstallPhase.Installed,
+                        InstallPhase.ReZygiskActive,
+                    )) {
                         Button(
                             onClick = onClose,
                             modifier = Modifier.fillMaxWidth(),
@@ -228,7 +261,12 @@ private fun InstallerStatusCard(
                 AnimatedContent(targetState = installState.phase, label = "install-status-icon") { phase ->
                     when {
                         installState.busy -> LoadingIndicator(modifier = Modifier.size(44.dp))
-                        phase == InstallPhase.Installed -> Icon(
+                        phase in setOf(
+                            InstallPhase.Installed,
+                            InstallPhase.ReZygiskActive,
+                            InstallPhase.AwaitingRootGrant,
+                            InstallPhase.ReZygiskReady,
+                        ) -> Icon(
                             Icons.Rounded.Check,
                             contentDescription = null,
                             modifier = Modifier.size(44.dp),
@@ -312,7 +350,13 @@ private fun InstallerSteps(phase: InstallPhase, includeReZygisk: Boolean) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (stepState == 1 && phase !in setOf(InstallPhase.Failed, InstallPhase.Ready)) {
+                    if (stepState == 1 && phase !in setOf(
+                            InstallPhase.Failed,
+                            InstallPhase.Ready,
+                            InstallPhase.AwaitingRootGrant,
+                            InstallPhase.ReZygiskReady,
+                            InstallPhase.ReZygiskFailed,
+                        )) {
                         LoadingIndicator(modifier = Modifier.size(24.dp))
                     }
                 }
@@ -361,7 +405,11 @@ private fun installPhaseDetail(phase: InstallPhase): String = stringResource(
         InstallPhase.Downloading -> R.string.phase_downloading
         InstallPhase.Exploiting -> R.string.phase_exploiting
         InstallPhase.LoadingKernelSu -> R.string.phase_loading_ksu
+        InstallPhase.AwaitingRootGrant -> R.string.phase_awaiting_root_grant
+        InstallPhase.ReZygiskReady -> R.string.phase_rezygisk_ready
         InstallPhase.PreparingReZygisk -> R.string.phase_preparing_rezygisk
+        InstallPhase.ReZygiskActive -> R.string.phase_rezygisk_active
+        InstallPhase.ReZygiskFailed -> R.string.phase_rezygisk_failed
         InstallPhase.Installed -> R.string.phase_installed
         InstallPhase.Failed -> R.string.phase_failed
     },
@@ -373,20 +421,24 @@ private fun installProgress(phase: InstallPhase, includeReZygisk: Boolean): Floa
     InstallPhase.Downloading -> 0.3f
     InstallPhase.Exploiting -> 0.6f
     InstallPhase.LoadingKernelSu -> if (includeReZygisk) 0.78f else 0.85f
+    InstallPhase.AwaitingRootGrant, InstallPhase.ReZygiskReady -> 0.8f
     InstallPhase.PreparingReZygisk -> 0.92f
-    InstallPhase.Installed -> 1f
-    InstallPhase.Failed -> 0f
+    InstallPhase.ReZygiskActive, InstallPhase.Installed -> 1f
+    InstallPhase.ReZygiskFailed, InstallPhase.Failed -> 0f
 }
 
 private fun stepState(phase: InstallPhase, stepIndex: Int): Int {
-    if (phase == InstallPhase.Installed) return 2
+    if (phase in setOf(InstallPhase.Installed, InstallPhase.ReZygiskActive)) return 2
     val activeIndex = when (phase) {
         InstallPhase.Checking, InstallPhase.Ready, InstallPhase.Failed -> 0
         InstallPhase.Downloading -> 1
         InstallPhase.Exploiting -> 2
         InstallPhase.LoadingKernelSu -> 3
-        InstallPhase.PreparingReZygisk -> 4
-        InstallPhase.Installed -> 5
+        InstallPhase.AwaitingRootGrant,
+        InstallPhase.ReZygiskReady,
+        InstallPhase.PreparingReZygisk,
+        InstallPhase.ReZygiskFailed -> 4
+        InstallPhase.ReZygiskActive, InstallPhase.Installed -> 5
     }
     return when {
         stepIndex < activeIndex -> 2
@@ -394,3 +446,4 @@ private fun stepState(phase: InstallPhase, stepIndex: Int): Int {
         else -> 0
     }
 }
+

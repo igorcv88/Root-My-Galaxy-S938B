@@ -167,6 +167,7 @@ class MainActivity : ComponentActivity() {
                         AppPreferences.setReZygiskMode(this, enabled)
                         reZygiskMode = enabled
                     },
+                    onStartReZygisk = installViewModel::startReZygisk,
                     openInstaller = { profileId, includeReZygisk ->
                         val installer = Intent(this, InstallActivity::class.java)
                             .putExtra(InstallActivity.EXTRA_INSTALL_REQUEST_ID, UUID.randomUUID().toString())
@@ -208,6 +209,7 @@ private val languageOptions = listOf(
     LanguageOption(R.string.language_chinese, "zh-CN"),
 )
 
+private const val KERNEL_SU_MANAGER_PACKAGE = "me.weishu.kernelsu"
 private const val KERNEL_SU_MANAGER_URL =
     "https://github.com/tiann/KernelSU/releases/download/v3.2.5/KernelSU_v3.2.5_32525-release.apk"
 
@@ -222,6 +224,7 @@ private fun RootApp(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onReZygiskModeChanged: (Boolean) -> Unit,
+    onStartReZygisk: () -> Unit,
     openInstaller: (String?, Boolean) -> Unit,
 ) {
     val installState by installViewModel.state.collectAsStateWithLifecycle()
@@ -387,6 +390,7 @@ private fun RootApp(
                             showInstallConfirmation = true
                         }
                     },
+                    onStartReZygisk = onStartReZygisk,
                 )
                 AppPage.History -> HistoryPage(padding, history)
                 AppPage.Settings -> SettingsPage(
@@ -417,6 +421,7 @@ private fun OverviewPage(
     device: DeviceSnapshot,
     installState: InstallUiState,
     onInstall: () -> Unit,
+    onStartReZygisk: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(padding),
@@ -430,21 +435,42 @@ private fun OverviewPage(
                 modifier = Modifier.padding(top = 54.dp, bottom = 14.dp),
             )
         }
-        item { InstallStatusCard(installState, onInstall) }
+        item { InstallStatusCard(installState, onInstall, onStartReZygisk) }
         item { DeviceCard(device) }
         item { GitHubCard() }
     }
 }
 
 @Composable
-private fun InstallStatusCard(installState: InstallUiState, onInstall: () -> Unit) {
+private fun InstallStatusCard(
+    installState: InstallUiState,
+    onInstall: () -> Unit,
+    onStartReZygisk: () -> Unit,
+) {
     val interactionSource = remember { MutableInteractionSource() }
+    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    val openKernelSuManager = {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(KERNEL_SU_MANAGER_PACKAGE)
+        if (launchIntent != null) {
+            context.startActivity(launchIntent)
+        } else {
+            uriHandler.openUri(KERNEL_SU_MANAGER_URL)
+        }
+    }
     Card(
         onClick = {
             when {
                 installState.busy -> Unit
-                installState.phase == InstallPhase.Installed -> uriHandler.openUri(KERNEL_SU_MANAGER_URL)
+                installState.phase == InstallPhase.AwaitingRootGrant -> openKernelSuManager()
+                installState.phase in setOf(
+                    InstallPhase.ReZygiskReady,
+                    InstallPhase.ReZygiskFailed,
+                ) -> onStartReZygisk()
+                installState.phase in setOf(
+                    InstallPhase.Installed,
+                    InstallPhase.ReZygiskActive,
+                ) -> openKernelSuManager()
                 else -> onInstall()
             }
         },
@@ -462,14 +488,34 @@ private fun InstallStatusCard(installState: InstallUiState, onInstall: () -> Uni
         ) {
             when {
                 installState.busy -> LoadingIndicator(modifier = Modifier.size(44.dp))
-                installState.phase == InstallPhase.Installed -> Icon(
-                    Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(44.dp),
+                installState.phase in setOf(
+                    InstallPhase.Installed,
+                    InstallPhase.ReZygiskActive,
+                ) -> Icon(
+                    Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(44.dp),
                 )
-                installState.phase == InstallPhase.Failed -> Icon(
-                    Icons.Rounded.Warning, contentDescription = null, modifier = Modifier.size(44.dp),
+                installState.phase in setOf(
+                    InstallPhase.AwaitingRootGrant,
+                    InstallPhase.ReZygiskReady,
+                ) -> Icon(
+                    Icons.Rounded.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(44.dp),
+                )
+                installState.phase in setOf(
+                    InstallPhase.Failed,
+                    InstallPhase.ReZygiskFailed,
+                ) -> Icon(
+                    Icons.Rounded.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(44.dp),
                 )
                 else -> Icon(
-                    Icons.Rounded.Warning, contentDescription = null, modifier = Modifier.size(44.dp),
+                    Icons.Rounded.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(44.dp),
                 )
             }
             Column(modifier = Modifier.weight(1f)) {
@@ -483,13 +529,17 @@ private fun InstallStatusCard(installState: InstallUiState, onInstall: () -> Uni
                 )
                 Text(
                     text = when (installState.phase) {
+                        InstallPhase.AwaitingRootGrant -> stringResource(R.string.install_tap_grant_root)
+                        InstallPhase.ReZygiskReady -> stringResource(R.string.install_tap_start_rezygisk)
+                        InstallPhase.ReZygiskFailed -> stringResource(R.string.install_tap_retry_rezygisk)
+                        InstallPhase.ReZygiskActive -> stringResource(R.string.install_rezygisk_active)
                         InstallPhase.Installed -> stringResource(R.string.install_tap_manager)
                         InstallPhase.Failed -> stringResource(R.string.install_tap_retry)
                         else -> stringResource(R.string.install_tap_start)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.86f),
-                    maxLines = 1,
+                    maxLines = 2,
                 )
             }
         }
