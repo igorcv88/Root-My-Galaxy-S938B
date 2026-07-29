@@ -48,20 +48,27 @@ stop_monitor() {
     fi
     if [ -r "$MONITOR_PID" ]; then
         monitor_pid=$(/system/bin/cat "$MONITOR_PID" 2>/dev/null)
-        [ -n "$monitor_pid" ] && /system/bin/kill "$monitor_pid" 2>/dev/null || true
+        [ -n "$monitor_pid" ] && /system/bin/toybox kill "$monitor_pid" 2>/dev/null || true
     fi
 }
 
 restart_zygote() {
+    mark_restart=${1:-1}
     old=$(zygote_pid | /system/bin/toybox head -n 1)
     [ -n "$old" ] || return 1
-    /system/bin/setprop ctl.restart zygote || return 1
+
+    # ctl.restart requires permission to set an init control property and is rejected on this
+    # Samsung build even from the KernelSU late-load script. Terminating the supervised zygote
+    # process makes init recreate it without depending on ctl.* property access.
+    status "ZYGOTE_OLD_PID=$old"
+    /system/bin/toybox kill -9 "$old" 2>/dev/null || return 1
 
     count=0
-    while [ "$count" -lt 15 ]; do
+    while [ "$count" -lt 20 ]; do
         current=$(zygote_pid | /system/bin/toybox head -n 1)
         if [ -n "$current" ] && [ "$current" != "$old" ]; then
-            ZYGOTE_RESTARTED=1
+            [ "$mark_restart" = "1" ] && ZYGOTE_RESTARTED=1
+            status "ZYGOTE_NEW_PID=$current"
             return 0
         fi
         /system/bin/sleep 1
@@ -77,8 +84,10 @@ rollback() {
     stop_monitor
     /system/bin/rm -f "$WORK_DIR/state.json"
 
+    # A clean second zygote generation is only requested when the injection handoff actually
+    # restarted zygote. Pre-handoff failures do not trigger another user-space restart.
     if [ "$ZYGOTE_RESTARTED" = "1" ]; then
-        /system/bin/setprop ctl.restart zygote >/dev/null 2>&1 || true
+        restart_zygote 0 >/dev/null 2>&1 || true
     fi
 
     /system/bin/echo "rollback: $reason" > "$RESULT_FILE"
@@ -155,7 +164,7 @@ done
 status "SOFT_REBOOT_SCHEDULED=1"
 /system/bin/echo pending > "$RESULT_FILE"
 /system/bin/sleep 4
-restart_zygote || rollback "init did not restart zygote"
+restart_zygote 1 || rollback "init did not recreate zygote after supervised termination"
 
 count=0
 while [ "$count" -lt 25 ]; do
