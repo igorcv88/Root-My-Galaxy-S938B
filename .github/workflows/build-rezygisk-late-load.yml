@@ -23,15 +23,24 @@ jobs:
           name: root-my-galaxy-editable-sources
           path: |
             app/src/main/AndroidManifest.xml
-            app/src/main/assets/rezygisk-late-load.sh
             app/src/main/java/dev/busung/s25uroot/AppPreferences.kt
             app/src/main/java/dev/busung/s25uroot/InstallActivity.kt
             app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
             app/src/main/java/dev/busung/s25uroot/MainActivity.kt
             app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
             app/src/main/res/values/strings.xml
-      - name: Validate ReZygisk bootstrap shell
-        run: sh -n app/src/main/assets/rezygisk-late-load.sh
+            bridge
+      - name: Validate bridge shell
+        run: |
+          sh -n bridge/late-load.sh
+          sh -n bridge/bridge.sh
+          sh -n bridge/uninstall.sh
+      - name: Package bridge module
+        run: |
+          chmod 755 bridge/late-load.sh bridge/bridge.sh bridge/uninstall.sh
+          rm -f Root-My-Galaxy-ReZygisk-Bridge.zip
+          (cd bridge && zip -9 -r ../Root-My-Galaxy-ReZygisk-Bridge.zip module.prop late-load.sh bridge.sh uninstall.sh README.md)
+          unzip -t Root-My-Galaxy-ReZygisk-Bridge.zip
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -60,6 +69,8 @@ jobs:
           ./gradlew :app:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: root-my-galaxy-rezygisk-toggle-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: root-my-galaxy-rezygisk-bridge-debug
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            Root-My-Galaxy-ReZygisk-Bridge.zip
           if-no-files-found: error
