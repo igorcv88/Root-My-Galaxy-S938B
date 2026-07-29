@@ -9,6 +9,8 @@ MONITOR_LOG=/data/local/tmp/rmg-rezygisk-monitor.log
 ACTIVATION_LOG=/data/local/tmp/rmg-rezygisk-activation.log
 RESULT_FILE=/data/local/tmp/rmg-rezygisk-result
 PID_FILE=/data/local/tmp/rmg-rezygisk-monitor.pid
+PRELOAD_LOG=/data/local/tmp/rmg-rezygisk-preload.log
+PRELOAD_PID=/data/local/tmp/rmg-rezygisk-preload.pid
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -78,9 +80,15 @@ prepare_monitor() {
     check_provider_conflicts
     tracer=$(find_tracer) || fail "ReZygisk tracer binary is missing"
 
+    if [ -f "$MODULE_DIR/module.prop.bak" ]; then
+        cp "$MODULE_DIR/module.prop.bak" "$MODULE_DIR/module.prop"
+    fi
+
+    mkdir -p /data/adb/ksu/bin
     if [ -x /data/adb/ksud ]; then
-        mkdir -p /data/adb/ksu/bin
         [ -e /data/adb/ksu/bin/ksud ] || ln -s /data/adb/ksud /data/adb/ksu/bin/ksud
+    elif [ -x /data/local/tmp/ksud-s25u-kdp ]; then
+        [ -e /data/adb/ksu/bin/ksud ] || ln -s /data/local/tmp/ksud-s25u-kdp /data/adb/ksu/bin/ksud
     fi
 
     stop_rezygisk_monitor
@@ -123,11 +131,14 @@ prepare_monitor() {
 
 state_is_healthy() {
     state=$WORK_DIR/state.json
+    prop=$MODULE_DIR/module.prop
     [ -s "$state" ] || return 1
+    [ -s "$prop" ] || return 1
     grep -q '"root": "KernelSU"' "$state" || return 1
     grep -q '"state": "0"' "$state" || return 1
     grep -q '"state": 1' "$state" || return 1
-    grep -q '"64": 1' "$state" || return 1
+    grep -q 'Monitor: ✅' "$prop" || return 1
+    grep -q 'ReZygisk 64-bit: ✅' "$prop" || return 1
     pidof system_server >/dev/null 2>&1 || return 1
     return 0
 }
@@ -205,6 +216,29 @@ activation_worker() {
     rollback "ReZygisk did not verify within 20 seconds"
 }
 
+kernel_su_ready() {
+    grep -q '^kernelsu ' /proc/modules 2>/dev/null || [ -e /dev/ksu ]
+}
+
+preload_worker() {
+    [ "$(id -u)" = "0" ] || fail "preloaded worker lost bootstrap root"
+    log "Bootstrap-root worker is waiting for KernelSU"
+
+    count=0
+    while [ "$count" -lt 45 ]; do
+        if kernel_su_ready; then
+            log "KernelSU detected by preloaded worker"
+            sleep 2
+            schedule_activation
+            exit $?
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+
+    fail "KernelSU did not become active within 45 seconds"
+}
+
 schedule_activation() {
     prepare_monitor
     if command -v setsid >/dev/null 2>&1; then
@@ -217,7 +251,8 @@ schedule_activation() {
 }
 
 case "${1:-}" in
+    preload) preload_worker ;;
     schedule) schedule_activation ;;
     worker) activation_worker ;;
-    *) echo "Usage: $0 <schedule|worker>" >&2; exit 2 ;;
+    *) echo "Usage: $0 <preload|schedule|worker>" >&2; exit 2 ;;
 esac
