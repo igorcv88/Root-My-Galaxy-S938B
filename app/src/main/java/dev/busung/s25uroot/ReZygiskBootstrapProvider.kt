@@ -2,6 +2,7 @@ package dev.busung.s25uroot
 
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.Context
 import android.database.Cursor
 import android.net.Uri
 import android.util.Log
@@ -23,25 +24,30 @@ class ReZygiskBootstrapProvider : ContentProvider() {
         return true
     }
 
-    private fun watchForVerifiedKernelSu(context: android.content.Context) {
+    private fun watchForVerifiedKernelSu(context: Context) {
         val bootId = currentBootId() ?: return
-        val activation = context.getSharedPreferences(ACTIVATION_PREFS, android.content.Context.MODE_PRIVATE)
+        val activation = context.getSharedPreferences(ACTIVATION_PREFS, Context.MODE_PRIVATE)
         if (activation.getString(ACTIVATION_BOOT_ID, null) == bootId) return
 
         repeat(POLL_LIMIT) {
             try {
                 if (NativeProbe.isKernelSuActive() && installReceiptVerified(context, bootId)) {
-                    when (scheduleActivation(context)) {
+                    val result = scheduleActivation(context)
+                    when (result) {
                         ActivationResult.NotInstalled -> Unit
                         is ActivationResult.Failed -> {
-                            Log.e(TAG, "ReZygisk activation was not scheduled: ${scheduleActivation(context).message}")
+                            Log.e(TAG, "ReZygisk activation was not scheduled: ${result.message}")
                             return
                         }
                         is ActivationResult.Scheduled -> {
-                            activation.edit()
+                            val stored = activation.edit()
                                 .putString(ACTIVATION_BOOT_ID, bootId)
-                                .putString(ACTIVATION_DETAIL, scheduleActivation(context).message)
+                                .putString(ACTIVATION_DETAIL, result.message)
                                 .commit()
+                            if (!stored) {
+                                Log.e(TAG, "Unable to persist the ReZygisk activation receipt")
+                                return
+                            }
                             Log.i(TAG, "ReZygisk late-load activation scheduled")
                             return
                         }
@@ -54,13 +60,13 @@ class ReZygiskBootstrapProvider : ContentProvider() {
         }
     }
 
-    private fun installReceiptVerified(context: android.content.Context, bootId: String): Boolean {
-        val receipt = context.getSharedPreferences(INSTALL_RECEIPT, android.content.Context.MODE_PRIVATE)
+    private fun installReceiptVerified(context: Context, bootId: String): Boolean {
+        val receipt = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
         return receipt.getString(RECEIPT_BOOT_TOKEN, null) == bootId &&
             receipt.getBoolean(RECEIPT_VERIFIED, false)
     }
 
-    private fun scheduleActivation(context: android.content.Context): ActivationResult {
+    private fun scheduleActivation(context: Context): ActivationResult {
         val moduleProbe = runRootCommand(
             context,
             "[ -d /data/adb/modules/rezygisk ] && " +
@@ -71,9 +77,11 @@ class ReZygiskBootstrapProvider : ContentProvider() {
 
         val localScript = File(context.cacheDir, SCRIPT_NAME)
         context.assets.open(SCRIPT_NAME).use { input ->
-            localScript.outputStream().use(input::copyTo)
+            localScript.outputStream().use { output -> input.copyTo(output) }
         }
-        require(localScript.setExecutable(true, true)) { "Unable to mark the ReZygisk bootstrap executable" }
+        require(localScript.setExecutable(true, true)) {
+            "Unable to mark the ReZygisk bootstrap executable"
+        }
 
         val stageCommand =
             "/system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT && " +
@@ -87,7 +95,7 @@ class ReZygiskBootstrapProvider : ContentProvider() {
         }
     }
 
-    private fun runRootCommand(context: android.content.Context, command: String): CommandResult {
+    private fun runRootCommand(context: Context, command: String): CommandResult {
         val helper = File(context.applicationInfo.nativeLibraryDir, HELPER_NAME)
         if (!helper.canExecute()) return CommandResult(126, "bootstrap helper is unavailable")
         val process = ProcessBuilder(helper.absolutePath, "-c", command)
