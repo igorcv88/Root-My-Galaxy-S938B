@@ -10,6 +10,12 @@ internal sealed interface ReZygiskActivationResult {
     data class Failed(val message: String) : ReZygiskActivationResult
 }
 
+internal enum class ReZygiskActivationStage {
+    Detected,
+    StartingMonitor,
+    SoftRebootScheduled,
+}
+
 internal object ReZygiskLateLoad {
     private const val HELPER_NAME = "libcve43499root.so"
     private const val SCRIPT_NAME = "rezygisk-late-load.sh"
@@ -21,7 +27,10 @@ internal object ReZygiskLateLoad {
 
     private val activationLock = Any()
 
-    fun scheduleAfterKernelSu(context: Context): ReZygiskActivationResult {
+    fun scheduleAfterKernelSu(
+        context: Context,
+        onStage: (ReZygiskActivationStage) -> Unit = {},
+    ): ReZygiskActivationResult {
         val appContext = context.applicationContext
         val bootId = currentBootId()
             ?: return ReZygiskActivationResult.Failed("current boot ID is unavailable")
@@ -29,13 +38,22 @@ internal object ReZygiskLateLoad {
         return synchronized(activationLock) {
             val activation = appContext.getSharedPreferences(ACTIVATION_PREFS, Context.MODE_PRIVATE)
             if (activation.getString(ACTIVATION_BOOT_ID, null) == bootId) {
-                return@synchronized ReZygiskActivationResult.AlreadyScheduled(
-                    activation.getString(ACTIVATION_DETAIL, null)
-                        ?: "ReZygisk activation was already scheduled for this boot",
+                val activeSchedule = runRootCommand(
+                    appContext,
+                    "[ -S /data/adb/rezygisk/init_monitor ] || " +
+                        "/system/bin/grep -qE '^(pending|success)$' " +
+                        "/data/local/tmp/rmg-rezygisk-result 2>/dev/null",
                 )
+                if (activeSchedule.code == 0) {
+                    return@synchronized ReZygiskActivationResult.AlreadyScheduled(
+                        activation.getString(ACTIVATION_DETAIL, null)
+                            ?: "ReZygisk activation was already scheduled for this boot",
+                    )
+                }
+                activation.edit().clear().commit()
             }
 
-            when (val result = scheduleActivation(appContext)) {
+            when (val result = scheduleActivation(appContext, onStage)) {
                 ReZygiskActivationResult.NotInstalled -> result
                 is ReZygiskActivationResult.Failed -> result
                 is ReZygiskActivationResult.AlreadyScheduled -> result
@@ -56,7 +74,10 @@ internal object ReZygiskLateLoad {
         }
     }
 
-    private fun scheduleActivation(context: Context): ReZygiskActivationResult {
+    private fun scheduleActivation(
+        context: Context,
+        onStage: (ReZygiskActivationStage) -> Unit,
+    ): ReZygiskActivationResult {
         val moduleProbe = runRootCommand(
             context,
             "[ -d /data/adb/modules/rezygisk ] && " +
@@ -64,6 +85,7 @@ internal object ReZygiskLateLoad {
                 "[ ! -e /data/adb/modules/rezygisk/remove ]",
         )
         if (moduleProbe.code != 0) return ReZygiskActivationResult.NotInstalled
+        onStage(ReZygiskActivationStage.Detected)
 
         val localScript = File(context.cacheDir, SCRIPT_NAME)
         context.assets.open(SCRIPT_NAME).use { input ->
@@ -77,8 +99,10 @@ internal object ReZygiskLateLoad {
             "/system/bin/cp ${shellQuote(localScript.absolutePath)} $REMOTE_SCRIPT && " +
                 "/system/bin/chmod 700 $REMOTE_SCRIPT && " +
                 "TMP_PATH=/data/adb/rezygisk $REMOTE_SCRIPT schedule"
+        onStage(ReZygiskActivationStage.StartingMonitor)
         val result = runRootCommand(context, stageCommand)
         return if (result.code == 0 && result.output.contains(SCHEDULED_MARKER)) {
+            onStage(ReZygiskActivationStage.SoftRebootScheduled)
             ReZygiskActivationResult.Scheduled(result.output)
         } else {
             ReZygiskActivationResult.Failed(
