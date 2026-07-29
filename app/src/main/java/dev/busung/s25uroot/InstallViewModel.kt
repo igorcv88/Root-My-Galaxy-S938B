@@ -149,30 +149,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 executeExploit(payloads.exploit)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
-                installKernelSu(payloads)
+                val reZygiskPreparation = installKernelSu(payloads, includeReZygisk)
 
                 if (includeReZygisk) {
                     mutableState.value = mutableState.value.copy(
                         phase = InstallPhase.PreparingReZygisk,
                         message = app.getString(R.string.status_rezygisk_preparing),
                     )
-                    val result = ReZygiskLateLoad.scheduleAfterKernelSu(app) { stage ->
-                        when (stage) {
-                            ReZygiskActivationStage.Detected -> setAdvancedStage(
-                                R.string.status_rezygisk_detected,
-                                R.string.log_rezygisk_detected,
-                            )
-                            ReZygiskActivationStage.StartingMonitor -> setAdvancedStage(
-                                R.string.status_rezygisk_starting_monitor,
-                                R.string.log_rezygisk_starting_monitor,
-                            )
-                            ReZygiskActivationStage.SoftRebootScheduled -> setAdvancedStage(
-                                R.string.status_soft_reboot_scheduled,
-                                R.string.log_soft_reboot_scheduled,
-                            )
-                        }
-                    }
-                    when (result) {
+                    when (val result = requireNotNull(reZygiskPreparation)) {
                         ReZygiskActivationResult.NotInstalled -> error(
                             app.getString(R.string.error_rezygisk_not_installed),
                         )
@@ -180,12 +164,27 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                             app.getString(R.string.error_rezygisk_schedule, result.message),
                         )
                         is ReZygiskActivationResult.Scheduled -> {
-                            if (result.message.isNotBlank()) appendLog(result.message)
+                            setAdvancedStage(
+                                R.string.status_rezygisk_detected,
+                                R.string.log_rezygisk_detected,
+                            )
+                            setAdvancedStage(
+                                R.string.status_rezygisk_starting_monitor,
+                                R.string.log_rezygisk_starting_monitor,
+                            )
+                            setAdvancedStage(
+                                R.string.status_soft_reboot_scheduled,
+                                R.string.log_soft_reboot_scheduled,
+                            )
+                            appendLog(app.getString(R.string.log_rezygisk_scheduled))
                             finishHistory(InstallRunResult.Succeeded)
                             waitForAdvancedHandoff()
                         }
                         is ReZygiskActivationResult.AlreadyScheduled -> {
-                            appendLog(app.getString(R.string.log_rezygisk_already_scheduled))
+                            setAdvancedStage(
+                                R.string.status_soft_reboot_scheduled,
+                                R.string.log_rezygisk_already_scheduled,
+                            )
                             finishHistory(InstallRunResult.Succeeded)
                             waitForAdvancedHandoff()
                         }
@@ -290,7 +289,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         updateHistoryLog()
     }
 
-    private fun installKernelSu(payloads: VerifiedPayloads) {
+    private fun installKernelSu(
+        payloads: VerifiedPayloads,
+        includeReZygisk: Boolean,
+    ): ReZygiskActivationResult? {
         val source = shellQuote(payloads.kernelSu.absolutePath)
         val stageCommand =
             "/system/bin/cp $source /data/local/tmp/ksud-s25u-kdp && " +
@@ -300,6 +302,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         require(stage.code == 0) { app.getString(R.string.error_ksu_stage, stage.output) }
         appendLog(app.getString(R.string.log_ksu_staged))
 
+        // Prepare a detached bootstrap-root worker before --late-load. Once KernelSU is active,
+        // the app can no longer connect to the temporary bootstrap su socket.
+        val reZygiskPreparation = if (includeReZygisk) {
+            ReZygiskLateLoad.prepareBeforeKernelSu(app)
+        } else {
+            null
+        }
+
         val lateLoad = runHelper("--late-load")
         require(lateLoad.code == 0) {
             app.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
@@ -307,6 +317,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (lateLoad.output.isNotBlank()) appendLog(lateLoad.output)
         storeInstallReceipt()
         appendLog(app.getString(R.string.log_ksu_control_verified))
+        return reZygiskPreparation
     }
 
     private fun detectInstalled(): Boolean {
