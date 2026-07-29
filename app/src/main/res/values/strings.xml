@@ -71,7 +71,7 @@
     <string name="phase_downloading">Downloading commit-pinned payloads from GitHub</string>
     <string name="phase_exploiting">This may take 10 minutes or longer. Your device may become hot or stop responding.</string>
     <string name="phase_loading_ksu">Loading KernelSU with the acquired bootstrap root</string>
-    <string name="phase_preparing_rezygisk">Preparing the ReZygisk monitor and controlled zygote restart</string>
+    <string name="phase_preparing_rezygisk">The advanced process continues automatically; do not close the app or tap anything</string>
     <string name="phase_installed">KernelSU module and control channel verified</string>
     <string name="phase_failed">Review the failure point in the log below</string>
 
@@ -82,15 +82,21 @@
     <string name="status_downloading_payload">Downloading payloads</string>
     <string name="status_exploit_running">Running kernel exploit</string>
     <string name="status_ksu_loading">Late-loading KernelSU</string>
-    <string name="status_rezygisk_preparing">Scheduling ReZygisk activation</string>
+    <string name="status_rezygisk_preparing">Preparing advanced injection</string>
+    <string name="status_rezygisk_detected">ReZygisk detected</string>
+    <string name="status_rezygisk_starting_monitor">Starting ReZygisk monitor…</string>
+    <string name="status_soft_reboot_scheduled">Soft reboot scheduled…</string>
     <string name="status_install_failed">Installation failed</string>
     <string name="log_profile">[+] Support profile: %1$s</string>
     <string name="log_download_verified">[+] Payload download complete</string>
     <string name="log_install_complete">[+] Installation complete</string>
     <string name="log_bootstrap_root">[+] Bootstrap root acquired</string>
     <string name="log_ksu_staged">[+] KernelSU staging complete</string>
-    <string name="log_ksu_control_verified">[+] KernelSU control channel verified</string>
+    <string name="log_ksu_control_verified">[+] KernelSU Active</string>
     <string name="log_rezygisk_scheduled">[+] ReZygisk monitor and rollback worker scheduled</string>
+    <string name="log_rezygisk_detected">[+] ReZygisk detected</string>
+    <string name="log_rezygisk_starting_monitor">[*] Starting ReZygisk monitor…</string>
+    <string name="log_soft_reboot_scheduled">[*] Soft reboot scheduled…</string>
     <string name="log_rezygisk_already_scheduled">[+] ReZygisk activation was already scheduled for this boot</string>
     <string name="error_helper_unavailable">The bootstrap helper is not executable</string>
     <string name="error_exploit_stalled">The exploit log did not advance for 90 seconds</string>
@@ -103,6 +109,7 @@
     <string name="error_receipt">Unable to save the installation verification receipt</string>
     <string name="error_rezygisk_not_installed">Advanced process selected, but the ReZygisk module is not installed and enabled. KernelSU is active; install or enable ReZygisk before retrying the advanced process.</string>
     <string name="error_rezygisk_schedule">KernelSU is active, but ReZygisk activation could not be scheduled: %1$s</string>
+    <string name="error_soft_reboot_not_started">The ReZygisk monitor was scheduled, but the controlled zygote restart did not begin within 45 seconds. Do not run post-fs-data manually; review the ReZygisk logs.</string>
 
     <string name="artifact_exploit">exploit</string>
     <string name="artifact_kernelsu">KernelSU</string>
@@ -126,7 +133,7 @@
     <string name="advanced_mode">Advanced mode</string>
     <string name="advanced_mode_description">Manually choose a kernel and firmware profile during installation</string>
     <string name="rezygisk_mode">Include ReZygisk in exploit process</string>
-    <string name="rezygisk_mode_description">After KernelSU, start ReZygisk with controlled zygote restart and rollback watchdog</string>
+    <string name="rezygisk_mode_description">Immediately after KernelSU, start ReZygisk, restart zygote, and use the rollback watchdog</string>
     <string name="rezygisk_warning_title">Enable the advanced ReZygisk process?</string>
     <string name="rezygisk_warning_body">This changes the next installation from KernelSU-only to KernelSU + ReZygisk.
 
