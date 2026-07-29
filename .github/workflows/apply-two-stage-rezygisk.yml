@@ -1,11 +1,11 @@
-name: Apply two-stage ReZygisk source patch
+name: Apply current-boot ReZygisk migration patch
 
 on:
   push:
     branches:
       - agent/rezygisk-late-load
     paths:
-      - .github/patches/apply-two-stage
+      - .github/patches/apply-current-boot
 
 permissions:
   contents: write
@@ -18,20 +18,14 @@ jobs:
         with:
           ref: agent/rezygisk-late-load
           fetch-depth: 0
-      - name: Apply two-stage source changes
+      - name: Apply current-boot migration
         run: |
-          for patch in .github/patches/two-stage-*.patch; do
-            git apply --check "$patch"
-          done
-          for patch in .github/patches/two-stage-*.patch; do
-            git apply "$patch"
-          done
-          cp .github/patches/ReZygiskLateLoad.kt \
-            app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
-      - name: Commit source changes
+          git apply --check .github/patches/two-stage-current-boot.patch
+          git apply .github/patches/two-stage-current-boot.patch
+      - name: Commit source change
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main
-          git commit -m "Use authorized two-stage ReZygisk flow"
+          git add app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
+          git commit -m "Recognize two-stage mode on an active KernelSU boot"
           git push origin HEAD:agent/rezygisk-late-load
