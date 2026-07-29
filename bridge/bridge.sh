@@ -10,6 +10,7 @@ MONITOR_LOG=/data/local/tmp/rmg-rezygisk-monitor.log
 MONITOR_PID=/data/local/tmp/rmg-rezygisk-monitor.pid
 DIAGNOSTIC=/data/local/tmp/rmg-rezygisk-bridge-status
 ZYGOTE_RESTARTED=0
+OLD_SYSTEM_SERVER=
 
 status() {
     value=$1
@@ -54,14 +55,40 @@ stop_monitor() {
 
 restart_zygote() {
     mark_restart=${1:-1}
+    reason=${2:-activation}
     old=$(zygote_pid | /system/bin/toybox head -n 1)
     [ -n "$old" ] || return 1
 
-    # ctl.restart requires permission to set an init control property and is rejected on this
-    # Samsung build even from the KernelSU late-load script. Terminating the supervised zygote
-    # process makes init recreate it without depending on ctl.* property access.
+    if [ "$mark_restart" = "1" ]; then
+        OLD_SYSTEM_SERVER=$(/system/bin/pidof system_server 2>/dev/null | /system/bin/toybox awk '{print $1}')
+        [ -n "$OLD_SYSTEM_SERVER" ] && status "SYSTEM_SERVER_OLD_PID=$OLD_SYSTEM_SERVER"
+    fi
+
+    # ctl.restart is denied on this Samsung build even from KernelSU late-load. Ask the
+    # init-supervised zygote to terminate normally first, then use SIGKILL only if necessary.
+    status "ZYGOTE_RESTART_METHOD=signal"
+    status "ZYGOTE_RESTART_REASON=$reason"
     status "ZYGOTE_OLD_PID=$old"
-    /system/bin/toybox kill -9 "$old" 2>/dev/null || return 1
+    log "Requesting zygote restart by signal (pid=$old, reason=$reason)"
+
+    /system/bin/toybox kill -TERM "$old" 2>/dev/null || return 1
+
+    count=0
+    while [ "$count" -lt 3 ]; do
+        current=$(zygote_pid | /system/bin/toybox head -n 1)
+        if [ -z "$current" ] || [ "$current" != "$old" ]; then
+            break
+        fi
+        /system/bin/sleep 1
+        count=$((count + 1))
+    done
+
+    current=$(zygote_pid | /system/bin/toybox head -n 1)
+    if [ "$current" = "$old" ]; then
+        status "ZYGOTE_SIGKILL_FALLBACK=1"
+        log "zygote ignored SIGTERM; sending SIGKILL (pid=$old)"
+        /system/bin/toybox kill -KILL "$old" 2>/dev/null || return 1
+    fi
 
     count=0
     while [ "$count" -lt 20 ]; do
@@ -69,11 +96,14 @@ restart_zygote() {
         if [ -n "$current" ] && [ "$current" != "$old" ]; then
             [ "$mark_restart" = "1" ] && ZYGOTE_RESTARTED=1
             status "ZYGOTE_NEW_PID=$current"
+            log "Observed replacement zygote (old=$old new=$current)"
             return 0
         fi
         /system/bin/sleep 1
         count=$((count + 1))
     done
+
+    status "ZYGOTE_RESTART_TIMEOUT=1"
     return 1
 }
 
@@ -84,10 +114,10 @@ rollback() {
     stop_monitor
     /system/bin/rm -f "$WORK_DIR/state.json"
 
-    # A clean second zygote generation is only requested when the injection handoff actually
-    # restarted zygote. Pre-handoff failures do not trigger another user-space restart.
+    # A clean second generation is requested only if the injection handoff really produced
+    # a replacement zygote. Pre-handoff failures do not trigger another user-space restart.
     if [ "$ZYGOTE_RESTARTED" = "1" ]; then
-        restart_zygote 0 >/dev/null 2>&1 || true
+        restart_zygote 0 rollback >/dev/null 2>&1 || true
     fi
 
     /system/bin/echo "rollback: $reason" > "$RESULT_FILE"
@@ -122,7 +152,11 @@ healthy() {
     /system/bin/grep -q '"state": 1' "$state" || return 1
     /system/bin/grep -q 'Monitor: ✅' "$prop" || return 1
     /system/bin/grep -q 'ReZygisk 64-bit: ✅' "$prop" || return 1
-    /system/bin/pidof system_server >/dev/null 2>&1 || return 1
+    current_system_server=$(/system/bin/pidof system_server 2>/dev/null | /system/bin/toybox awk '{print $1}')
+    [ -n "$current_system_server" ] || return 1
+    if [ -n "$OLD_SYSTEM_SERVER" ] && [ "$current_system_server" = "$OLD_SYSTEM_SERVER" ]; then
+        return 1
+    fi
     return 0
 }
 
@@ -164,11 +198,13 @@ done
 status "SOFT_REBOOT_SCHEDULED=1"
 /system/bin/echo pending > "$RESULT_FILE"
 /system/bin/sleep 4
-restart_zygote 1 || rollback "init did not recreate zygote after supervised termination"
+restart_zygote 1 activation || rollback "init did not recreate zygote after supervised termination"
 
 count=0
-while [ "$count" -lt 25 ]; do
+while [ "$count" -lt 30 ]; do
     if healthy; then
+        current_system_server=$(/system/bin/pidof system_server 2>/dev/null | /system/bin/toybox awk '{print $1}')
+        status "SYSTEM_SERVER_NEW_PID=$current_system_server"
         /system/bin/echo success > "$RESULT_FILE"
         status "SUCCESS=1"
         log "ReZygisk injection verified"
@@ -179,4 +215,4 @@ while [ "$count" -lt 25 ]; do
     count=$((count + 1))
 done
 
-rollback "ReZygisk did not verify within 25 seconds"
+rollback "ReZygisk did not verify within 30 seconds"
