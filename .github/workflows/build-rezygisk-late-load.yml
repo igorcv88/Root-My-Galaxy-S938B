@@ -23,10 +23,22 @@ jobs:
           java-version: '21'
           cache: gradle
       - uses: android-actions/setup-android@v3
+      - name: Update Android command-line tools
+        run: |
+          curl -fsSL \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+            -o /tmp/commandlinetools.zip
+          echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/commandlinetools.zip" | sha256sum -c -
+          rm -rf "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+          unzip -q /tmp/commandlinetools.zip -d /tmp/android-command-line-tools
+          mv /tmp/android-command-line-tools/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - name: Install Android SDK components
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager --channel=3 "platforms;android-37" "cmake;3.22.1"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          "$SDKMANAGER" --channel=3 "platforms;android-37" "cmake;3.22.1"
       - name: Build debug APK
         run: |
           chmod +x gradlew
