@@ -1,31 +1,42 @@
-name: Apply current-boot ReZygisk migration patch
+name: Clean two-stage patch scaffolding
 
 on:
   push:
     branches:
       - agent/rezygisk-late-load
     paths:
-      - .github/patches/apply-current-boot
+      - .github/cleanup-two-stage-scaffolding
 
 permissions:
   contents: write
 
 jobs:
-  apply:
+  clean:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/rezygisk-late-load
           fetch-depth: 0
-      - name: Apply current-boot migration
+      - name: Remove temporary patch and trigger files
         run: |
-          git apply --check .github/patches/two-stage-current-boot.patch
-          git apply .github/patches/two-stage-current-boot.patch
-      - name: Commit source change
+          git rm -f \
+            .github/cleanup-two-stage-scaffolding \
+            .github/current-boot-final-build-trigger \
+            .github/two-stage-build-trigger \
+            .github/patches/ReZygiskLateLoad.kt \
+            .github/patches/apply-current-boot \
+            .github/patches/apply-two-stage \
+            .github/patches/two-stage-current-boot.patch \
+            .github/patches/two-stage-install-activity.patch \
+            .github/patches/two-stage-install-view-model.patch \
+            .github/patches/two-stage-main-activity.patch \
+            .github/patches/two-stage-rezygisk-late-load.patch \
+            .github/patches/two-stage-strings.patch \
+            .github/workflows/apply-two-stage-rezygisk.yml
+      - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
-          git commit -m "Recognize two-stage mode on an active KernelSU boot"
+          git commit -m "Remove temporary two-stage patch scaffolding"
           git push origin HEAD:agent/rezygisk-late-load
