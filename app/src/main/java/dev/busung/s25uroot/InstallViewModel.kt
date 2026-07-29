@@ -152,11 +152,27 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 installKernelSu(payloads)
 
                 if (includeReZygisk) {
-                    setPhase(
-                        InstallPhase.PreparingReZygisk,
-                        app.getString(R.string.status_rezygisk_preparing),
+                    mutableState.value = mutableState.value.copy(
+                        phase = InstallPhase.PreparingReZygisk,
+                        message = app.getString(R.string.status_rezygisk_preparing),
                     )
-                    when (val result = ReZygiskLateLoad.scheduleAfterKernelSu(app)) {
+                    val result = ReZygiskLateLoad.scheduleAfterKernelSu(app) { stage ->
+                        when (stage) {
+                            ReZygiskActivationStage.Detected -> setAdvancedStage(
+                                R.string.status_rezygisk_detected,
+                                R.string.log_rezygisk_detected,
+                            )
+                            ReZygiskActivationStage.StartingMonitor -> setAdvancedStage(
+                                R.string.status_rezygisk_starting_monitor,
+                                R.string.log_rezygisk_starting_monitor,
+                            )
+                            ReZygiskActivationStage.SoftRebootScheduled -> setAdvancedStage(
+                                R.string.status_soft_reboot_scheduled,
+                                R.string.log_soft_reboot_scheduled,
+                            )
+                        }
+                    }
+                    when (result) {
                         ReZygiskActivationResult.NotInstalled -> error(
                             app.getString(R.string.error_rezygisk_not_installed),
                         )
@@ -164,13 +180,17 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                             app.getString(R.string.error_rezygisk_schedule, result.message),
                         )
                         is ReZygiskActivationResult.Scheduled -> {
-                            appendLog(app.getString(R.string.log_rezygisk_scheduled))
                             if (result.message.isNotBlank()) appendLog(result.message)
+                            finishHistory(InstallRunResult.Succeeded)
+                            waitForAdvancedHandoff()
                         }
                         is ReZygiskActivationResult.AlreadyScheduled -> {
                             appendLog(app.getString(R.string.log_rezygisk_already_scheduled))
+                            finishHistory(InstallRunResult.Succeeded)
+                            waitForAdvancedHandoff()
                         }
                     }
+                    return@launch
                 }
 
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
@@ -182,6 +202,19 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 finishHistory(InstallRunResult.Failed)
             }
         }
+    }
+
+    private fun setAdvancedStage(
+        @androidx.annotation.StringRes status: Int,
+        @androidx.annotation.StringRes log: Int,
+    ) {
+        mutableState.value = mutableState.value.copy(message = app.getString(status))
+        appendLog(app.getString(log))
+    }
+
+    private suspend fun waitForAdvancedHandoff(): Nothing {
+        delay(REZYGISK_HANDOFF_TIMEOUT_MILLIS)
+        error(app.getString(R.string.error_soft_reboot_not_started))
     }
 
     private suspend fun executeExploit(payload: File) {
@@ -386,6 +419,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     companion object {
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
+        private const val REZYGISK_HANDOFF_TIMEOUT_MILLIS = 45_000L
         private const val INSTALL_RECEIPT = "install_receipt"
         private const val RECEIPT_BOOT_TOKEN = "kernel_boot_id"
         private const val RECEIPT_VERIFIED = "verified"
