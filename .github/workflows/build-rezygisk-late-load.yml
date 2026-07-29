@@ -33,13 +33,14 @@ jobs:
       - name: Validate bridge shell
         run: |
           sh -n bridge/late-load.sh
+          sh -n bridge/service.sh
           sh -n bridge/bridge.sh
           sh -n bridge/uninstall.sh
       - name: Package bridge module
         run: |
-          chmod 755 bridge/late-load.sh bridge/bridge.sh bridge/uninstall.sh
+          chmod 755 bridge/late-load.sh bridge/service.sh bridge/bridge.sh bridge/uninstall.sh
           rm -f Root-My-Galaxy-ReZygisk-Bridge.zip
-          (cd bridge && zip -9 -r ../Root-My-Galaxy-ReZygisk-Bridge.zip module.prop late-load.sh bridge.sh uninstall.sh README.md)
+          (cd bridge && zip -9 -r ../Root-My-Galaxy-ReZygisk-Bridge.zip module.prop late-load.sh service.sh bridge.sh uninstall.sh README.md)
           unzip -t Root-My-Galaxy-ReZygisk-Bridge.zip
       - uses: actions/setup-java@v4
         with:
