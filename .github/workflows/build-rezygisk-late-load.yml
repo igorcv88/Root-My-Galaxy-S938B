@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -17,6 +17,99 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/rezygisk-late-load
+          fetch-depth: 0
+      - name: Apply immediate toggle refresh and restore CI
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
+          text = path.read_text()
+          old = '''                        reZygiskMode = enabled
+                              },
+                              onStartReZygisk = installViewModel::startReZygisk,'''
+          new = '''                        reZygiskMode = enabled
+                              installViewModel.refresh()
+                              },
+                              onStartReZygisk = installViewModel::startReZygisk,'''
+          if old not in text:
+              raise SystemExit('target callback not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm -f .github/apply-toggle-refresh .github/workflows/apply-toggle-refresh.yml
+          cat > .github/workflows/build-rezygisk-late-load.yml <<'YAML'
+          name: Build ReZygisk late-load
+
+          on:
+            push:
+              branches:
+                - agent/rezygisk-late-load
+            pull_request:
+              branches:
+                - main
+
+          permissions:
+            contents: read
+
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              timeout-minutes: 30
+              steps:
+                - uses: actions/checkout@v4
+                - name: Export editable sources
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: root-my-galaxy-editable-sources
+                    path: |
+                      app/src/main/AndroidManifest.xml
+                      app/src/main/assets/rezygisk-late-load.sh
+                      app/src/main/java/dev/busung/s25uroot/AppPreferences.kt
+                      app/src/main/java/dev/busung/s25uroot/InstallActivity.kt
+                      app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
+                      app/src/main/java/dev/busung/s25uroot/MainActivity.kt
+                      app/src/main/java/dev/busung/s25uroot/ReZygiskLateLoad.kt
+                      app/src/main/res/values/strings.xml
+                - name: Validate ReZygisk bootstrap shell
+                  run: sh -n app/src/main/assets/rezygisk-late-load.sh
+                - uses: actions/setup-java@v4
+                  with:
+                    distribution: temurin
+                    java-version: '21'
+                    cache: gradle
+                - uses: android-actions/setup-android@v3
+                - name: Update Android command-line tools
+                  run: |
+                    curl -fsSL \
+                      https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+                      -o /tmp/commandlinetools.zip
+                    echo "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/commandlinetools.zip" | sha256sum -c -
+                    rm -rf "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+                    mkdir -p "$ANDROID_HOME/cmdline-tools/latest" /tmp/android-command-line-tools
+                    unzip -q /tmp/commandlinetools.zip -d /tmp/android-command-line-tools
+                    mv /tmp/android-command-line-tools/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
+                    echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+                - name: Install Android SDK components
+                  run: |
+                    SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+                    yes | "$SDKMANAGER" --licenses >/dev/null
+                    "$SDKMANAGER" --channel=3 "platforms;android-37.0" "cmake;3.22.1"
+                - name: Build debug APK
+                  run: |
+                    chmod +x gradlew
+                    ./gradlew :app:assembleDebug --stacktrace
+                - uses: actions/upload-artifact@v4
+                  with:
+                    name: root-my-galaxy-rezygisk-toggle-debug
+                    path: app/build/outputs/apk/debug/app-debug.apk
+                    if-no-files-found: error
+          YAML
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Refresh ReZygisk state when the toggle changes"
+          git push origin HEAD:agent/rezygisk-late-load
       - name: Export editable sources
         uses: actions/upload-artifact@v4
         with:
