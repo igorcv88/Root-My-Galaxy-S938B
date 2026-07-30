@@ -37,13 +37,33 @@ Use only on devices you own or are explicitly authorized to test.
 3. Open KernelSU Manager and confirm root access.
 4. For KernelSU-only use, stop here.
 5. For Zygisk, install exactly one provider and the modules that depend on it.
-6. Use **Soft Reboot** from KernelSU Manager once.
+6. On a first installation in a clean kernel session, use **Soft Reboot** from
+   KernelSU Manager once.
 7. Wait for Android to return and verify the provider and dependent modules.
 
 Do not use the withdrawn automatic ReZygisk bridge and do not issue a targeted
 `ctl.restart zygote` command on the validated Samsung firmware. Hardware testing
 showed that path can enter Samsung's **Device Services Uninstalled** failure
 state and require a full reboot.
+
+## Provider updates require a full reboot
+
+Do not install a new Zygisk provider build over a live monitor and then press
+KernelSU Soft Reboot in the same kernel boot. A hardware test reproduced a
+`stopped(zygote crashed)` state when an old monitor/runtime survived while newer
+provider files were activated.
+
+After updating Zygisk Next or NeoZygisk PostBoot:
+
+1. install the update but do not Soft Reboot;
+2. perform a full device reboot;
+3. run the simple Root My Galaxy exploit again;
+4. use KernelSU Manager **Soft Reboot once**;
+5. verify the provider.
+
+After any `zygote crashed`, deleted-monitor, generation-mismatch, or
+`FULL_REBOOT_REQUIRED` report, do not attempt another Soft Reboot in that kernel
+session.
 
 ## Zygisk choices
 
@@ -53,7 +73,9 @@ Use only one Zygisk provider at a time.
 
 Zygisk Next can be used as the conventional provider. Install its KernelSU
 module, configure it normally, install dependent modules such as LSPosed or
-Zygisk Assistant, and then perform one KernelSU Manager **Soft Reboot**.
+Zygisk Assistant, and then perform one KernelSU Manager **Soft Reboot** from a
+clean post-exploit session. Provider updates follow the full-reboot lifecycle
+above.
 
 Zygisk Next is a separate project. Compatibility and closed-source release
 changes are controlled by its maintainers.
@@ -65,16 +87,16 @@ was hardware validated on `S938BXXSBCZG3`. It stages its runtime under
 `/dev/.neozygisk` to avoid Samsung DEFEX blocking a root-credential zygote from
 opening the persistent library under `/data/adb`.
 
-Validated sequence:
+Validated first-install sequence:
 
 1. complete the simple Root My Galaxy exploit;
 2. install or enable NeoZygisk PostBoot;
 3. install or enable Zygisk Assistant and/or LSPosed modules;
 4. use KernelSU Manager **Soft Reboot** once;
-5. use the NeoZygisk module Action button for read-only verification.
+5. use the NeoZygisk module Action button for live verification.
 
 A successful verification reports an injected `zygote64`, running `zygiskd64`,
-a single monitor attached to init, and the live mapping of
+a single same-generation monitor attached to init, and the live mapping of
 `/dev/.neozygisk/lib64/libzygisk.so`.
 
 Do not install NeoZygisk PostBoot beside Zygisk Next, ReZygisk, or another
