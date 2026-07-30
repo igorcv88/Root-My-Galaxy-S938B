@@ -3,6 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseVersionCode = providers.gradleProperty("releaseVersionCode")
+    .orNull
+    ?.toIntOrNull()
+    ?: 9
+val releaseVersionName = providers.gradleProperty("releaseVersionName")
+    .orNull
+    ?: "0.3.0"
+
+val releaseStoreFile = providers.environmentVariable("RELEASE_STORE_FILE").orNull
+val releaseStorePassword = providers.environmentVariable("KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("KEY_PASSWORD").orNull
+val releaseSigningAvailable = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "dev.busung.s25uroot"
     compileSdk = 37
@@ -11,8 +30,8 @@ android {
         applicationId = "dev.busung.s25uroot"
         minSdk = 33
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.2.3"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -23,6 +42,28 @@ android {
             cmake {
                 arguments += "-DANDROID_STL=none"
             }
+        }
+    }
+
+    signingConfigs {
+        if (releaseSigningAvailable) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
