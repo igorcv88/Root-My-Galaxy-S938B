@@ -1,5 +1,0 @@
-conclusion=success
-run_id=30557350437
-head_sha=dc354d74901068feade009601fcf466897da4227
-event=push
-url=https://github.com/igorcv88/Root-My-Galaxy-S938B/actions/runs/30557350437
