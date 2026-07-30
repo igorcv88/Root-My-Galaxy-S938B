@@ -1,19 +1,15 @@
 # Root My Galaxy ReZygisk Bridge
 
-KernelSU bridge used by Root My Galaxy. It remains inert unless the app creates a boot-specific arm token at `/data/local/tmp/rmg-rezygisk-arm`.
+KernelSU late-load bridge used by Root My Galaxy. It remains inert unless the app arms it for the current Android boot through `/data/local/tmp/rmg-rezygisk-arm`.
 
 ## Requirements
 
-- KernelSU late-load support
+- KernelSU late-load and `soft-reboot` support
 - ReZygisk installed and enabled as the only Zygisk provider
 - Root My Galaxy advanced ReZygisk toggle enabled for the current run
 
 ## Operation
 
-The app creates the token before invoking `ksud late-load`. Because bootstrap uid 0 can still be confined to the app SELinux domain, the module normalizes the token ownership, mode, and SELinux label from KernelSU's domain before reading it.
+The app creates a boot-specific arm token before invoking `ksud late-load`. The bridge validates the ReZygisk installation and requests the official `ksud soft-reboot` lifecycle. KernelSU stops Android, executes module `post-fs-data.sh` scripts, starts Android again, and runs service scripts. ReZygisk therefore starts its monitor before the replacement zygote, while this module's `service.sh` verifies the new zygote, `system_server`, daemon, KernelSU backend, and 64-bit injection.
 
-Both `late-load.sh` and `service.sh` use the same idempotent launcher. A lock directory and verified PID prevent duplicate workers. The service stage retries automatically if the late-load stage did not launch or could not keep the worker alive.
-
-The bridge then starts the ReZygisk ptrace monitor, performs a supervised zygote restart, verifies the daemon, zygote64 injection, and replacement `system_server`, and disables ReZygisk on rollback.
-
-Diagnostic files are written under `/data/local/tmp/rmg-rezygisk-*`. The app-owned status file records whether the launcher came from `late-load` or `service`.
+On verification failure, the bridge stops the monitor and disables ReZygisk without attempting an additional user-space restart. Diagnostic files are written under `/data/local/tmp/rmg-rezygisk-*`.
