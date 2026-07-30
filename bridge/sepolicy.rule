@@ -1,0 +1,5 @@
+# The original hardcoded ReZygisk path becomes a temporary symlink to a
+# byte-identical tmpfs copy outside /data so Samsung DEFEX does not reject
+# zygote's openat(). Permit only following that module-path symlink label.
+allow zygote adb_data_file lnk_file read
+allow zygote system_file lnk_file read
