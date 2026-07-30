@@ -1,6 +1,14 @@
 #!/system/bin/sh
 
 MODDIR=${0%/*}
+LIB_PATH=/data/adb/modules/rezygisk/lib64/libzygisk.so
+LIB_BACKUP=/data/adb/modules/rezygisk/lib64/.libzygisk.so.rmg-original
+if [ -L "$LIB_PATH" ] && [ ! -e "$LIB_PATH" ] && [ -e "$LIB_BACKUP" ]; then
+    /system/bin/rm -f "$LIB_PATH" 2>/dev/null || true
+    /system/bin/mv -f "$LIB_BACKUP" "$LIB_PATH" 2>/dev/null || true
+    /system/bin/chown 0:0 "$LIB_PATH" 2>/dev/null || true
+    /system/bin/chmod 0644 "$LIB_PATH" 2>/dev/null || true
+fi
 SOURCE=${1:-late-load}
 ARM_FILE=/data/local/tmp/rmg-rezygisk-arm
 PID_FILE=/data/local/tmp/rmg-rezygisk-bridge.pid
@@ -38,7 +46,7 @@ bridge_is_running() {
     [ -r "/proc/$old_pid/cmdline" ] || return 1
     cmdline=$(/system/bin/toybox tr '\000' ' ' < "/proc/$old_pid/cmdline" 2>/dev/null)
     case "$cmdline" in
-        *"$MODDIR/bridge-v07.sh"*) return 0 ;;
+        *"$MODDIR/bridge-v08.sh"*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -66,7 +74,7 @@ fi
 
 /system/bin/rm -f "$LOG_FILE" "$PID_FILE" "$DIAGNOSTIC"
 /system/bin/printf '%s\n' "LAUNCH_SOURCE=$SOURCE" >> "$status_path" 2>/dev/null || true
-/system/bin/toybox setsid /system/bin/sh "$MODDIR/bridge-v07.sh" "$status_path" >>"$LOG_FILE" 2>&1 </dev/null &
+/system/bin/toybox setsid /system/bin/sh "$MODDIR/bridge-v08.sh" "$status_path" >>"$LOG_FILE" 2>&1 </dev/null &
 bridge_pid=$!
 /system/bin/echo "$bridge_pid" > "$PID_FILE"
 /system/bin/sleep 1
