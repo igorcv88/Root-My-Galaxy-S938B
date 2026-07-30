@@ -1,0 +1,36 @@
+name: Cleanup merged branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cleanup-merged-branches.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete merged and withdrawn branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for branch in \
+            feature/neozygisk-postboot-guidance \
+            agent/rezygisk-late-load
+          do
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              git push origin --delete "$branch"
+            else
+              echo "$branch is already absent"
+            fi
+          done
