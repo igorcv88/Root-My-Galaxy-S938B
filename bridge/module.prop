@@ -1,6 +1,6 @@
 id=rmg_rezygisk_bridge
 name=Root My Galaxy ReZygisk Bridge
-version=v0.8.0
-versionCode=8
+version=v0.9.0
+versionCode=9
 author=igorcv88
-description=KernelSU soft-reboot bridge with Samsung DEFEX-safe tmpfs library staging, idempotent ReZygisk startup, strict zygote64 verification, and non-destructive failure handling.
+description=Targeted zygote-only ReZygisk activation with Samsung DEFEX-safe tmpfs staging, restart-loop suppression, strict zygote64 verification, and no KernelSU global soft reboot.
