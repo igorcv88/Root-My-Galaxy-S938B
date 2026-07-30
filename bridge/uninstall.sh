@@ -1,5 +1,19 @@
 #!/system/bin/sh
-rm -f /data/local/tmp/rmg-rezygisk-arm \
+
+MODDIR=${0%/*}
+REZYGISK_POST_FS=/data/adb/modules/rezygisk/post-fs-data.sh
+POST_FS_BACKUP=$MODDIR/.rezygisk-post-fs-data.backup
+
+if [ -r "$POST_FS_BACKUP" ] && [ -d /data/adb/modules/rezygisk ]; then
+    cp -f "$POST_FS_BACKUP" "$REZYGISK_POST_FS" 2>/dev/null || true
+    chown 0:0 "$REZYGISK_POST_FS" 2>/dev/null || true
+    chmod 0755 "$REZYGISK_POST_FS" 2>/dev/null || true
+    restorecon -F "$REZYGISK_POST_FS" 2>/dev/null || true
+fi
+
+rm -f "$POST_FS_BACKUP" \
+      "$MODDIR/.rezygisk-post-fs-data.patched" \
+      /data/local/tmp/rmg-rezygisk-arm \
       /data/local/tmp/rmg-rezygisk-bridge.pid \
       /data/local/tmp/rmg-rezygisk-bridge.log \
       /data/local/tmp/rmg-rezygisk-bridge-status \
