@@ -1,0 +1,5 @@
+conclusion=cancelled
+run_id=30556982230
+head_sha=98646f5766ccb7915565241bc568058ded1031d6
+event=push
+url=https://github.com/igorcv88/Root-My-Galaxy-S938B/actions/runs/30556982230
