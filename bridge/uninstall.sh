@@ -3,6 +3,17 @@
 MODDIR=${0%/*}
 REZYGISK_POST_FS=/data/adb/modules/rezygisk/post-fs-data.sh
 POST_FS_BACKUP=$MODDIR/.rezygisk-post-fs-data.backup
+LIB_PATH=/data/adb/modules/rezygisk/lib64/libzygisk.so
+LIB_BACKUP=/data/adb/modules/rezygisk/lib64/.libzygisk.so.rmg-original
+LIB_STAGE=/dev/.rmg-rezygisk-libzygisk.so
+
+if [ -e "$LIB_BACKUP" ] || [ -L "$LIB_BACKUP" ]; then
+    rm -f "$LIB_PATH" 2>/dev/null || true
+    mv -f "$LIB_BACKUP" "$LIB_PATH" 2>/dev/null || true
+    chown 0:0 "$LIB_PATH" 2>/dev/null || true
+    chmod 0644 "$LIB_PATH" 2>/dev/null || true
+fi
+rm -f "$LIB_STAGE" /dev/.rmg-rezygisk-libzygisk.so.tmp 2>/dev/null || true
 
 if [ -r "$POST_FS_BACKUP" ] && [ -d /data/adb/modules/rezygisk ]; then
     cp -f "$POST_FS_BACKUP" "$REZYGISK_POST_FS" 2>/dev/null || true
@@ -13,6 +24,7 @@ fi
 
 rm -f "$POST_FS_BACKUP" \
       "$MODDIR/.rezygisk-post-fs-data.patched" \
+      "$MODDIR/.bridge-v08-runtime.sh" \
       /data/local/tmp/rmg-rezygisk-arm \
       /data/local/tmp/rmg-rezygisk-bridge.pid \
       /data/local/tmp/rmg-rezygisk-bridge.log \
