@@ -38,7 +38,7 @@ bridge_is_running() {
     [ -r "/proc/$old_pid/cmdline" ] || return 1
     cmdline=$(/system/bin/toybox tr '\000' ' ' < "/proc/$old_pid/cmdline" 2>/dev/null)
     case "$cmdline" in
-        *"$MODDIR/bridge.sh"*) return 0 ;;
+        *"$MODDIR/bridge-v07.sh"*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -66,7 +66,7 @@ fi
 
 /system/bin/rm -f "$LOG_FILE" "$PID_FILE" "$DIAGNOSTIC"
 /system/bin/printf '%s\n' "LAUNCH_SOURCE=$SOURCE" >> "$status_path" 2>/dev/null || true
-/system/bin/toybox setsid /system/bin/sh "$MODDIR/bridge.sh" "$status_path" >>"$LOG_FILE" 2>&1 </dev/null &
+/system/bin/toybox setsid /system/bin/sh "$MODDIR/bridge-v07.sh" "$status_path" >>"$LOG_FILE" 2>&1 </dev/null &
 bridge_pid=$!
 /system/bin/echo "$bridge_pid" > "$PID_FILE"
 /system/bin/sleep 1

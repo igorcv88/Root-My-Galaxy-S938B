@@ -20,8 +20,14 @@ rm -f "$POST_FS_BACKUP" \
       /data/local/tmp/rmg-rezygisk-result \
       /data/local/tmp/rmg-rezygisk-monitor.log \
       /data/local/tmp/rmg-rezygisk-monitor.pid \
+      /data/local/tmp/rmg-rezygisk-logcat.log \
+      /data/local/tmp/rmg-rezygisk-logcat.pid \
+      /data/local/tmp/rmg-rezygisk-post-fs.log \
+      /data/local/tmp/rmg-rezygisk-post-fs-active \
+      /data/local/tmp/rmg-rezygisk-ksu-logcat.log \
+      /data/local/tmp/rmg-rezygisk-ksu-logcat.old.log \
       /data/local/tmp/rmg-rezygisk-soft-reboot-pending \
       /data/local/tmp/rmg-rezygisk-soft-reboot.log \
       /data/local/tmp/rmg-rezygisk-verify.pid \
       /data/local/tmp/rmg-rezygisk-verify.log
-rm -rf /data/local/tmp/rmg-rezygisk-bridge.lock
+rm -rf /data/local/tmp/rmg-rezygisk-bridge.lock /data/local/tmp/rmg-rezygisk-post-fs.lock
