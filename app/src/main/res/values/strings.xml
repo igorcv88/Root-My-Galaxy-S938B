@@ -68,7 +68,7 @@
     <string name="phase_downloading">Downloading commit-pinned payloads from GitHub</string>
     <string name="phase_exploiting">This may take 10 minutes or longer. Your device may become hot or stop responding.</string>
     <string name="phase_loading_ksu">Loading KernelSU with the acquired bootstrap root</string>
-    <string name="phase_installed">KernelSU is active. For Zygisk, install or enable NeoZygisk PostBoot and dependent modules, then use KernelSU Manager Soft Reboot once. Do not use the withdrawn ReZygisk bridge or a targeted zygote restart.</string>
+    <string name="phase_installed">KernelSU is active. For Zygisk, install or enable exactly one provider—Zygisk Next or NeoZygisk PostBoot—plus its dependent modules, then use KernelSU Manager Soft Reboot once. Do not use the withdrawn ReZygisk bridge or a targeted zygote restart.</string>
     <string name="phase_failed">Review the failure point in the log below</string>
 
     <string name="status_ksu_active">KernelSU active</string>
