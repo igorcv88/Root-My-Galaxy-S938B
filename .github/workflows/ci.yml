@@ -1,0 +1,43 @@
+name: Verify application source
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verify maintained payload endpoint
+        run: |
+          set -eu
+          FILE=app/src/main/java/dev/busung/s25uroot/PayloadRepository.kt
+          grep -F 'private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"' "$FILE"
+          if grep -F 'BuSung-dev/Root-My-Galaxy-Payloads' "$FILE"; then
+            echo "Application still references the upstream mutable payload feed" >&2
+            exit 1
+          fi
+
+      - name: Compile and test without packaging an APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon \
+            :app:compileDebugKotlin \
+            :app:externalNativeBuildDebug \
+            :app:testDebugUnitTest \
+            :app:lintDebug
