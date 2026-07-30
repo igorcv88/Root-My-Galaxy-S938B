@@ -30,7 +30,7 @@ if [ -r "$PENDING_FILE" ]; then
         esac
 
         if ! verifier_is_running; then
-            /system/bin/rm -f "$VERIFY_PID"
+            /system/bin/rm -f "$VERIFY_PID" "$VERIFY_LOG"
             /system/bin/toybox setsid /system/bin/sh "$MODDIR/bridge.sh" "$status_path" verify >>"$VERIFY_LOG" 2>&1 </dev/null &
             verify_pid=$!
             /system/bin/echo "$verify_pid" > "$VERIFY_PID"

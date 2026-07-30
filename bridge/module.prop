@@ -1,6 +1,6 @@
 id=rmg_rezygisk_bridge
 name=Root My Galaxy ReZygisk Bridge
-version=v0.4.0
-versionCode=4
+version=v0.5.0
+versionCode=5
 author=igorcv88
-description=KernelSU late-load bridge using the official ksud soft-reboot lifecycle, ReZygisk post-fs-data startup, post-service verification, and conservative rollback.
+description=KernelSU soft-reboot bridge with shell-only PID parsing, daemon-based ReZygisk verification, stale-runtime cleanup, detailed diagnostics, and non-destructive inconclusive handling.

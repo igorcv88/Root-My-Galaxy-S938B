@@ -10,6 +10,8 @@ KernelSU late-load bridge used by Root My Galaxy. It remains inert unless the ap
 
 ## Operation
 
-The app creates a boot-specific arm token before invoking `ksud late-load`. The bridge validates the ReZygisk installation and requests the official `ksud soft-reboot` lifecycle. KernelSU stops Android, executes module `post-fs-data.sh` scripts, starts Android again, and runs service scripts. ReZygisk therefore starts its monitor before the replacement zygote, while this module's `service.sh` verifies the new zygote, `system_server`, daemon, KernelSU backend, and 64-bit injection.
+The app creates a boot-specific arm token before invoking `ksud late-load`. The bridge validates the ReZygisk installation, removes only a demonstrably stale ReZygisk runtime, and requests the official `ksud soft-reboot` lifecycle. KernelSU stops Android, executes module `post-fs-data.sh` scripts, starts Android again, and runs service scripts.
 
-On verification failure, the bridge stops the monitor and disables ReZygisk without attempting an additional user-space restart. Diagnostic files are written under `/data/local/tmp/rmg-rezygisk-*`.
+The post-service verifier uses shell-only PID parsing and verifies the replacement zygote and `system_server`, the ReZygisk monitor socket, the live `zygiskd` process, the KernelSU backend, and Android boot completion. `module.prop` status is recorded for diagnostics but is not the sole source of truth.
+
+A verification timeout is non-destructive: the bridge records an inconclusive result and preserves the ReZygisk runtime for inspection. It does not disable ReZygisk, terminate the monitor, or delete `state.json` merely because the verifier could not reach a conclusion.

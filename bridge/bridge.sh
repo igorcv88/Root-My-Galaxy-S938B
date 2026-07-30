@@ -12,6 +12,11 @@ MONITOR_PID=/data/local/tmp/rmg-rezygisk-monitor.pid
 DIAGNOSTIC=/data/local/tmp/rmg-rezygisk-bridge-status
 PENDING_FILE=/data/local/tmp/rmg-rezygisk-soft-reboot-pending
 SOFT_REBOOT_LOG=/data/local/tmp/rmg-rezygisk-soft-reboot.log
+VERIFY_PID=/data/local/tmp/rmg-rezygisk-verify.pid
+
+HEALTH_REASON=
+HEALTH_DAEMON_PID=
+HEALTH_INFO=
 
 status() {
     value=$1
@@ -45,16 +50,129 @@ find_ksud() {
     return 1
 }
 
-stop_monitor() {
+first_pid_of() {
+    for process_name in "$@"; do
+        process_pids=$(/system/bin/pidof "$process_name" 2>/dev/null || true)
+        for process_pid in $process_pids; do
+            case "$process_pid" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            /system/bin/printf '%s\n' "$process_pid"
+            return 0
+        done
+    done
+    return 1
+}
+
+parse_daemon_pid() {
+    DAEMON_PID=
+    while IFS= read -r info_line; do
+        case "$info_line" in
+            'Daemon process PID: '*)
+                DAEMON_PID=${info_line#Daemon process PID: }
+                break
+                ;;
+        esac
+    done <<EOF_INFO
+$1
+EOF_INFO
+
+    case "$DAEMON_PID" in
+        ''|-1|*[!0-9]*) return 1 ;;
+    esac
+    /system/bin/printf '%s\n' "$DAEMON_PID"
+}
+
+process_is_rezygisk_daemon() {
+    daemon_pid=$1
+    [ -r "/proc/$daemon_pid/comm" ] || return 1
+    daemon_comm=$(/system/bin/cat "/proc/$daemon_pid/comm" 2>/dev/null || true)
+    case "$daemon_comm" in
+        zygiskd64|zygiskd32|zygiskd) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+probe_health() {
+    HEALTH_REASON=
+    HEALTH_DAEMON_PID=
+    HEALTH_INFO=
+
     tracer=$(find_tracer 2>/dev/null || true)
-    if [ -n "$tracer" ] && [ -S "$WORK_DIR/init_monitor" ]; then
-        TMP_PATH="$WORK_DIR" "$tracer" ctl exit >/dev/null 2>&1 || true
-        /system/bin/sleep 1
+    if [ -z "$tracer" ]; then
+        HEALTH_REASON="ReZygisk tracer is missing"
+        return 1
     fi
-    if [ -r "$MONITOR_PID" ]; then
-        monitor_pid=$(/system/bin/cat "$MONITOR_PID" 2>/dev/null)
-        [ -n "$monitor_pid" ] && /system/bin/toybox kill "$monitor_pid" 2>/dev/null || true
+    if [ ! -S "$WORK_DIR/init_monitor" ]; then
+        HEALTH_REASON="ReZygisk monitor socket is unavailable"
+        return 1
     fi
+
+    HEALTH_INFO=$(TMP_PATH="$WORK_DIR" "$tracer" info 2>/dev/null || true)
+    case "$HEALTH_INFO" in
+        *'Root implementation: KernelSU'*) ;;
+        *)
+            HEALTH_REASON="ReZygisk daemon did not report KernelSU"
+            return 1
+            ;;
+    esac
+
+    HEALTH_DAEMON_PID=$(parse_daemon_pid "$HEALTH_INFO" 2>/dev/null || true)
+    if [ -z "$HEALTH_DAEMON_PID" ]; then
+        HEALTH_REASON="ReZygisk daemon PID is unavailable"
+        return 1
+    fi
+    if ! /system/bin/toybox kill -0 "$HEALTH_DAEMON_PID" 2>/dev/null; then
+        HEALTH_REASON="ReZygisk daemon is not alive"
+        return 1
+    fi
+    if ! process_is_rezygisk_daemon "$HEALTH_DAEMON_PID"; then
+        HEALTH_REASON="ReZygisk daemon PID belongs to another process"
+        return 1
+    fi
+    if ! first_pid_of zygote64 zygote >/dev/null 2>&1; then
+        HEALTH_REASON="zygote is unavailable"
+        return 1
+    fi
+    if ! first_pid_of system_server >/dev/null 2>&1; then
+        HEALTH_REASON="system_server is unavailable"
+        return 1
+    fi
+    if [ "$(/system/bin/getprop sys.boot_completed 2>/dev/null)" != "1" ]; then
+        HEALTH_REASON="Android boot is not complete"
+        return 1
+    fi
+
+    return 0
+}
+
+stop_stale_runtime() {
+    tracer=$(find_tracer 2>/dev/null || true)
+    daemon_pid=
+    if [ -n "$tracer" ]; then
+        info=$(TMP_PATH="$WORK_DIR" "$tracer" info 2>/dev/null || true)
+        daemon_pid=$(parse_daemon_pid "$info" 2>/dev/null || true)
+        if [ -S "$WORK_DIR/init_monitor" ]; then
+            TMP_PATH="$WORK_DIR" "$tracer" ctl exit >/dev/null 2>&1 || true
+            /system/bin/sleep 1
+        fi
+    fi
+
+    if [ -n "$daemon_pid" ] && process_is_rezygisk_daemon "$daemon_pid"; then
+        status "STALE_DAEMON_PID=$daemon_pid"
+        /system/bin/toybox kill -TERM "$daemon_pid" 2>/dev/null || true
+        wait_count=0
+        while [ "$wait_count" -lt 3 ] && /system/bin/toybox kill -0 "$daemon_pid" 2>/dev/null; do
+            /system/bin/sleep 1
+            wait_count=$((wait_count + 1))
+        done
+        if /system/bin/toybox kill -0 "$daemon_pid" 2>/dev/null && process_is_rezygisk_daemon "$daemon_pid"; then
+            /system/bin/toybox kill -KILL "$daemon_pid" 2>/dev/null || true
+        fi
+    fi
+
+    /system/bin/rm -f "$MONITOR_PID"
+    /system/bin/rm -rf "$WORK_DIR"
 }
 
 check_conflicts() {
@@ -73,23 +191,25 @@ check_conflicts() {
     done
 }
 
-healthy() {
-    tracer=$(find_tracer 2>/dev/null || true)
-    [ -n "$tracer" ] || return 1
-    [ -S "$WORK_DIR/init_monitor" ] || return 1
-    [ -s "$MODULE_DIR/module.prop" ] || return 1
-    /system/bin/grep -q 'Monitor: ✅' "$MODULE_DIR/module.prop" || return 1
-    /system/bin/grep -q 'ReZygisk 64-bit: ✅' "$MODULE_DIR/module.prop" || return 1
+record_health_snapshot() {
+    current_zygote=$(first_pid_of zygote64 zygote 2>/dev/null || true)
+    current_system_server=$(first_pid_of system_server 2>/dev/null || true)
+    [ -n "$current_zygote" ] && status "ZYGOTE_CURRENT_PID=$current_zygote"
+    [ -n "$current_system_server" ] && status "SYSTEM_SERVER_CURRENT_PID=$current_system_server"
+    [ -n "$HEALTH_DAEMON_PID" ] && status "REZYGISK_DAEMON_PID=$HEALTH_DAEMON_PID"
 
-    info=$(TMP_PATH="$WORK_DIR" "$tracer" info 2>/dev/null || true)
-    /system/bin/printf '%s\n' "$info" | /system/bin/grep -q 'Root implementation: KernelSU' || return 1
-    daemon_pid=$(/system/bin/printf '%s\n' "$info" | /system/bin/toybox sed -n 's/^Daemon process PID: //p' | /system/bin/toybox head -n 1)
-    [ -n "$daemon_pid" ] || return 1
-    [ "$daemon_pid" != "-1" ] || return 1
-    /system/bin/toybox kill -0 "$daemon_pid" 2>/dev/null || return 1
-    /system/bin/pidof system_server >/dev/null 2>&1 || return 1
-    [ "$(/system/bin/getprop sys.boot_completed 2>/dev/null)" = "1" ] || return 1
-    return 0
+    if [ -s "$MODULE_DIR/module.prop" ]; then
+        if /system/bin/grep -q 'Monitor: ✅' "$MODULE_DIR/module.prop"; then
+            status "MODULE_PROP_MONITOR_OK=1"
+        else
+            status "MODULE_PROP_MONITOR_OK=0"
+        fi
+        if /system/bin/grep -q 'ReZygisk 64-bit: ✅' "$MODULE_DIR/module.prop"; then
+            status "MODULE_PROP_REZYGISK64_OK=1"
+        else
+            status "MODULE_PROP_REZYGISK64_OK=0"
+        fi
+    fi
 }
 
 fail_pre() {
@@ -101,15 +221,14 @@ fail_pre() {
     exit 1
 }
 
-rollback_verify() {
+verification_inconclusive() {
     reason=$1
-    log "Rollback: $reason"
-    /system/bin/touch "$MODULE_DIR/disable" 2>/dev/null || true
-    stop_monitor
-    /system/bin/rm -f "$WORK_DIR/state.json" "$PENDING_FILE"
-    /system/bin/echo "rollback: $reason" > "$RESULT_FILE"
-    status "ROLLBACK=$reason"
+    record_health_snapshot
+    /system/bin/rm -f "$PENDING_FILE" "$VERIFY_PID"
+    /system/bin/echo "inconclusive: $reason" > "$RESULT_FILE"
+    status "INCONCLUSIVE=$reason"
     status "FAILURE=$reason"
+    log "Verification inconclusive; preserving ReZygisk runtime: $reason"
     exit 1
 }
 
@@ -126,11 +245,26 @@ activate() {
     status "BRIDGE_DETECTED=1"
     check_conflicts
 
+    if probe_health; then
+        status "ALREADY_ACTIVE=1"
+        record_health_snapshot
+        /system/bin/rm -f "$PENDING_FILE"
+        /system/bin/echo success > "$RESULT_FILE"
+        status "SUCCESS=1"
+        log "ReZygisk was already healthy; no soft reboot requested"
+        exit 0
+    fi
+
+    status "PREFLIGHT_HEALTH=$HEALTH_REASON"
+    stop_stale_runtime
+
     ksud=$(find_ksud) || fail_pre "KernelSU userspace binary with soft-reboot support was not found"
     boot_id=$(/system/bin/cat /proc/sys/kernel/random/boot_id 2>/dev/null)
-    old_zygote=$(/system/bin/pidof zygote64 2>/dev/null | /system/bin/toybox awk '{print $1}')
-    [ -n "$old_zygote" ] || old_zygote=$(/system/bin/pidof zygote 2>/dev/null | /system/bin/toybox awk '{print $1}')
-    old_system_server=$(/system/bin/pidof system_server 2>/dev/null | /system/bin/toybox awk '{print $1}')
+    [ -n "$boot_id" ] || fail_pre "unable to read current boot ID"
+    old_zygote=$(first_pid_of zygote64 zygote 2>/dev/null || true)
+    old_system_server=$(first_pid_of system_server 2>/dev/null || true)
+    [ -n "$old_zygote" ] || fail_pre "unable to identify current zygote"
+    [ -n "$old_system_server" ] || fail_pre "unable to identify current system_server"
 
     /system/bin/rm -f "$RESULT_FILE" "$SOFT_REBOOT_LOG"
     /system/bin/printf '%s\n%s\n%s\n%s\n' \
@@ -139,8 +273,8 @@ activate() {
     /system/bin/chown 0:0 "$PENDING_FILE" 2>/dev/null || true
     /system/bin/chmod 0600 "$PENDING_FILE" 2>/dev/null || true
 
-    [ -n "$old_zygote" ] && status "ZYGOTE_OLD_PID=$old_zygote"
-    [ -n "$old_system_server" ] && status "SYSTEM_SERVER_OLD_PID=$old_system_server"
+    status "ZYGOTE_OLD_PID=$old_zygote"
+    status "SYSTEM_SERVER_OLD_PID=$old_system_server"
     status "MONITOR_STARTING=1"
     status "SOFT_REBOOT_SCHEDULED=1"
     status "KSU_SOFT_REBOOT_REQUESTED=1"
@@ -159,39 +293,49 @@ verify() {
     old_zygote=$(/system/bin/toybox sed -n '3p' "$PENDING_FILE" 2>/dev/null)
     old_system_server=$(/system/bin/toybox sed -n '4p' "$PENDING_FILE" 2>/dev/null)
     current_boot=$(/system/bin/cat /proc/sys/kernel/random/boot_id 2>/dev/null)
-    [ -n "$expected_boot" ] || rollback_verify "soft-reboot verification marker is incomplete"
-    [ "$expected_boot" = "$current_boot" ] || rollback_verify "soft-reboot marker belongs to another boot"
+    [ -n "$expected_boot" ] || verification_inconclusive "soft-reboot verification marker is incomplete"
+    [ "$expected_boot" = "$current_boot" ] || verification_inconclusive "soft-reboot marker belongs to another boot"
+    [ -n "$old_zygote" ] || verification_inconclusive "old zygote PID is unavailable"
+    [ -n "$old_system_server" ] || verification_inconclusive "old system_server PID is unavailable"
 
     status "POST_SOFT_REBOOT_VERIFYING=1"
     count=0
-    while [ "$count" -lt 90 ]; do
-        current_zygote=$(/system/bin/pidof zygote64 2>/dev/null | /system/bin/toybox awk '{print $1}')
-        [ -n "$current_zygote" ] || current_zygote=$(/system/bin/pidof zygote 2>/dev/null | /system/bin/toybox awk '{print $1}')
-        current_system_server=$(/system/bin/pidof system_server 2>/dev/null | /system/bin/toybox awk '{print $1}')
+    last_reason=
+    while [ "$count" -lt 120 ]; do
+        current_zygote=$(first_pid_of zygote64 zygote 2>/dev/null || true)
+        current_system_server=$(first_pid_of system_server 2>/dev/null || true)
 
-        generation_changed=1
-        if [ -n "$old_zygote" ] && [ "$current_zygote" = "$old_zygote" ]; then
-            generation_changed=0
-        fi
-        if [ -n "$old_system_server" ] && [ "$current_system_server" = "$old_system_server" ]; then
-            generation_changed=0
-        fi
-
-        if [ "$generation_changed" = "1" ] && healthy; then
-            [ -n "$current_zygote" ] && status "ZYGOTE_NEW_PID=$current_zygote"
-            [ -n "$current_system_server" ] && status "SYSTEM_SERVER_NEW_PID=$current_system_server"
-            /system/bin/rm -f "$PENDING_FILE"
+        if [ -z "$current_zygote" ]; then
+            reason="waiting for zygote"
+        elif [ -z "$current_system_server" ]; then
+            reason="waiting for system_server"
+        elif [ "$current_zygote" = "$old_zygote" ]; then
+            reason="waiting for replacement zygote"
+        elif [ "$current_system_server" = "$old_system_server" ]; then
+            reason="waiting for replacement system_server"
+        elif probe_health; then
+            status "ZYGOTE_NEW_PID=$current_zygote"
+            status "SYSTEM_SERVER_NEW_PID=$current_system_server"
+            record_health_snapshot
+            /system/bin/rm -f "$PENDING_FILE" "$VERIFY_PID"
             /system/bin/echo success > "$RESULT_FILE"
             status "SUCCESS=1"
             log "ReZygisk injection verified after KernelSU soft reboot"
             exit 0
+        else
+            reason=$HEALTH_REASON
         fi
 
+        if [ "$reason" != "$last_reason" ]; then
+            log "Verification waiting: $reason"
+            last_reason=$reason
+        fi
         /system/bin/sleep 1
         count=$((count + 1))
     done
 
-    rollback_verify "ReZygisk did not verify after KernelSU soft reboot"
+    [ -n "$last_reason" ] || last_reason="ReZygisk health did not become conclusive"
+    verification_inconclusive "$last_reason"
 }
 
 case "$MODE" in
