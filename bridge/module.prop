@@ -1,6 +1,6 @@
 id=rmg_rezygisk_bridge
 name=Root My Galaxy ReZygisk Bridge
-version=v0.7.0
-versionCode=7
+version=v0.8.0
+versionCode=8
 author=igorcv88
-description=KernelSU soft-reboot bridge with boot-scoped idempotent ReZygisk startup, filtered monitor/tracer topology, persistent injector logging, strict zygote64 verification, and non-destructive failure handling.
+description=KernelSU soft-reboot bridge with Samsung DEFEX-safe tmpfs library staging, idempotent ReZygisk startup, strict zygote64 verification, and non-destructive failure handling.
