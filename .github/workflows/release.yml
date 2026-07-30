@@ -17,10 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PAYLOAD_REPOSITORY: igorcv88/Root-My-Galaxy-Payloads-S938B
-      RELEASE_STORE_FILE: ${{ github.workspace }}/release-keystore.jks
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
     steps:
       - name: Checkout source
@@ -37,23 +33,30 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Validate signing secrets
+      - name: Decode and validate release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          set -eu
-          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
               echo "Missing required Actions secret: $name" >&2
               exit 1
             fi
           done
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RELEASE_STORE_FILE"
-          test -s "$RELEASE_STORE_FILE"
+
+          printf '%s' "$KEYSTORE_BASE64" \
+            | tr -d '\r\n ' \
+            | base64 --decode \
+            > release.keystore
+
+          test -s release.keystore
           keytool -list \
-            -keystore "$RELEASE_STORE_FILE" \
-            -storepass "$KEYSTORE_PASSWORD" \
+            -keystore release.keystore \
+            -storepass "$STORE_PASSWORD" \
             -alias "$KEY_ALIAS" >/dev/null
 
       - name: Validate pinned payload feed
@@ -125,12 +128,11 @@ jobs:
           set -eu
           VERSION_CODE=$((10000 + GITHUB_RUN_NUMBER))
           VERSION_NAME="0.3.${GITHUB_RUN_NUMBER}"
-          TAG="v${VERSION_NAME}"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v${VERSION_NAME}" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK
+      - name: Build unsigned release APK
         run: |
           set -eu
           chmod +x gradlew
@@ -138,23 +140,62 @@ jobs:
             -PreleaseVersionCode="$VERSION_CODE" \
             -PreleaseVersionName="$VERSION_NAME"
 
-      - name: Verify signature and prepare release asset
+      - name: Align, sign, and verify APK
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          set -eu
-          APK=$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
-          test -n "$APK"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          test -x "$APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          set -euo pipefail
+          for name in STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              echo "Missing required Actions secret: $name" >&2
+              exit 1
+            fi
+          done
 
-          ASSET="Root-My-Galaxy-${VERSION_NAME}.apk"
-          cp "$APK" "$ASSET"
-          sha256sum "$ASSET" | tee "${ASSET}.sha256"
-          echo "RELEASE_ASSET=$ASSET" >> "$GITHUB_ENV"
+          BUILD_TOOLS_DIR="$(
+            find "$ANDROID_HOME/build-tools" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              | sort -V \
+              | tail -n 1
+          )"
+          UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          ALIGNED_APK=app/build/outputs/apk/release/app-release-aligned.apk
+          RELEASE_ASSET="Root-My-Galaxy-${VERSION_NAME}.apk"
+
+          test -f "$UNSIGNED_APK"
+          test -x "$BUILD_TOOLS_DIR/zipalign"
+          test -x "$BUILD_TOOLS_DIR/apksigner"
+
+          "$BUILD_TOOLS_DIR/zipalign" \
+            -P 16 \
+            -f \
+            -v \
+            4 \
+            "$UNSIGNED_APK" \
+            "$ALIGNED_APK"
+
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:STORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out "$RELEASE_ASSET" \
+            "$ALIGNED_APK"
+
+          "$BUILD_TOOLS_DIR/zipalign" -c -P 16 -v 4 "$RELEASE_ASSET"
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs "$RELEASE_ASSET"
+          sha256sum "$RELEASE_ASSET" | tee "${RELEASE_ASSET}.sha256"
+          echo "RELEASE_ASSET=$RELEASE_ASSET" >> "$GITHUB_ENV"
 
       - name: Publish APK directly to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -eu
           cat > release-notes.md <<EOF
@@ -167,12 +208,15 @@ jobs:
           - Pinned payload commit validated during build: ${PAYLOAD_COMMIT}
           - Signing alias: ${KEY_ALIAS}
 
-          The APK is published directly as a release asset; no GitHub Actions artifact wrapper is used.
+          The APK and SHA-256 are published directly as release assets. No GitHub Actions artifact wrapper is used.
           EOF
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" "${RELEASE_ASSET}.sha256" --clobber
-            gh release edit "$RELEASE_TAG" --title "Root My Galaxy ${VERSION_NAME}" --notes-file release-notes.md --latest
+            gh release edit "$RELEASE_TAG" \
+              --title "Root My Galaxy ${VERSION_NAME}" \
+              --notes-file release-notes.md \
+              --latest
           else
             gh release create "$RELEASE_TAG" \
               "$RELEASE_ASSET" \
