@@ -2,7 +2,7 @@ name: Verify application source
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -39,7 +39,25 @@ jobs:
             exit 1
           fi
 
-      - name: Compile and test without packaging an APK
+      - name: Verify updater endpoint
+        run: |
+          set -eu
+          FILE=app/src/main/java/dev/busung/s25uroot/AppUpdater.kt
+          grep -F 'https://github.com/igorcv88/Root-My-Galaxy-S938B' "$FILE"
+          if grep -F 'https://github.com/BuSung-dev/Root-My-Galaxy' "$FILE"; then
+            echo "Updater still references upstream releases" >&2
+            exit 1
+          fi
+
+      - name: Reject legacy Zygisk integration
+        run: |
+          set -eu
+          if grep -R -n -E 'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' README.md app/src/main .github/workflows; then
+            echo "Legacy provider-specific or automatic zygote/soft-reboot integration found" >&2
+            exit 1
+          fi
+
+      - name: Compile, unit test and lint
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon \
