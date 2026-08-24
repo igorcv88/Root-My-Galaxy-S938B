@@ -145,6 +145,9 @@ jobs:
             :app:externalNativeBuildDebug \
             :app:testDebugUnitTest
 
+      - name: Build instrumentation test APK
+        run: ./gradlew --no-daemon :app:assembleDebugAndroidTest
+
       - name: Build unsigned release APK
         run: ./gradlew --no-daemon :app:assembleRelease
 

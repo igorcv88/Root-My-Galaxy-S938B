@@ -60,11 +60,11 @@ Standalone execution remains available as the fallback path.
 
 ## Payload integrity
 
-The APK resolves the current commit of `igorcv88/Root-My-Galaxy-Payloads-S938B`, downloads the support manifest from that immutable commit and rewrites payload URLs to the same pinned commit before use. The maintained feed is validated separately from upstream so the installed APK does not silently follow mutable third-party payload URLs.
+The APK resolves the current commit of `igorcv88/Root-My-Galaxy-Payloads-S938B`, downloads `targets-v3.json` from that immutable commit and rewrites payload URLs to the same pinned commit before use. Each downloaded artifact must match both the declared byte size and SHA-256 before the temporary file is promoted for execution. The maintained feed is validated separately from upstream so the installed APK does not silently follow mutable third-party payload URLs.
 
 ## Signed releases
 
-Stable APKs are built, aligned, signed and published by the repository release workflow. Release builds use monotonically increasing version codes so a later build can update an earlier stable installation when the signing certificate is unchanged.
+Stable APKs are built, aligned, signed and published by the repository release workflow. Release builds use monotonically increasing version codes so a later build can update an earlier stable installation when the signing certificate is unchanged. The release workflow independently validates the same controlled v3 manifest, exact CZG3 identity, artifact sizes and SHA-256 values before signing.
 
 ## Local development build
 
