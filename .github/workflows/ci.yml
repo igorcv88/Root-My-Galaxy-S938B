@@ -52,7 +52,7 @@ jobs:
       - name: Reject legacy Zygisk integration
         run: |
           set -eu
-          if grep -R -n -E 'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' README.md app/src/main .github/workflows; then
+          if grep -R -n -E 'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' README.md app/src/main; then
             echo "Legacy provider-specific or automatic zygote/soft-reboot integration found" >&2
             exit 1
           fi
