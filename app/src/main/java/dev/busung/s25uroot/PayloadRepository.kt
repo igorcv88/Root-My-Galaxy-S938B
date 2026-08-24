@@ -7,6 +7,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import org.json.JSONObject
 
 data class VerifiedPayloads(
@@ -18,15 +19,17 @@ data class VerifiedPayloads(
 class PayloadRepository(private val context: Context) {
     fun loadTargets(): List<TargetProfile> {
         val commit = resolveMainCommit()
-        val manifestBytes = downloadBytes(rawUrl(commit, "support/targets-v2.json"), MAX_MANIFEST_BYTES)
-        return SupportManifest.parse(manifestBytes).targets.map { profile -> profile.copy(
-            exploit = profile.exploit.copy(url = pinArtifactUrl(profile.exploit.url, commit)),
-            kernelSu = profile.kernelSu.copy(
-                artifact = profile.kernelSu.artifact.copy(
-                    url = pinArtifactUrl(profile.kernelSu.artifact.url, commit),
+        val manifestBytes = downloadBytes(rawUrl(commit, "support/targets-v3.json"), MAX_MANIFEST_BYTES)
+        return SupportManifest.parse(manifestBytes).targets.map { profile ->
+            profile.copy(
+                exploit = profile.exploit.copy(url = pinArtifactUrl(profile.exploit.url, commit)),
+                kernelSu = profile.kernelSu.copy(
+                    artifact = profile.kernelSu.artifact.copy(
+                        url = pinArtifactUrl(profile.kernelSu.artifact.url, commit),
+                    ),
                 ),
-            ),
-        ) }
+            )
+        }
     }
 
     fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile = loadTargets()
@@ -64,31 +67,44 @@ class PayloadRepository(private val context: Context) {
     ): File {
         onProgress(context.getString(R.string.repo_downloading, label))
         val temporary = File(destination.parentFile, "${destination.name}.part")
+        if (temporary.exists()) temporary.delete()
         val connection = open(artifact.url)
-        require(connection.contentLengthLong == -1L || connection.contentLengthLong == artifact.size) {
-            context.getString(R.string.repo_size_mismatch, label)
-        }
-        var total = 0L
-        connection.inputStream.use { input ->
-            FileOutputStream(temporary).use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    total += count
-                    require(total <= artifact.size) {
-                        context.getString(R.string.repo_size_exceeded, label)
-                    }
-                    output.write(buffer, 0, count)
-                }
-                output.fd.sync()
+        try {
+            require(connection.contentLengthLong == -1L || connection.contentLengthLong == artifact.size) {
+                context.getString(R.string.repo_size_mismatch, label)
             }
-        }
-        connection.disconnect()
-        require(total == artifact.size) { context.getString(R.string.repo_incomplete, label) }
-        if (destination.exists()) destination.delete()
-        require(temporary.renameTo(destination)) {
-            context.getString(R.string.repo_finalize_failed, label)
+            val digest = MessageDigest.getInstance("SHA-256")
+            var total = 0L
+            connection.inputStream.use { input ->
+                FileOutputStream(temporary).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        require(total <= artifact.size) {
+                            context.getString(R.string.repo_size_exceeded, label)
+                        }
+                        digest.update(buffer, 0, count)
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            }
+            require(total == artifact.size) { context.getString(R.string.repo_incomplete, label) }
+            val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+            require(actualSha256 == artifact.sha256) {
+                "$label SHA-256 does not match the support manifest"
+            }
+            if (destination.exists()) destination.delete()
+            require(temporary.renameTo(destination)) {
+                context.getString(R.string.repo_finalize_failed, label)
+            }
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw error
+        } finally {
+            connection.disconnect()
         }
         onProgress(context.getString(R.string.repo_verified, label))
         return destination
@@ -112,21 +128,23 @@ class PayloadRepository(private val context: Context) {
 
     private fun downloadBytes(url: String, maximum: Int): ByteArray {
         val connection = open(url)
-        val bytes = connection.inputStream.use { input ->
-            val output = ByteArrayOutputStream()
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                require(output.size() + count <= maximum) {
-                    context.getString(R.string.repo_response_too_large)
+        return try {
+            connection.inputStream.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size() + count <= maximum) {
+                        context.getString(R.string.repo_response_too_large)
+                    }
+                    output.write(buffer, 0, count)
                 }
-                output.write(buffer, 0, count)
+                output.toByteArray()
             }
-            output.toByteArray()
+        } finally {
+            connection.disconnect()
         }
-        connection.disconnect()
-        return bytes
     }
 
     private fun open(url: String): HttpURLConnection =
