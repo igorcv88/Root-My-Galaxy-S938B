@@ -62,65 +62,81 @@ jobs:
       - name: Validate pinned payload feed
         run: |
           python3 - <<'PY'
+          import hashlib
           import json
           import os
           import re
+          import urllib.parse
           import urllib.request
 
           repo = os.environ["PAYLOAD_REPOSITORY"]
           commit_api = f"https://api.github.com/repos/{repo}/git/ref/heads/main"
-          request = urllib.request.Request(commit_api, headers={"User-Agent": "Root-My-Galaxy-CI"})
+          request = urllib.request.Request(
+              commit_api,
+              headers={"User-Agent": "Root-My-Galaxy-CI"},
+          )
           with urllib.request.urlopen(request, timeout=30) as response:
               commit = json.load(response)["object"]["sha"]
           assert re.fullmatch(r"[0-9a-f]{40}", commit)
 
           raw = f"https://raw.githubusercontent.com/{repo}/{commit}"
-          with urllib.request.urlopen(f"{raw}/support/targets-v2.json", timeout=30) as response:
+          with urllib.request.urlopen(f"{raw}/support/targets-v3.json", timeout=30) as response:
               manifest = json.load(response)
 
-          assert manifest["schemaVersion"] == 2
-          targets = manifest["targets"]
-          ids = [target["profileId"] for target in targets]
+          assert manifest["schemaVersion"] == 3
+          payloads = manifest["payloads"]
+          ids = [item["payloadId"] for item in payloads]
           assert len(ids) == len(set(ids))
 
-          target = next(item for item in targets if item["profileId"] == "pa3q-S938BXXSBCZG3")
-          expected_kernel_release = "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k"
-          expected_kernel_version = (
-              "Linux version 6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k "
-              "(kleaf@build-host) (Android (11368308, +pgo, +bolt, +lto, +mlgo, "
-              "based on r510928) clang version 18.0.0 "
-              "(https://android.googlesource.com/toolchain/llvm-project "
-              "477610d4d0d988e69dbc3fae4fe86bff3f07f2b5), LLD 18.0.0) "
-              "#1 SMP PREEMPT Thu Jul  2 00:48:56 UTC 2026"
-          )
-          assert target["model"] == "SM-S938B"
-          assert target["buildDisplay"] == "BP4A.251205.006.S938BXXSBCZG3"
-          assert target["kernelRelease"] == expected_kernel_release
-          assert target["kernelVersion"] == expected_kernel_version
-          assert target["sdk"] == 36
-          assert target["abi"] == "arm64-v8a"
-          assert target["pageSize"] == 4096
+          target = next(item for item in payloads if item["payloadId"] == "pa3q-S938BXXSBCZG3")
+          assert target["models"] == ["SM-S938B"]
+          assert target["kernelVersions"] == ["6.6.98"]
+          assert target["exactMatch"] == {
+              "manufacturer": "samsung",
+              "model": "SM-S938B",
+              "device": "pa3q",
+              "buildDisplay": "BP4A.251205.006.S938BXXSBCZG3",
+              "buildFingerprint": (
+                  "samsung/pa3qxxx/pa3q:16/BP4A.251205.006/"
+                  "S938BXXSBCZG3_OXMBCZG3:user/release-keys"
+              ),
+              "kernelRelease": "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
+              "kernelVersionInfo": "#1 SMP PREEMPT Thu Jul  2 00:48:56 UTC 2026",
+              "machine": "aarch64",
+              "sdk": 36,
+              "abi": "arm64-v8a",
+              "pageSize": 4096,
+          }
 
           mutable_prefix = f"https://raw.githubusercontent.com/{repo}/main/"
-          for item in targets:
+          for item in payloads:
               for artifact in (item["exploit"], item["kernelsu"]):
                   url = artifact["url"]
+                  expected_size = artifact["size"]
+                  expected_sha256 = artifact["sha256"].lower()
+                  assert re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
                   assert url.startswith(mutable_prefix), f"external payload URL: {url}"
-                  pinned_url = f"{raw}/{url.removeprefix(mutable_prefix)}"
+                  relative = urllib.parse.unquote(url.removeprefix(mutable_prefix))
+                  pinned_url = f"{raw}/{relative}"
+                  digest = hashlib.sha256()
                   total = 0
                   with urllib.request.urlopen(pinned_url, timeout=90) as response:
                       while True:
                           block = response.read(1024 * 1024)
                           if not block:
                               break
+                          digest.update(block)
                           total += len(block)
-                  assert total == artifact["size"], (
-                      f"payload size mismatch for {pinned_url}: {total} != {artifact['size']}"
+                  assert total == expected_size, (
+                      f"payload size mismatch for {pinned_url}: {total} != {expected_size}"
+                  )
+                  assert digest.hexdigest() == expected_sha256, (
+                      f"payload SHA-256 mismatch for {pinned_url}"
                   )
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"PAYLOAD_COMMIT={commit}\n")
-          print(f"Validated {len(targets)} profiles at payload commit {commit}")
+          print(f"Validated {len(payloads)} profile(s) at payload commit {commit}")
           PY
 
       - name: Verify application payload endpoint
