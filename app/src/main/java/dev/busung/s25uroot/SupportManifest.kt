@@ -43,6 +43,12 @@ data class TargetProfile(
     val supportedKernelVersions: String
         get() = kernelVersions.joinToString()
 
+    fun matchesDevice(snapshot: DeviceSnapshot): Boolean =
+        model.equals(snapshot.model, ignoreCase = true)
+
+    fun matchesKernelVersion(snapshot: DeviceSnapshot): Boolean =
+        snapshot.kernelVersion in kernelVersions
+
     fun matchesKernel(snapshot: DeviceSnapshot): Boolean =
         kernelRelease == snapshot.kernelRelease &&
             kernelBuildVersion == snapshot.kernelBuildVersion
