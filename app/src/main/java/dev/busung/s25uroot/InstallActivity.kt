@@ -1,6 +1,9 @@
 package dev.busung.s25uroot
 
+import android.os.Build
 import android.os.Bundle
+import android.view.HapticFeedbackConstants
+import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -36,6 +39,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -46,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
@@ -94,18 +99,28 @@ class InstallActivity : ComponentActivity() {
     }
 }
 
-private data class InstallerStep(
+internal data class InstallerStep(
     @StringRes val title: Int,
     @StringRes val detail: Int,
     val icon: ImageVector,
 )
 
-private val installerSteps = listOf(
+internal val installerSteps = listOf(
     InstallerStep(R.string.step_support_title, R.string.step_support_detail, Icons.Rounded.Security),
     InstallerStep(R.string.step_download_title, R.string.step_download_detail, Icons.Rounded.CloudDownload),
     InstallerStep(R.string.step_exploit_title, R.string.step_exploit_detail, Icons.Rounded.Memory),
     InstallerStep(R.string.step_ksu_title, R.string.step_ksu_detail, Icons.Rounded.Check),
 )
+
+private fun clickHaptic(view: View) {
+    view.performHapticFeedback(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            HapticFeedbackConstants.CONFIRM
+        } else {
+            HapticFeedbackConstants.LONG_PRESS
+        },
+    )
+}
 
 @Composable
 private fun InstallScreen(
@@ -114,6 +129,7 @@ private fun InstallScreen(
     onClose: () -> Unit,
 ) {
     val logScrollState = rememberScrollState()
+    val view = LocalView.current
     LaunchedEffect(installState.log) {
         delay(40)
         logScrollState.scrollTo(logScrollState.maxValue)
@@ -162,20 +178,29 @@ private fun InstallScreen(
                 ) {
                     if (installState.phase == InstallPhase.Failed) {
                         FilledTonalButton(
-                            onClick = onClose,
+                            onClick = {
+                                clickHaptic(view)
+                                onClose()
+                            },
                             modifier = Modifier.weight(1f),
                         ) {
                             Text(stringResource(R.string.action_close))
                         }
                         Button(
-                            onClick = onRetry,
+                            onClick = {
+                                clickHaptic(view)
+                                onRetry()
+                            },
                             modifier = Modifier.weight(1f),
                         ) {
                             Text(stringResource(R.string.action_retry))
                         }
                     } else if (installState.phase == InstallPhase.Installed) {
                         Button(
-                            onClick = onClose,
+                            onClick = {
+                                clickHaptic(view)
+                                onClose()
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(stringResource(R.string.action_done))
@@ -199,6 +224,11 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                 InstallPhase.Failed -> MaterialTheme.colorScheme.errorContainer
                 else -> MaterialTheme.colorScheme.primaryContainer
             },
+            contentColor = if (installState.phase == InstallPhase.Failed) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            },
         ),
     ) {
         Column(
@@ -211,7 +241,10 @@ private fun InstallerStatusCard(installState: InstallUiState) {
             ) {
                 AnimatedContent(targetState = installState.phase, label = "install-status-icon") { phase ->
                     when {
-                        installState.busy -> LoadingIndicator(modifier = Modifier.size(44.dp))
+                        installState.busy -> LoadingIndicator(
+                            modifier = Modifier.size(44.dp),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
                         phase == InstallPhase.Installed -> Icon(
                             Icons.Rounded.Check,
                             contentDescription = null,
@@ -231,13 +264,15 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                     )
                     Text(
                         text = installPhaseDetail(installState.phase),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = LocalContentColor.current.copy(alpha = 0.78f),
                     )
                 }
             }
             LinearProgressIndicator(
                 progress = { installProgress(installState.phase) },
                 modifier = Modifier.fillMaxWidth(),
+                color = LocalContentColor.current,
+                trackColor = LocalContentColor.current.copy(alpha = 0.2f),
                 drawStopIndicator = {},
             )
         }
@@ -274,7 +309,7 @@ private fun InstallerSteps(phase: InstallPhase) {
                         contentColor = if (stepState >= 1) {
                             MaterialTheme.colorScheme.onPrimary
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            MaterialTheme.colorScheme.onSurface
                         },
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -293,11 +328,14 @@ private fun InstallerSteps(phase: InstallPhase) {
                         Text(
                             text = stringResource(step.detail),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
                         )
                     }
                     if (stepState == 1 && phase !in setOf(InstallPhase.Failed, InstallPhase.Ready)) {
-                        LoadingIndicator(modifier = Modifier.size(24.dp))
+                        LoadingIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
                     }
                 }
             }

@@ -28,13 +28,32 @@ data class TargetProfile(
     val exploit: RemoteArtifact,
     val kernelSu: KernelSuArtifact,
 ) {
+    val displayName: String
+        get() = "$model | $buildDisplay"
+
+    val models: Set<String>
+        get() = setOf(model)
+
+    val kernelVersions: Set<String>
+        get() = setOf(kernelRelease.takeWhile { it.isDigit() || it == '.' })
+
+    val supportedModels: String
+        get() = model
+
+    val supportedKernelVersions: String
+        get() = kernelVersions.joinToString()
+
     fun matchesKernel(snapshot: DeviceSnapshot): Boolean =
         kernelRelease == snapshot.kernelRelease &&
             kernelBuildVersion == snapshot.kernelBuildVersion
 
     fun matches(snapshot: DeviceSnapshot): Boolean =
-        matchesKernel(snapshot) &&
+        manufacturer.equals(snapshot.manufacturer, ignoreCase = true) &&
+            model.equals(snapshot.model, ignoreCase = true) &&
+            device.equals(snapshot.device, ignoreCase = true) &&
+            matchesKernel(snapshot) &&
             buildDisplay == snapshot.buildId &&
+            buildFingerprint == snapshot.fingerprint &&
             sdk == snapshot.sdk &&
             abi == snapshot.abi &&
             pageSize == snapshot.pageSize
