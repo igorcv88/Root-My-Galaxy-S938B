@@ -162,12 +162,12 @@
     <string name="history_clear_selection">Effacer la sélection</string>
     <string name="history_delete_selected">Supprimer (%1$d)</string>
     <plurals name="history_delete_selected_title">
-        <item quantity="one">Supprimer cette exécution ?</item>
+        <item quantity="one">Supprimer %1$d exécution ?</item>
         <item quantity="other">Supprimer %1$d exécutions ?</item>
     </plurals>
     <plurals name="history_delete_selected_body">
-        <item quantity="one">Cette exécution et son journal seront définitivement supprimés.</item>
-        <item quantity="other">Ces exécutions et leurs journaux seront définitivement supprimés.</item>
+        <item quantity="one">Cette %1$d exécution et son journal seront définitivement supprimés.</item>
+        <item quantity="other">Ces %1$d exécutions et leurs journaux seront définitivement supprimés.</item>
     </plurals>
     <string name="history_delete">Supprimer</string>
 </resources>

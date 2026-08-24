@@ -13,9 +13,11 @@
     <string name="action_done">Pronto</string>
     <string name="action_back">Voltar</string>
     <string name="install_tap_manager">Toque para instalar o Gerenciador do KernelSU</string>
+    <string name="install_tap_open_manager">Toque para abrir o Gerenciador do KernelSU</string>
     <string name="install_tap_retry">Toque para tentar novamente</string>
     <string name="install_tap_start">Toque para instalar o KernelSU</string>
     <string name="device">Dispositivo</string>
+    <string name="how_it_works">Como funciona</string>
     <string name="firmware">Firmware</string>
     <string name="system">Sistema</string><string name="kernel">Kernel</string>
     <string name="system_abi">ABI do Sistema</string>
@@ -51,8 +53,8 @@
     <string name="history_detail_title">Detalhes da execução</string>
     <string name="history_started">Começou: %1$s</string>
     <string name="history_completed">Completou: %1$s</string>
-    <string name="history_log">Logs de execução</string>
     <string name="history_log_empty">Nenhum output de log por enquanto.</string>
+    <string name="history_payload">Payload: %1$s</string>
 
     <string name="install_title">Instalar</string>
     <string name="install_keep_open">Fique nessa tela até a instalação acabar</string>
@@ -161,12 +163,12 @@
     <string name="history_clear_selection">Limpar seleção</string>
     <string name="history_delete_selected">Excluir (%1$d)</string>
     <plurals name="history_delete_selected_title">
-        <item quantity="one">Excluir esta execução?</item>
+        <item quantity="one">Excluir %1$d execução?</item>
         <item quantity="other">Excluir %1$d execuções?</item>
     </plurals>
     <plurals name="history_delete_selected_body">
-        <item quantity="one">Esta execução e seu log serão removidos permanentemente.</item>
-        <item quantity="other">Estas execuções e seus logs serão removidos permanentemente.</item>
+        <item quantity="one">Esta %1$d execução e seu log serão removidos permanentemente.</item>
+        <item quantity="other">Estas %1$d execuções e seus logs serão removidos permanentemente.</item>
     </plurals>
     <string name="history_delete">Excluir</string>
 </resources>

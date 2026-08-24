@@ -165,12 +165,16 @@
     <string name="history_clear_selection">Снять выделение</string>
     <string name="history_delete_selected">Удалить (%1$d)</string>
     <plurals name="history_delete_selected_title">
-        <item quantity="one">Удалить этот запуск?</item>
-        <item quantity="other">Удалить %1$d запусков?</item>
+        <item quantity="one">Удалить %1$d запуск?</item>
+        <item quantity="few">Удалить %1$d запуска?</item>
+        <item quantity="many">Удалить %1$d запусков?</item>
+        <item quantity="other">Удалить %1$d запуска?</item>
     </plurals>
     <plurals name="history_delete_selected_body">
-        <item quantity="one">Этот запуск и его журнал будут удалены навсегда.</item>
-        <item quantity="other">Эти запуски и их журналы будут удалены навсегда.</item>
+        <item quantity="one">%1$d запуск и его журнал будут удалены навсегда.</item>
+        <item quantity="few">%1$d запуска и их журналы будут удалены навсегда.</item>
+        <item quantity="many">%1$d запусков и их журналы будут удалены навсегда.</item>
+        <item quantity="other">%1$d запуска и их журналы будут удалены навсегда.</item>
     </plurals>
     <string name="history_delete">Удалить</string>
 </resources>

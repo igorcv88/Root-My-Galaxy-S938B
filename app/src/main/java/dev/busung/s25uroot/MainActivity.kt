@@ -297,6 +297,7 @@ private fun RootApp(
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
+    val updaterDownloadFailed = stringResource(R.string.updater_download_failed)
     var updateStatus by remember { mutableStateOf<UpdateStatus>(UpdateStatus.Idle) }
     var updateCardDismissed by remember { mutableStateOf(false) }
     val checkForUpdate: () -> Unit = {
@@ -324,7 +325,7 @@ private fun RootApp(
                     updateStatus = UpdateStatus.Downloading(info, progress)
                 }
                 if (apk == null || !AppUpdater.installApk(context, apk)) {
-                    Toast.makeText(context, context.getString(R.string.updater_download_failed), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, updaterDownloadFailed, Toast.LENGTH_SHORT).show()
                     AppUpdater.openReleasesPage(context)
                 }
                 updateStatus = UpdateStatus.Available(info)
@@ -2270,7 +2271,7 @@ private fun SideChoiceMenu(
                                         maxLines = 1,
                                     )
                                 }
-                            }
+                            )
                         }
                     }
                 }

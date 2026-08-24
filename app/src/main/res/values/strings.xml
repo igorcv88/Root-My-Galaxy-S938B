@@ -18,7 +18,7 @@
     <string name="install_tap_start">Tap to install KernelSU</string>
     <string name="device">Device</string>
     <string name="how_it_works">How it works</string>
-    <string name="kernelsu_card_title">KernelSU</string>
+    <string name="kernelsu_card_title" translatable="false">KernelSU</string>
     <string name="kernelsu_card_description">A kernel-based root solution for Android</string>
     <string name="firmware">Firmware</string>
     <string name="system">System</string>
@@ -112,7 +112,7 @@
     <string name="error_success_marker">Exploit success markers were not found</string>
     <string name="error_ksu_stage">KernelSU staging failed: %1$s</string>
     <string name="error_ksu_verify">KernelSU late-load or control verification failed (rc=%1$d): %2$s</string>
-    <string name="error_helper_timeout">KernelSU helper did not exit within 120 seconds%1$s</string>
+    <string name="error_helper_timeout" translatable="false">KernelSU helper did not exit within 120 seconds%1$s</string>
     <string name="error_boot_id">Unable to read the current boot_id</string>
     <string name="error_receipt">Unable to save the installation verification receipt</string>
 
@@ -170,11 +170,11 @@
     <string name="history_clear_selection">Clear selection</string>
     <string name="history_delete_selected">Delete (%1$d)</string>
     <plurals name="history_delete_selected_title">
-        <item quantity="one">Delete this run?</item>
+        <item quantity="one">Delete %1$d run?</item>
         <item quantity="other">Delete %1$d runs?</item>
     </plurals>
     <plurals name="history_delete_selected_body">
-        <item quantity="one">This run and its log will be permanently removed.</item>
-        <item quantity="other">These runs and their logs will be permanently removed.</item>
+        <item quantity="one">This %1$d run and its log will be permanently removed.</item>
+        <item quantity="other">These %1$d runs and their logs will be permanently removed.</item>
     </plurals>
 </resources>
