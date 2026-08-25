@@ -34,6 +34,7 @@ object AppPreferences {
     private const val THEME_MODE = "theme_mode"
     private const val ADVANCED_MODE = "advanced_mode"
     private const val SHIZUKU_MODE = "shizuku_mode"
+    private const val AUTO_ROOT_ENABLED = "auto_root_enabled"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
@@ -71,6 +72,15 @@ object AppPreferences {
     fun setShizukuMode(context: Context, enabled: Boolean) {
         prefs(context).edit()
             .putBoolean(SHIZUKU_MODE, enabled)
+            .apply()
+    }
+
+    fun autoRootEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(AUTO_ROOT_ENABLED, false)
+
+    fun setAutoRootEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit()
+            .putBoolean(AUTO_ROOT_ENABLED, enabled)
             .apply()
     }
 
