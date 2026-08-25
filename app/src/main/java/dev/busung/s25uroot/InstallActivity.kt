@@ -31,7 +31,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Memory
@@ -58,12 +57,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -162,6 +160,12 @@ private fun InstallScreen(
         }
     }
 
+    suspend fun prepareAutoRoot(): Boolean = withContext(Dispatchers.IO) {
+        val repository = PayloadRepository(context)
+        val snapshot = DeviceSnapshot.current()
+        repository.prepareAutoRoot(snapshot) || repository.isAutoRootPrepared(snapshot)
+    }
+
     val onAutoRootChanged: (Boolean) -> Unit = { enabled ->
         if (!enabled) {
             AppPreferences.setAutoRootEnabled(context, false)
@@ -170,9 +174,7 @@ private fun InstallScreen(
         } else if (!checkingAutoRoot) {
             checkingAutoRoot = true
             scope.launch {
-                val prepared = withContext(Dispatchers.IO) {
-                    PayloadRepository(context).isAutoRootPrepared(DeviceSnapshot.current())
-                }
+                val prepared = prepareAutoRoot()
                 if (!prepared) {
                     checkingAutoRoot = false
                     AppPreferences.setAutoRootEnabled(context, false)
@@ -196,6 +198,12 @@ private fun InstallScreen(
     LaunchedEffect(installState.log) {
         delay(40)
         logScrollState.scrollTo(logScrollState.maxValue)
+    }
+    LaunchedEffect(installState.phase, autoRootEnabled) {
+        if (installState.phase == InstallPhase.Installed && autoRootEnabled) {
+            val prepared = prepareAutoRoot()
+            autoRootProblem = if (prepared) null else R.string.auto_root_not_prepared
+        }
     }
 
     Scaffold { padding ->
