@@ -1,5 +1,7 @@
 package dev.busung.s25uroot
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
@@ -7,8 +9,10 @@ import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
@@ -43,13 +47,18 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -59,7 +68,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class InstallActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -129,7 +141,58 @@ private fun InstallScreen(
     onClose: () -> Unit,
 ) {
     val logScrollState = rememberScrollState()
+    val context = LocalContext.current
     val view = LocalView.current
+    val scope = rememberCoroutineScope()
+    var autoRootEnabled by remember { mutableStateOf(AppPreferences.autoRootEnabled(context)) }
+    var autoRootProblem by remember { mutableStateOf<Int?>(null) }
+    var checkingAutoRoot by remember { mutableStateOf(false) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        checkingAutoRoot = false
+        if (granted) {
+            AppPreferences.setAutoRootEnabled(context, true)
+            autoRootEnabled = true
+            autoRootProblem = null
+        } else {
+            AppPreferences.setAutoRootEnabled(context, false)
+            autoRootEnabled = false
+            autoRootProblem = R.string.auto_root_notification_required
+        }
+    }
+
+    val onAutoRootChanged: (Boolean) -> Unit = { enabled ->
+        if (!enabled) {
+            AppPreferences.setAutoRootEnabled(context, false)
+            autoRootEnabled = false
+            autoRootProblem = null
+        } else if (!checkingAutoRoot) {
+            checkingAutoRoot = true
+            scope.launch {
+                val prepared = withContext(Dispatchers.IO) {
+                    PayloadRepository(context).isAutoRootPrepared(DeviceSnapshot.current())
+                }
+                if (!prepared) {
+                    checkingAutoRoot = false
+                    AppPreferences.setAutoRootEnabled(context, false)
+                    autoRootEnabled = false
+                    autoRootProblem = R.string.auto_root_not_prepared
+                } else if (
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    checkingAutoRoot = false
+                    AppPreferences.setAutoRootEnabled(context, true)
+                    autoRootEnabled = true
+                    autoRootProblem = null
+                } else {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        }
+    }
+
     LaunchedEffect(installState.log) {
         delay(40)
         logScrollState.scrollTo(logScrollState.maxValue)
@@ -169,6 +232,15 @@ private fun InstallScreen(
                 scrollState = logScrollState,
             )
 
+            if (installState.phase == InstallPhase.Installed) {
+                AutoRootPreferenceCard(
+                    enabled = autoRootEnabled,
+                    checking = checkingAutoRoot,
+                    problem = autoRootProblem,
+                    onEnabledChange = onAutoRootChanged,
+                )
+            }
+
             if (!installState.busy) {
                 Row(
                     modifier = Modifier
@@ -207,6 +279,64 @@ private fun InstallScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoRootPreferenceCard(
+    enabled: Boolean,
+    checking: Boolean,
+    @StringRes problem: Int?,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.Memory,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.auto_root_card_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        stringResource(R.string.auto_root_card_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (checking) {
+                    LoadingIndicator(modifier = Modifier.size(28.dp))
+                } else {
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = onEnabledChange,
+                    )
+                }
+            }
+            problem?.let {
+                Text(
+                    stringResource(it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }

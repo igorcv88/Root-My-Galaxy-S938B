@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="auto_root_card_title">Restaurar root após reiniciar</string>
+    <string name="auto_root_card_description">Depois que o Android concluir a inicialização, aguarda 45 segundos e faz uma única tentativa independente usando o perfil exato em cache. Sem Shizuku ou soft reboot.</string>
+    <string name="auto_root_not_prepared">O Auto Root não está preparado para este firmware exato. Conclua uma instalação normal primeiro.</string>
+    <string name="auto_root_notification_required">A permissão de notificações é obrigatória porque o Auto Root executa como serviço visível em primeiro plano.</string>
+    <string name="repo_cached_verified">Cópia em cache de %1$s verificada</string>
+    <string name="auto_root_cached_profile_missing">Nenhum cache verificado do Auto Root corresponde exatamente a este firmware e kernel</string>
+    <string name="auto_root_cached_artifact_missing">Payload %1$s em cache não encontrado</string>
+    <string name="auto_root_cached_artifact_invalid">Payload %1$s em cache falhou na validação de tamanho ou SHA-256</string>
+    <string name="auto_root_channel_progress">Progresso do Auto Root</string>
+    <string name="auto_root_channel_alerts">Alertas do Auto Root</string>
+    <string name="auto_root_notification_title">Auto Root pós-boot</string>
+    <string name="auto_root_waiting_android">Aguardando o Android</string>
+    <string name="auto_root_checking_firmware">Verificando firmware exato</string>
+    <string name="auto_root_preparing_exploit">Verificando payloads em cache</string>
+    <string name="auto_root_running_exploit">Executando exploit do kernel</string>
+    <string name="auto_root_loading_kernelsu">Carregando KernelSU</string>
+    <string name="auto_root_verifying_root">Verificando canal de controle do KernelSU</string>
+    <string name="auto_root_root_restored">Root restaurado</string>
+    <string name="auto_root_already_active">KernelSU já está ativo</string>
+    <string name="auto_root_failed">Auto Root falhou</string>
+    <string name="auto_root_disable">Desativar Auto Root</string>
+    <string name="auto_root_boot_timeout">O Android não concluiu a inicialização antes do tempo limite do Auto Root</string>
+</resources>
