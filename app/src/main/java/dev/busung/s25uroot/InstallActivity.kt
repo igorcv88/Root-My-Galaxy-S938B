@@ -1,14 +1,19 @@
 package dev.busung.s25uroot
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
@@ -43,11 +48,14 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
@@ -57,6 +65,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
 import kotlinx.coroutines.delay
@@ -80,12 +89,55 @@ class InstallActivity : ComponentActivity() {
                 themeMode = AppPreferences.themeMode(this),
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
+                var autoRootEnabled by remember {
+                    mutableStateOf(AppPreferences.autoRootEnabled(this@InstallActivity))
+                }
+                val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    if (granted) {
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
+                        autoRootEnabled = true
+                    } else {
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, false)
+                        autoRootEnabled = false
+                        Toast.makeText(
+                            this@InstallActivity,
+                            getString(R.string.autoroot_notification_permission),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+                val setAutoRoot: (Boolean) -> Unit = { enabled ->
+                    if (!enabled) {
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, false)
+                        autoRootEnabled = false
+                    } else if (!AutoRootSupport.hasVerifiedInstall(this@InstallActivity)) {
+                        Toast.makeText(
+                            this@InstallActivity,
+                            getString(R.string.autoroot_prior_install_required),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    } else if (
+                        ContextCompat.checkSelfPermission(
+                            this@InstallActivity,
+                            Manifest.permission.POST_NOTIFICATIONS,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
+                        autoRootEnabled = true
+                    } else {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
                 BackHandler(enabled = installState.busy) {}
                 LaunchedEffect(startInstall, profileId) {
                     if (startInstall) installViewModel.install(profileId)
                 }
                 InstallScreen(
                     installState = installState,
+                    autoRootEnabled = autoRootEnabled,
+                    onAutoRootEnabledChanged = setAutoRoot,
                     onRetry = { installViewModel.install(profileId) },
                     onClose = ::finish,
                 )
@@ -125,6 +177,8 @@ private fun clickHaptic(view: View) {
 @Composable
 private fun InstallScreen(
     installState: InstallUiState,
+    autoRootEnabled: Boolean,
+    onAutoRootEnabledChanged: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -169,6 +223,13 @@ private fun InstallScreen(
                 scrollState = logScrollState,
             )
 
+            if (installState.phase == InstallPhase.Installed) {
+                AutoRootOptInCard(
+                    enabled = autoRootEnabled,
+                    onEnabledChanged = onAutoRootEnabledChanged,
+                )
+            }
+
             if (!installState.busy) {
                 Row(
                     modifier = Modifier
@@ -208,6 +269,45 @@ private fun InstallScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AutoRootOptInCard(
+    enabled: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.autoroot_opt_in_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.autoroot_opt_in_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChanged,
+            )
         }
     }
 }
