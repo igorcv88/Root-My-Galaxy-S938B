@@ -108,6 +108,13 @@ jobs:
               "pageSize": 4096,
           }
 
+          with open("app/src/main/res/raw/autoroot_target_v3.json", encoding="utf-8") as source:
+              embedded = json.load(source)
+          assert embedded["schemaVersion"] == 3
+          assert embedded["payloads"] == [target], (
+              "embedded Auto Root profile must exactly mirror the controlled CZG3 target"
+          )
+
           mutable_prefix = f"https://raw.githubusercontent.com/{repo}/main/"
           for item in payloads:
               for artifact in (item["exploit"], item["kernelsu"]):
@@ -146,6 +153,20 @@ jobs:
           grep -F 'private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"' "$FILE"
           if grep -F 'BuSung-dev/Root-My-Galaxy-Payloads' "$FILE"; then
             echo "Application still references the upstream mutable feed" >&2
+            exit 1
+          fi
+
+      - name: Verify Auto Root release boundaries
+        run: |
+          set -eu
+          grep -F 'android.intent.action.BOOT_COMPLETED' app/src/main/AndroidManifest.xml
+          if grep -R -n -E 'LOCKED_BOOT_COMPLETED|ctl\.restart zygote|ksud soft-reboot' \
+              app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt app/src/main/AndroidManifest.xml; then
+            echo "Auto Root crossed the post-boot or no-soft-reboot boundary" >&2
+            exit 1
+          fi
+          if grep -R -n -E 'https?://' app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt; then
+            echo "Auto Root runtime must not depend on network URLs" >&2
             exit 1
           fi
 
