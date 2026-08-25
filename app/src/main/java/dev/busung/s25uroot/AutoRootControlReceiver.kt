@@ -7,9 +7,10 @@ import android.content.Intent
 class AutoRootControlReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_DISABLE) return
+        // Do not tear down a kernel exploit that may already be running. The
+        // service re-checks this preference before claiming the boot attempt;
+        // once the exploit has started, disabling applies to future boots.
         AppPreferences.setAutoRootEnabled(context, false)
-        context.stopService(Intent(context, AutoRootService::class.java))
-        AutoRootService.cancelNotifications(context)
     }
 
     companion object {

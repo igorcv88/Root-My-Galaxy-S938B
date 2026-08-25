@@ -13,6 +13,7 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -84,6 +85,8 @@ class AutoRootService : Service() {
             )
             runner.run()
             finishSuccess(getString(R.string.auto_root_root_restored))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             val message = error.message ?: error.javaClass.simpleName
             if (log.isNotEmpty()) log.append('\n')
@@ -239,13 +242,5 @@ class AutoRootService : Service() {
         private const val BOOT_POLL_MILLIS = 2_000L
         private const val BOOT_WAIT_TIMEOUT_MILLIS = 5 * 60_000L
         private const val STABILIZATION_MILLIS = 45_000L
-
-        fun cancelNotifications(context: android.content.Context) {
-            context.getSystemService(NotificationManager::class.java)
-                .apply {
-                    cancel(PROGRESS_NOTIFICATION_ID)
-                    cancel(RESULT_NOTIFICATION_ID)
-                }
-        }
     }
 }
