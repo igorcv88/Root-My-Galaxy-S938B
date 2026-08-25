@@ -6,6 +6,7 @@
     <string name="auto_root_notification_required">Notification permission is required because Auto Root runs as a visible foreground service.</string>
     <string name="repo_cached_verified">%1$s cached copy verified</string>
     <string name="auto_root_cached_profile_missing">No verified Auto Root cache matches this exact firmware and kernel</string>
+    <string name="auto_root_cache_build_mismatch">The Auto Root cache was verified by a different app or native-helper build. Complete one normal installation with this app build to re-arm it.</string>
     <string name="auto_root_cached_artifact_missing">Cached %1$s payload is missing</string>
     <string name="auto_root_cached_artifact_invalid">Cached %1$s payload failed size or SHA-256 validation</string>
     <string name="auto_root_channel_progress">Auto Root progress</string>

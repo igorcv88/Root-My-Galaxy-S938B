@@ -44,6 +44,7 @@ class PayloadRepository(private val context: Context) {
 
     /** Auto Root never consults the mutable network feed during boot. */
     fun resolveCachedTarget(snapshot: DeviceSnapshot): TargetProfile {
+        AutoRootAttestation.requireCurrent(context)
         val profile = loadProfile(autoRootProfileFile())
         require(profile.matches(snapshot)) {
             context.getString(R.string.auto_root_cached_profile_missing)
@@ -80,6 +81,9 @@ class PayloadRepository(private val context: Context) {
      * remains untouched until the new copies and profile are fully verified.
      */
     fun prepareAutoRoot(snapshot: DeviceSnapshot): Boolean = runCatching {
+        require(AutoRootAttestation.candidateBelongsToCurrentAppInstall(context)) {
+            context.getString(R.string.auto_root_cache_build_mismatch)
+        }
         require(NativeProbe.isKernelSuActive()) {
             context.getString(R.string.auto_root_not_prepared)
         }
@@ -108,6 +112,9 @@ class PayloadRepository(private val context: Context) {
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
         cacheProfile(profile, autoRootProfileFile())
+        require(AutoRootAttestation.record(context)) {
+            context.getString(R.string.auto_root_cache_build_mismatch)
+        }
         cachedPayloads(profile)
         true
     }.getOrDefault(false)

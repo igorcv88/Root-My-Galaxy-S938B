@@ -6,6 +6,7 @@
     <string name="auto_root_notification_required">A permissão de notificações é obrigatória porque o Auto Root executa como serviço visível em primeiro plano.</string>
     <string name="repo_cached_verified">Cópia em cache de %1$s verificada</string>
     <string name="auto_root_cached_profile_missing">Nenhum cache verificado do Auto Root corresponde exatamente a este firmware e kernel</string>
+    <string name="auto_root_cache_build_mismatch">O cache do Auto Root foi verificado por outro build do app ou do helper nativo. Faça uma instalação normal com este build do app para rearmá-lo.</string>
     <string name="auto_root_cached_artifact_missing">Payload %1$s em cache não encontrado</string>
     <string name="auto_root_cached_artifact_invalid">Payload %1$s em cache falhou na validação de tamanho ou SHA-256</string>
     <string name="auto_root_channel_progress">Progresso do Auto Root</string>
