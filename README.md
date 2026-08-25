@@ -1,142 +1,70 @@
 # Root My Galaxy — S938B
 
-Root My Galaxy is a firmware-profiled installer for temporary KernelSU root on
-supported Samsung builds. This fork is maintained for the Galaxy S25 Ultra
-`SM-S938B` running:
+Root My Galaxy is a firmware-profiled installer for temporary KernelSU root on supported Samsung builds. This fork is maintained and hardware-validated primarily for the Galaxy S25 Ultra `SM-S938B`.
+
+Validated target:
 
 ```text
-Build:  BP4A.251205.006.S938BXXSBCZG3
-Kernel: 6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k
+Model:       SM-S938B
+Device:      pa3q
+Build:       BP4A.251205.006.S938BXXSBCZG3
+Fingerprint: samsung/pa3qxxx/pa3q:16/BP4A.251205.006/S938BXXSBCZG3_OXMBCZG3:user/release-keys
+Kernel:      6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k
+Android:     16 / SDK 36
+ABI:         arm64-v8a
+Page size:   4096
 ```
 
 [Download the latest signed APK](https://github.com/igorcv88/Root-My-Galaxy-S938B/releases/latest)
 
-The application source, firmware feed and Zygisk provider are intentionally
-separated:
+The application and payload feed are intentionally separated:
 
 - application: this repository;
-- payload feed: [Root-My-Galaxy-Payloads-S938B](https://github.com/igorcv88/Root-My-Galaxy-Payloads-S938B);
-- tested post-boot Zygisk provider: [NeoZygisk-PostBoot](https://github.com/igorcv88/NeoZygisk-PostBoot).
+- controlled payload feed: [Root-My-Galaxy-Payloads-S938B](https://github.com/igorcv88/Root-My-Galaxy-Payloads-S938B).
+
+## Scope
+
+The application performs only the root bootstrap flow:
+
+```text
+supported device
+    ↓
+exact firmware/profile validation
+    ↓
+kernel exploit
+    ↓
+bootstrap privilege
+    ↓
+KernelSU late-load
+    ↓
+KernelSU control channel verification
+    ↓
+verified temporary root
+```
+
+Zygisk providers, LSPosed, Shamiko and other KernelSU modules are outside the scope of Root My Galaxy and are managed separately through KernelSU Manager.
+
+The root is temporary. A full reboot or shutdown returns the device to the stock Samsung kernel state and removes the active KernelSU late-load session.
 
 ## Safety model
 
-The root is temporary. A full reboot or shutdown removes the active KernelSU
-session, although installed modules remain in `/data/adb/modules` for the next
-successful exploit run.
-
-The app automatically matches the complete kernel release, build display ID,
-SDK, ABI and page size. Advanced mode permits manual profile selection, but a
-similar model or kernel family is not equivalent to an exact firmware profile.
+Automatic profile selection is fail-closed. A target must match the maintained manifest exactly, including device/build/kernel identity and platform properties. Advanced/manual selection is intended only for deliberate interactive testing and must not be treated as equivalent to automatic matching.
 
 Use only on devices you own or are explicitly authorized to test.
 
-## Root procedure
+## Shizuku execution
 
-1. Install the latest signed APK from Releases.
-2. Run the **simple** exploit flow and wait until KernelSU is reported active.
-3. Open KernelSU Manager and confirm root access.
-4. For KernelSU-only use, stop here.
-5. For Zygisk, install exactly one provider and the modules that depend on it.
-6. On a first installation in a clean kernel session, use **Soft Reboot** from
-   KernelSU Manager once.
-7. Wait for Android to return and verify the provider and dependent modules.
+When Shizuku is enabled, authorized and running, Root My Galaxy can execute the helper and staging flow through the Shizuku shell context. The transport choice is frozen for the duration of each install run so execution cannot switch between Shizuku and standalone mode midway through the exploit or KernelSU staging steps.
 
-Do not use the withdrawn automatic ReZygisk bridge and do not issue a targeted
-`ctl.restart zygote` command on the validated Samsung firmware. Hardware testing
-showed that path can enter Samsung's **Device Services Uninstalled** failure
-state and require a full reboot.
-
-## Provider updates require a full reboot
-
-Do not install a new Zygisk provider build over a live monitor and then press
-KernelSU Soft Reboot in the same kernel boot. A hardware test reproduced a
-`stopped(zygote crashed)` state when an old monitor/runtime survived while newer
-provider files were activated.
-
-After updating Zygisk Next or NeoZygisk PostBoot:
-
-1. install the update but do not Soft Reboot;
-2. perform a full device reboot;
-3. run the simple Root My Galaxy exploit again;
-4. use KernelSU Manager **Soft Reboot once**;
-5. verify the provider.
-
-After any `zygote crashed`, deleted-monitor, generation-mismatch, or
-`FULL_REBOOT_REQUIRED` report, do not attempt another Soft Reboot in that kernel
-session.
-
-## Zygisk choices
-
-Use only one Zygisk provider at a time.
-
-### Zygisk Next
-
-Zygisk Next can be used as the conventional provider. Install its KernelSU
-module, configure it normally, install dependent modules such as LSPosed or
-Zygisk Assistant, and then perform one KernelSU Manager **Soft Reboot** from a
-clean post-exploit session. Provider updates follow the full-reboot lifecycle
-above.
-
-Zygisk Next is a separate project. Compatibility and closed-source release
-changes are controlled by its maintainers.
-
-### NeoZygisk PostBoot
-
-The maintained [NeoZygisk PostBoot fork](https://github.com/igorcv88/NeoZygisk-PostBoot)
-was hardware validated on `S938BXXSBCZG3`. It stages its runtime under
-`/dev/.neozygisk` to avoid Samsung DEFEX blocking a root-credential zygote from
-opening the persistent library under `/data/adb`.
-
-Validated first-install sequence:
-
-1. complete the simple Root My Galaxy exploit;
-2. install or enable NeoZygisk PostBoot;
-3. install or enable Zygisk Assistant and/or LSPosed modules;
-4. use KernelSU Manager **Soft Reboot** once;
-5. use the NeoZygisk module Action button for live verification.
-
-A successful verification reports an injected `zygote64`, running `zygiskd64`,
-a single same-generation monitor attached to init, and the live mapping of
-`/dev/.neozygisk/lib64/libzygisk.so`.
-
-Do not install NeoZygisk PostBoot beside Zygisk Next, ReZygisk, or another
-provider using the same Zygisk lifecycle.
+Standalone execution remains available as the fallback path.
 
 ## Payload integrity
 
-The APK resolves the current commit of
-`igorcv88/Root-My-Galaxy-Payloads-S938B`, downloads
-`support/targets-v2.json` from that immutable commit and rewrites every artifact
-URL to the same commit. The release workflow verifies:
+The APK resolves the current commit of `igorcv88/Root-My-Galaxy-Payloads-S938B`, downloads `targets-v3.json` from that immutable commit and rewrites payload URLs to the same pinned commit before use. Each downloaded artifact must match both the declared byte size and SHA-256 before the temporary file is promoted for execution. The maintained feed is validated separately from upstream so the installed APK does not silently follow mutable third-party payload URLs.
 
-- the exact `pa3q-S938BXXSBCZG3` target metadata;
-- that every URL belongs to the maintained payload repository;
-- that every referenced payload exists and matches its declared byte size;
-- that the application contains no upstream mutable payload endpoint.
+## Signed releases
 
-## Signed APK updates
-
-Stable APKs are signed by GitHub Actions and published directly as assets under
-Releases, without an Actions artifact wrapper. `versionCode` increases on every
-release run, so later APKs can update earlier stable builds without uninstalling
-them, provided the signing certificate is unchanged.
-
-The first migration from a debug-signed or differently signed APK may still
-require one uninstall. Android only accepts an in-place update when the installed
-and incoming APKs share the same signing certificate.
-
-Required repository secrets:
-
-```text
-KEYSTORE_BASE64
-KEYSTORE_PASSWORD
-KEY_ALIAS
-KEY_PASSWORD
-```
-
-The same signing key may technically sign multiple package names. Reusing the
-BatteryRemapper key is valid, but it couples the security of both applications:
-a key compromise affects updates for both packages.
+Stable APKs are built, aligned, signed and published by the repository release workflow. Release builds use monotonically increasing version codes so a later build can update an earlier stable installation when the signing certificate is unchanged. The release workflow independently validates the same controlled v3 manifest, exact CZG3 identity, artifact sizes and SHA-256 values before signing.
 
 ## Local development build
 

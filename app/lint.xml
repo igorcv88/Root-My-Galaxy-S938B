@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- Preserve the upstream v0.2.65 Compose implementation while scoping the
+         configuration-awareness detector to the inherited MainActivity only. -->
+    <issue id="LocalContextGetResourceValueCall">
+        <ignore path="src/main/java/dev/busung/s25uroot/MainActivity.kt" />
+    </issue>
+</lint>

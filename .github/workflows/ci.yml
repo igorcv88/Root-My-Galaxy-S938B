@@ -2,7 +2,7 @@ name: Verify application source
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -16,6 +16,8 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      PAYLOAD_REPOSITORY: igorcv88/Root-My-Galaxy-Payloads-S938B
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -39,11 +41,127 @@ jobs:
             exit 1
           fi
 
-      - name: Compile and test without packaging an APK
+      - name: Verify updater endpoint
+        run: |
+          set -eu
+          FILE=app/src/main/java/dev/busung/s25uroot/AppUpdater.kt
+          grep -F 'https://github.com/igorcv88/Root-My-Galaxy-S938B' "$FILE"
+          if grep -F 'https://github.com/BuSung-dev/Root-My-Galaxy' "$FILE"; then
+            echo "Updater still references upstream releases" >&2
+            exit 1
+          fi
+
+      - name: Reject legacy Zygisk integration
+        run: |
+          set -eu
+          if grep -R -n -E 'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' README.md app/src/main; then
+            echo "Legacy provider-specific or automatic zygote/soft-reboot integration found" >&2
+            exit 1
+          fi
+
+      - name: Validate controlled payload feed
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["PAYLOAD_REPOSITORY"]
+          commit_api = f"https://api.github.com/repos/{repo}/git/ref/heads/main"
+          request = urllib.request.Request(
+              commit_api,
+              headers={"User-Agent": "Root-My-Galaxy-CI"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              commit = json.load(response)["object"]["sha"]
+          assert re.fullmatch(r"[0-9a-f]{40}", commit)
+
+          raw = f"https://raw.githubusercontent.com/{repo}/{commit}"
+          with urllib.request.urlopen(f"{raw}/support/targets-v3.json", timeout=30) as response:
+              manifest = json.load(response)
+
+          assert manifest["schemaVersion"] == 3
+          payloads = manifest["payloads"]
+          ids = [item["payloadId"] for item in payloads]
+          assert len(ids) == len(set(ids))
+
+          target = next(item for item in payloads if item["payloadId"] == "pa3q-S938BXXSBCZG3")
+          assert target["models"] == ["SM-S938B"]
+          assert target["kernelVersions"] == ["6.6.98"]
+          assert target["exactMatch"] == {
+              "manufacturer": "samsung",
+              "model": "SM-S938B",
+              "device": "pa3q",
+              "buildDisplay": "BP4A.251205.006.S938BXXSBCZG3",
+              "buildFingerprint": (
+                  "samsung/pa3qxxx/pa3q:16/BP4A.251205.006/"
+                  "S938BXXSBCZG3_OXMBCZG3:user/release-keys"
+              ),
+              "kernelRelease": "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
+              "kernelVersionInfo": "#1 SMP PREEMPT Thu Jul  2 00:48:56 UTC 2026",
+              "machine": "aarch64",
+              "sdk": 36,
+              "abi": "arm64-v8a",
+              "pageSize": 4096,
+          }
+
+          mutable_prefix = f"https://raw.githubusercontent.com/{repo}/main/"
+          for item in payloads:
+              for artifact in (item["exploit"], item["kernelsu"]):
+                  url = artifact["url"]
+                  expected_size = artifact["size"]
+                  expected_sha256 = artifact["sha256"].lower()
+                  assert re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+                  assert url.startswith(mutable_prefix), f"external payload URL: {url}"
+                  relative = urllib.parse.unquote(url.removeprefix(mutable_prefix))
+                  pinned_url = f"{raw}/{relative}"
+                  digest = hashlib.sha256()
+                  total = 0
+                  with urllib.request.urlopen(pinned_url, timeout=90) as response:
+                      while True:
+                          block = response.read(1024 * 1024)
+                          if not block:
+                              break
+                          digest.update(block)
+                          total += len(block)
+                  assert total == expected_size, (
+                      f"payload size mismatch for {pinned_url}: {total} != {expected_size}"
+                  )
+                  assert digest.hexdigest() == expected_sha256, (
+                      f"payload SHA-256 mismatch for {pinned_url}"
+                  )
+
+          print(f"Validated {len(payloads)} profile(s) at payload commit {commit}")
+          PY
+
+      - name: Compile and run unit tests
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon \
             :app:compileDebugKotlin \
             :app:externalNativeBuildDebug \
-            :app:testDebugUnitTest \
-            :app:lintDebug
+            :app:testDebugUnitTest
+
+      - name: Build instrumentation test APK
+        run: ./gradlew --no-daemon :app:assembleDebugAndroidTest
+
+      - name: Build unsigned release APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Lint
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon :app:lintDebug
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "---- lint text reports ----"
+            while IFS= read -r report; do
+              echo "===== $report ====="
+              cat "$report"
+            done < <(find app/build -type f -name 'lint-results-debug.txt' -print)
+            exit "$status"
+          fi
