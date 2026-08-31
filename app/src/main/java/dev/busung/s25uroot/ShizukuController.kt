@@ -5,6 +5,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import moe.shizuku.server.IRemoteProcess
@@ -92,55 +93,90 @@ object ShizukuController {
         require(FILE_MODE_PATTERN.matches(mode)) { "Invalid file mode: $mode" }
 
         // Never truncate the final path directly. A previous standalone/root run can
-        // leave it owned by root and non-writable by Shizuku's shell UID, causing the
-        // remote `cat` to exit immediately while the app is still writing stdin. The
-        // resulting client-side symptom is EPIPE (Broken pipe), which hides the actual
-        // permission failure. Stage to a shell-owned temporary file and atomically
-        // replace the destination instead; directory ownership lets shell replace an
-        // older root-owned entry in /data/local/tmp.
+        // leave it owned by root and non-writable by Shizuku's shell UID. Upload into
+        // a shell-owned temporary path first, then publish it in a separate command
+        // only after the Binder stream and remote `cat` have both completed cleanly.
+        // Keeping upload and publication separate also guarantees that a partial read
+        // or EPIPE cannot turn a normal EOF in `cat` into a truncated final payload.
+        val tempPath = "$remotePath.shizuku-${UUID.randomUUID()}.tmp"
         val quotedPath = shellQuote(remotePath)
-        val command = """
-            target=$quotedPath
-            tmp="${'$'}target.shizuku.${'$'}${'$'}"
-            cleanup() { rm -f "${'$'}tmp"; }
-            trap cleanup EXIT HUP INT TERM
-            rm -f "${'$'}tmp" &&
-            cat > "${'$'}tmp" &&
-            chmod $mode "${'$'}tmp" &&
-            mv -f "${'$'}tmp" "${'$'}target"
-        """.trimIndent()
+        val quotedTemp = shellQuote(tempPath)
+        val uploadCommand = "rm -f $quotedTemp && cat > $quotedTemp"
+        val upload = exec(arrayOf("/system/bin/sh", "-c", uploadCommand))
 
-        val process = exec(arrayOf("/system/bin/sh", "-c", command))
-        var writeFailure: Throwable? = null
-        try {
-            try {
-                source.use { input ->
-                    process.outputStream.use { output ->
-                        input.copyTo(output, DEFAULT_BUFFER_SIZE)
-                    }
+        val bytesCopied = try {
+            source.use { input ->
+                upload.outputStream.use { output ->
+                    input.copyTo(output, DEFAULT_BUFFER_SIZE)
                 }
-            } catch (error: Throwable) {
-                writeFailure = error
             }
+        } catch (error: Throwable) {
+            if (upload.isAlive) upload.destroy()
+            runCatching { upload.waitFor() }
+            val stderr = readStderr(upload)
+            cleanupTemp(quotedTemp)
+            val detail = stderr.ifBlank { error.message ?: error.javaClass.simpleName }
+            throw IllegalStateException(
+                "Failed to stage $remotePath during upload: $detail",
+                error,
+            )
+        }
 
-            val exitCode = process.waitFor()
-            val stderr = runCatching {
-                process.errorStream.bufferedReader().use { it.readText() }.trim()
-            }.getOrDefault("")
-
-            if (exitCode != 0 || writeFailure != null) {
-                val detail = when {
-                    stderr.isNotBlank() -> stderr
-                    writeFailure != null -> writeFailure.message ?: writeFailure.javaClass.simpleName
-                    else -> "exit $exitCode"
-                }
+        try {
+            val uploadExit = upload.waitFor()
+            val uploadStderr = readStderr(upload)
+            if (uploadExit != 0) {
+                val detail = uploadStderr.ifBlank { "exit $uploadExit" }
                 throw IllegalStateException(
-                    "Failed to stage $remotePath (exit $exitCode): $detail",
-                    writeFailure,
+                    "Failed to stage $remotePath during upload (exit $uploadExit): $detail",
                 )
             }
+
+            val finalizeCommand = """
+                target=$quotedPath
+                tmp=$quotedTemp
+                cleanup() { rm -f "${'$'}tmp"; }
+                trap cleanup EXIT HUP INT TERM
+                actual=$(/system/bin/wc -c < "${'$'}tmp") || exit 1
+                if [ "${'$'}actual" -ne $bytesCopied ]; then
+                    echo "staged size mismatch: expected $bytesCopied, got ${'$'}actual" >&2
+                    exit 1
+                fi
+                chmod $mode "${'$'}tmp" &&
+                mv -f "${'$'}tmp" "${'$'}target"
+            """.trimIndent()
+
+            val finalize = exec(arrayOf("/system/bin/sh", "-c", finalizeCommand))
+            try {
+                val finalizeExit = finalize.waitFor()
+                val finalizeStderr = readStderr(finalize)
+                if (finalizeExit != 0) {
+                    val detail = finalizeStderr.ifBlank { "exit $finalizeExit" }
+                    throw IllegalStateException(
+                        "Failed to publish $remotePath (exit $finalizeExit): $detail",
+                    )
+                }
+            } finally {
+                if (finalize.isAlive) finalize.destroy()
+            }
         } finally {
-            if (process.isAlive) process.destroy()
+            if (upload.isAlive) upload.destroy()
+            cleanupTemp(quotedTemp)
+        }
+    }
+
+    private fun readStderr(process: Process): String = runCatching {
+        process.errorStream.bufferedReader().use { it.readText() }.trim()
+    }.getOrDefault("")
+
+    private fun cleanupTemp(quotedTemp: String) {
+        runCatching {
+            val cleanup = exec(arrayOf("/system/bin/sh", "-c", "rm -f $quotedTemp"))
+            try {
+                cleanup.waitFor()
+            } finally {
+                if (cleanup.isAlive) cleanup.destroy()
+            }
         }
     }
 
