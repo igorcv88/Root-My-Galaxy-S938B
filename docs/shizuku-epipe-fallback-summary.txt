@@ -1,0 +1,1 @@
+Streaming remains the primary Shizuku staging transport. If remote stdin breaks with EPIPE while Binder permission remains healthy, staging retries with bounded base64 command-argument chunks, validates the final byte count, and removes partial output on failure.
