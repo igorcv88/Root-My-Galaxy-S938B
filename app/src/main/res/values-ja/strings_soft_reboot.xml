@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="soft_reboot_title">root後にソフトリブート</string>
+    <string name="soft_reboot_description">root成功後にAndroidユーザー空間を再起動し、カーネルを完全に再起動せずにKernelSUのサービスとモジュールを初期化します。</string>
+    <string name="soft_reboot_starting">KernelSUのためAndroidユーザー空間を再起動しています</string>
+    <string name="soft_reboot_failed">ソフトリブートを開始できませんでした: %1$s</string>
+</resources>
