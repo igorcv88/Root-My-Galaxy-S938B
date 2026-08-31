@@ -2,6 +2,10 @@ name: Build and publish signed APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - app/src/main/res/raw/autoroot_target_v3.json
 
 permissions:
   contents: write
