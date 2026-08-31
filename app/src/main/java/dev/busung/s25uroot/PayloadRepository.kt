@@ -24,10 +24,9 @@ private class PayloadNetworkException(
 
 class PayloadRepository(private val context: Context) {
     /**
-     * Manual root always starts from the current Payloads `main`. The branch is
-     * resolved to one commit at the beginning of the request so the manifest and
-     * both artifacts come from the same repository state even if `main` moves
-     * while files are being downloaded.
+     * Every online manual-root lookup starts from the current Payloads `main`.
+     * `main` is resolved once to a commit so the manifest and artifacts are an
+     * atomic repository snapshot during that one install attempt.
      */
     fun loadTargets(): List<TargetProfile> {
         val commit = resolveMainCommit()
@@ -44,46 +43,54 @@ class PayloadRepository(private val context: Context) {
         }
     }
 
-    fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile = loadTargets()
-        .firstOrNull { it.matches(snapshot) }
-        ?: error(context.getString(R.string.repo_no_profile))
+    fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile = try {
+        loadTargets().firstOrNull { it.matches(snapshot) }
+            ?: error(context.getString(R.string.repo_no_profile))
+    } catch (error: PayloadNetworkException) {
+        val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
+        require(cached.profile.matches(snapshot)) {
+            context.getString(R.string.repo_no_profile)
+        }
+        cached.profile
+    }
 
-    fun resolveTarget(profileId: String): TargetProfile = loadTargets()
-        .firstOrNull { it.profileId == profileId }
-        ?: error(context.getString(R.string.repo_profile_missing, profileId))
+    fun resolveTarget(profileId: String): TargetProfile = try {
+        loadTargets().firstOrNull { it.profileId == profileId }
+            ?: error(context.getString(R.string.repo_profile_missing, profileId))
+    } catch (error: PayloadNetworkException) {
+        val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
+        require(cached.profile.profileId == profileId) {
+            context.getString(R.string.repo_profile_missing, profileId)
+        }
+        cached.profile
+    }
 
     /**
-     * Exact manual-root policy:
-     *  - online: resolve and download the current Payloads/main payload;
-     *  - network unavailable: use the last successful manual-root snapshot;
-     *  - no prior successful manual snapshot: fail instead of inventing an APK
-     *    embedded fallback.
+     * Online manual root downloads the selected payload again for every run.
+     * Only network unavailability falls back to the last successful manual-root
+     * snapshot. Manifest/hash/compatibility failures remain hard failures.
      */
-    fun prepareManualPayloads(
-        profileId: String? = null,
-        onProgress: (String) -> Unit,
-    ): VerifiedPayloads {
+    fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
         return try {
-            val profile = if (profileId == null) {
-                resolveTarget(DeviceSnapshot.current())
-            } else {
-                resolveTarget(profileId)
-            }
             onProgress("Payload source: Root-My-Galaxy-Payloads-S938B/main")
-            download(profile, onProgress)
+            downloadRemote(profile, onProgress)
         } catch (error: PayloadNetworkException) {
             onProgress("Payloads/main unavailable; using last successful manual-root snapshot")
             val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
-            if (profileId != null && cached.profile.profileId != profileId) {
-                error(context.getString(R.string.repo_profile_missing, profileId))
+            require(cached.profile.profileId == profile.profileId) {
+                context.getString(R.string.repo_profile_missing, profile.profileId)
             }
             cached
         }
     }
 
-    private fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        // A remote manual download stays separate from the active snapshot until
-        // this exact payload set completes exploit + KernelSU verification.
+    private fun downloadRemote(
+        profile: TargetProfile,
+        onProgress: (String) -> Unit,
+    ): VerifiedPayloads {
+        // Downloads remain pending until the normal installer later proves a
+        // successful root on this same boot. A failed manual run cannot replace
+        // the last known-good snapshot used by Auto Root.
         val directory = File(context.filesDir, "payloads/pending/${profile.profileId}").apply {
             deleteRecursively()
             require(mkdirs() || isDirectory) { context.getString(R.string.repo_finalize_failed, name) }
@@ -102,9 +109,16 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
+
+        val bootToken = AutoRootSupport.currentBootToken()
+            ?: error(context.getString(R.string.error_boot_id))
         writeSynced(
             File(directory, "target-v3.json"),
             SupportManifest(3, listOf(profile)).toJsonBytes(),
+        )
+        writeSynced(
+            File(directory, "download-boot-id"),
+            "$bootToken\n".toByteArray(Charsets.US_ASCII),
         )
         return VerifiedPayloads(profile, exploit, kernelSu)
     }
