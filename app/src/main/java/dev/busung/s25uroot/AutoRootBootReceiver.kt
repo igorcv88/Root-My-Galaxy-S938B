@@ -14,6 +14,14 @@ class AutoRootBootReceiver : BroadcastReceiver() {
         val bootToken = AutoRootSupport.currentBootToken() ?: return
         if (!AutoRootSupport.shouldRunForBoot(context, bootToken)) return
 
+        // Mirror the upstream boot preflight, but keep the stronger local boot-token
+        // gate. If another mechanism already restored KernelSU, do not start a
+        // foreground service just to discover the same thing again.
+        if (NativeProbe.isKernelSuActive()) {
+            AutoRootSupport.markVerifiedForBoot(context, bootToken)
+            return
+        }
+
         context.startForegroundService(Intent(context, AutoRootService::class.java))
     }
 }
