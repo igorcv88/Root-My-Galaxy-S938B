@@ -20,6 +20,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.time.Instant
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
 
@@ -58,6 +61,24 @@ class AutoRootService : Service() {
     }
 
     private suspend fun runAutoRoot() {
+        val historyStore = InstallHistoryStore(this)
+        var historyEntry: InstallHistoryEntry? = null
+        fun persist(line: String) {
+            Log.i(TAG, line)
+            val entry = historyEntry ?: return
+            val timestamped = "${Instant.now()} $line"
+            val updated = entry.copy(log = (entry.log + "\n" + timestamped).trim())
+            historyStore.save(updated)
+            historyEntry = updated
+        }
+        fun finishHistory(result: InstallRunResult) {
+            val entry = historyEntry ?: return
+            entry.copy(
+                completedAtMillis = System.currentTimeMillis(),
+                result = result,
+            ).also(historyStore::save)
+            historyEntry = null
+        }
         val initialBootToken = AutoRootSupport.currentBootToken()
         if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
             Log.i(TAG, "Auto Root skipped: kernel boot id is unchanged (soft/userspace reboot) or unverifiable")
@@ -112,11 +133,16 @@ class AutoRootService : Service() {
             }
 
             val useShizuku = ShizukuController.isRunning() && ShizukuController.isGranted()
-            Log.i(TAG, "Auto Root starting with ${if (useShizuku) "Shizuku" else "standalone"} transport")
+            historyEntry = historyStore.create().copy(
+                profileId = payloads.profile.profileId,
+                usedShizuku = useShizuku,
+            ).also(historyStore::save)
+            persist("[*] Auto Root starting transport=${if (useShizuku) "shizuku" else "standalone"}")
             val runner = AutoRootRunner(
                 context = this,
                 useShizuku = useShizuku,
                 onStage = { stage ->
+                    persist("[*] stage=$stage")
                     val message = when (stage) {
                         AutoRootStage.PreparingExploit -> R.string.autoroot_preparing_exploit
                         AutoRootStage.RunningExploit -> R.string.autoroot_running_exploit
@@ -125,17 +151,26 @@ class AutoRootService : Service() {
                     }
                     updateNotification(getString(message))
                 },
-                onLog = { line -> Log.i(TAG, line) },
+                onLog = ::persist,
             )
             runner.run(payloads, bootToken)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
+            persist("[+] Auto Root completed")
+            finishHistory(InstallRunResult.Succeeded)
             finishWithResult(getString(R.string.autoroot_root_restored))
         } catch (error: Throwable) {
-            if (!scope.isActive) return
+            if (!scope.isActive) {
+                persist("[-] Auto Root cancelled")
+                finishHistory(InstallRunResult.Failed)
+                return
+            }
             val detail = error.message ?: error.javaClass.simpleName
             Log.e(TAG, "Auto Root failed", error)
-            finishWithResult(getString(R.string.autoroot_failed, detail))
+            val trace = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
+            persist("[-] Auto Root failed\n$trace")
+            finishHistory(InstallRunResult.Failed)
+            finishWithResult(getString(R.string.autoroot_failed, detail.take(160)))
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
         }
