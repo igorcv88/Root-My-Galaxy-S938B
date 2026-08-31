@@ -21,10 +21,9 @@ android {
         targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
-        // Telemetry is part of the single canonical CZG3 payload. This flag is
-        // retained only for the existing diagnostic log label; it no longer
-        // selects a different manifest, repository ref, or artifact.
-        buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "true")
+        // Legacy logging-only flag. There is now one canonical production CZG3
+        // payload, and that production payload includes race telemetry.
+        buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
