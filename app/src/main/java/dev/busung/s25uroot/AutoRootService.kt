@@ -58,6 +58,13 @@ class AutoRootService : Service() {
     }
 
     private suspend fun runAutoRoot() {
+        val initialBootToken = AutoRootSupport.currentBootToken()
+        if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
+            Log.i(TAG, "Auto Root skipped: kernel boot id is unchanged (soft/userspace reboot) or unverifiable")
+            stopWithoutResult()
+            return
+        }
+
         val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "$packageName:AutoRoot",
@@ -72,8 +79,6 @@ class AutoRootService : Service() {
                 getString(R.string.autoroot_prior_install_required)
             }
 
-            val initialBootToken = AutoRootSupport.currentBootToken()
-                ?: error(getString(R.string.error_boot_id))
             if (NativeProbe.isKernelSuActive()) {
                 AutoRootSupport.markVerifiedForBoot(this, initialBootToken)
                 finishWithResult(getString(R.string.autoroot_root_restored))
