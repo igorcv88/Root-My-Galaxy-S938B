@@ -3,6 +3,7 @@ package dev.busung.s25uroot
 import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.util.Base64
 import java.io.InputStream
 import java.io.OutputStream
 import kotlinx.coroutines.delay
@@ -15,6 +16,7 @@ import kotlin.coroutines.resumeWithException
 
 object ShizukuController {
     private const val PERMISSION_REQUEST_CODE = 0x5352
+    private const val FALLBACK_CHUNK_BYTES = 12 * 1024
 
     fun isRunning(): Boolean = try {
         Shizuku.pingBinder()
@@ -87,18 +89,87 @@ object ShizukuController {
         }
     }
 
+    /**
+     * Stage a file through Shizuku. The normal path streams bytes to a remote `cat` process.
+     * On some Samsung builds the exploit can invalidate that remote stdin pipe while the
+     * Shizuku binder itself remains usable, which surfaces as EPIPE during KernelSU staging.
+     *
+     * If the streaming path fails, retry without using the remote process stdin at all:
+     * send bounded base64 chunks as command arguments and decode/append them remotely.
+     * The fallback always truncates the destination first and removes a partial file on error.
+     */
     fun writeFile(remotePath: String, mode: String, source: InputStream) {
-        val process = exec(arrayOf("sh", "-c", "cat > '$remotePath' && chmod $mode '$remotePath'"))
+        val bytes = source.use { it.readBytes() }
+        val streamingFailure = runCatching {
+            streamFile(remotePath, mode, bytes)
+        }.exceptionOrNull()
+        if (streamingFailure == null) return
+
+        check(isRunning() && isGranted()) {
+            "Shizuku became unavailable while staging $remotePath: ${streamingFailure.message.orEmpty()}"
+        }
+
+        try {
+            writeFileWithoutRemoteStdin(remotePath, mode, bytes)
+        } catch (fallbackError: Throwable) {
+            runCatching { runShellChecked("rm -f '${shellEscape(remotePath)}'") }
+            throw IllegalStateException(
+                "Failed to stage $remotePath after Shizuku stream failure: " +
+                    "${streamingFailure.message.orEmpty()}; fallback: ${fallbackError.message.orEmpty()}",
+                fallbackError,
+            )
+        }
+    }
+
+    private fun streamFile(remotePath: String, mode: String, bytes: ByteArray) {
+        val escapedPath = shellEscape(remotePath)
+        val process = exec(arrayOf("sh", "-c", "cat > '$escapedPath' && chmod $mode '$escapedPath'"))
         val exitCode = try {
-            process.outputStream.use { output ->
-                source.use { input -> input.copyTo(output, DEFAULT_BUFFER_SIZE) }
-            }
+            process.outputStream.use { output -> bytes.inputStream().use { it.copyTo(output, DEFAULT_BUFFER_SIZE) } }
             process.waitFor()
         } finally {
             if (process.isAlive) process.destroy()
         }
         check(exitCode == 0) { "Failed to stage $remotePath (exit $exitCode)" }
     }
+
+    private fun writeFileWithoutRemoteStdin(remotePath: String, mode: String, bytes: ByteArray) {
+        val escapedPath = shellEscape(remotePath)
+        runShellChecked(": > '$escapedPath'")
+
+        var offset = 0
+        while (offset < bytes.size) {
+            check(isRunning() && isGranted()) { "Shizuku became unavailable during fallback staging" }
+            val count = minOf(FALLBACK_CHUNK_BYTES, bytes.size - offset)
+            val encoded = Base64.encodeToString(bytes, offset, count, Base64.NO_WRAP)
+            runShellChecked("printf '%s' '$encoded' | base64 -d >> '$escapedPath'")
+            offset += count
+        }
+
+        runShellChecked("chmod $mode '$escapedPath'")
+        val remoteSize = capture(arrayOf("sh", "-c", "wc -c < '$escapedPath'"))
+            .trim()
+            .toLongOrNull()
+        check(remoteSize == bytes.size.toLong()) {
+            "Staged size mismatch for $remotePath: $remoteSize != ${bytes.size}"
+        }
+    }
+
+    private fun runShellChecked(command: String) {
+        val process = exec(arrayOf("sh", "-c", command))
+        val stderr: String
+        val exitCode = try {
+            stderr = process.errorStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+        } finally {
+            if (process.isAlive) process.destroy()
+        }
+        check(exitCode == 0) {
+            "Shizuku shell command failed (exit $exitCode): ${stderr.trim()}"
+        }
+    }
+
+    private fun shellEscape(value: String): String = value.replace("'", "'\\''")
 
     private class RemoteProcess(private val remote: IRemoteProcess) : Process() {
         private val input by lazy { ParcelFileDescriptor.AutoCloseInputStream(remote.getInputStream()) }
