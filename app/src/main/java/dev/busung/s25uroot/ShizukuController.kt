@@ -101,13 +101,13 @@ object ShizukuController {
         val quotedPath = shellQuote(remotePath)
         val command = """
             target=$quotedPath
-            tmp="\${'$'}target.shizuku.\${'$'}\${'$'}"
-            cleanup() { rm -f "\${'$'}tmp"; }
+            tmp="${'$'}target.shizuku.${'$'}${'$'}"
+            cleanup() { rm -f "${'$'}tmp"; }
             trap cleanup EXIT HUP INT TERM
-            rm -f "\${'$'}tmp" &&
-            cat > "\${'$'}tmp" &&
-            chmod $mode "\${'$'}tmp" &&
-            mv -f "\${'$'}tmp" "\${'$'}target"
+            rm -f "${'$'}tmp" &&
+            cat > "${'$'}tmp" &&
+            chmod $mode "${'$'}tmp" &&
+            mv -f "${'$'}tmp" "${'$'}target"
         """.trimIndent()
 
         val process = exec(arrayOf("/system/bin/sh", "-c", command))
