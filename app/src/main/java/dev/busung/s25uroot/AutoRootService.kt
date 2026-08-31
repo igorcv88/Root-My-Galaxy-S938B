@@ -115,13 +115,14 @@ class AutoRootService : Service() {
             historyEntry = updated
             saveHistory(force)
         }
-        fun finishHistory(result: InstallRunResult) {
+        fun finishHistory(result: InstallRunResult, keepOpenForPostRootDiagnostics: Boolean = false) {
             val entry = historyEntry ?: return
-            entry.copy(
+            val completed = entry.copy(
                 completedAtMillis = System.currentTimeMillis(),
                 result = result,
-            ).also(historyStore::save)
-            historyEntry = null
+            )
+            historyStore.save(completed)
+            historyEntry = if (keepOpenForPostRootDiagnostics) completed else null
         }
         val initialBootToken = AutoRootSupport.currentBootToken()
         if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
@@ -198,6 +199,11 @@ class AutoRootService : Service() {
                 force = true,
             )
             persist(AndroidRunContext.snapshot(this, "shizuku_health_complete", shizukuHealthCompletedAt), force = true)
+            persist(
+                "[*] payload_mode=${if (BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) "diagnostic" else "production"} " +
+                    "sha256=${payloads.profile.exploit.sha256} size=${payloads.profile.exploit.size}",
+                force = true,
+            )
             if (shizukuCandidate && !useShizuku) {
                 persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
             }
@@ -239,18 +245,36 @@ class AutoRootService : Service() {
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
             persist("[+] Auto Root completed")
             val softReboot = AppPreferences.softRebootAfterRoot(this)
-            if (softReboot) persist("[*] KernelSU soft reboot requested", force = true)
-            finishHistory(InstallRunResult.Succeeded)
 
             if (softReboot) {
+                persist("[*] KernelSU soft reboot requested", force = true)
+                // Mark the root run successful before userspace can disappear, but
+                // keep the in-memory entry available so a failed/no-op reboot is
+                // appended to the same History record instead of vanishing in Logcat.
+                finishHistory(InstallRunResult.Succeeded, keepOpenForPostRootDiagnostics = true)
                 updateNotification(getString(R.string.soft_reboot_starting))
-                val result = KernelSuSoftReboot.request(this)
+                val result = runCatching { KernelSuSoftReboot.request(this) }
+                    .getOrElse { error ->
+                        SoftRebootResult(false, error.message ?: error.javaClass.simpleName)
+                    }
                 if (result.started) {
-                    Log.i(TAG, "KernelSU soft reboot started")
+                    persist(
+                        "[+] KernelSU soft reboot acknowledged\n${result.detail}",
+                        force = true,
+                    )
+                    historyEntry = null
+                    Log.i(TAG, "KernelSU soft reboot started: ${result.detail}")
                     stopWithoutResult()
                     return
                 }
+                persist(
+                    "[-] KernelSU soft reboot was not started\n${result.detail}",
+                    force = true,
+                )
+                historyEntry = null
                 Log.w(TAG, "KernelSU soft reboot was not started: ${result.detail}")
+            } else {
+                finishHistory(InstallRunResult.Succeeded)
             }
             finishWithResult(getString(R.string.autoroot_root_restored))
         } catch (error: CancellationException) {
