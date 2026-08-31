@@ -4,8 +4,12 @@
     {
       "payloadId": "pa3q-S938BXXSBCZG3",
       "displayName": "Galaxy S25 Ultra SM-S938B | S938BXXSBCZG3",
-      "models": ["SM-S938B"],
-      "kernelVersions": ["6.6.98"],
+      "models": [
+        "SM-S938B"
+      ],
+      "kernelVersions": [
+        "6.6.98"
+      ],
       "exactMatch": {
         "manufacturer": "samsung",
         "model": "SM-S938B",
@@ -20,9 +24,9 @@
         "pageSize": 4096
       },
       "exploit": {
-        "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/artifacts/pa3q-S938BXXSBCZG3-v0265/cve-2026-43499-app.so",
+        "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/artifacts/pa3q-S938BXXSBCZG3-v0266/cve-2026-43499-app.so",
         "size": 104128,
-        "sha256": "1719e9362cd19e58521cb785fcaa40c4613ca854d0c3c9fb8320edf8e9046303"
+        "sha256": "41c8e461da058607a66c229d2ed7b8204b8c2cf63aa349c1d0d235d3d12a4cd8"
       },
       "kernelsu": {
         "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/kernelsu/ksud-s25u-kdp-v3.3.0",
