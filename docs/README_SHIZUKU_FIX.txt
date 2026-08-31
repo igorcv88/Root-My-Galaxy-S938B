@@ -1,0 +1,1 @@
+Hardware log: exploit completed with done=1 root=1, then KernelSU staging failed with EPIPE through Shizuku remote stdin. The code now retries staging through bounded command-argument chunks when the Shizuku Binder remains healthy.
