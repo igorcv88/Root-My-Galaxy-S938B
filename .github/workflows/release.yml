@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           git fetch --force --tags origin
           SERIES_PATTERN="${RELEASE_SERIES//./\.}"
+          BASE_TAG="$(git tag --sort=-version:refname --list "v${RELEASE_SERIES}.*" | head -n 1)"
           LAST_PATCH="$(
             git tag --list "v${RELEASE_SERIES}.*" \
               | sed -nE "s/^v${SERIES_PATTERN}\.([0-9]+)$/\1/p" \
@@ -56,10 +57,17 @@ jobs:
           fi
 
           {
+            echo "BASE_TAG=$BASE_TAG"
             echo "VERSION_NAME=$VERSION_NAME"
             echo "VERSION_CODE=$VERSION_CODE"
             echo "RELEASE_TAG=$RELEASE_TAG"
           } >> "$GITHUB_ENV"
+
+      - name: Reservar tag da release
+        run: |
+          set -euo pipefail
+          git tag "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}"
 
       - name: Verificar regras do Auto Root
         run: |
@@ -158,7 +166,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          BASE_TAG="$(git tag --sort=-version:refname --list "v${RELEASE_SERIES}.*" | head -n 1)"
           SHA256="$(awk '{print $1}' "${RELEASE_ASSET}.sha256")"
           NOTES_PATH="$RUNNER_TEMP/release-notes.md"
           export BASE_TAG
@@ -180,10 +187,22 @@ jobs:
           gh release create "$RELEASE_TAG" \
             "$RELEASE_ASSET" \
             "${RELEASE_ASSET}.sha256" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "Root My Galaxy ${VERSION_NAME}" \
             --notes-file "$NOTES_PATH" \
             --latest
+
+      - name: Remover tag reservada se a publicação falhar
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "A release já existe; preservando ${RELEASE_TAG}."
+            exit 0
+          fi
+          git push origin ":refs/tags/${RELEASE_TAG}" || true
 
       - name: Apagar chave temporária
         if: always()
