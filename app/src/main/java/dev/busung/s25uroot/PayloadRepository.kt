@@ -41,7 +41,13 @@ class PayloadRepository(private val context: Context) {
         ?: error(context.getString(R.string.repo_profile_missing, profileId))
 
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        val directory = File(context.filesDir, "payloads/${profile.profileId}").apply { mkdirs() }
+        // Manual updates are staged separately from the last known-good Auto Root
+        // snapshot. A failed exploit or late-load therefore cannot overwrite the
+        // payload set that will be used on the next full boot.
+        val directory = File(context.filesDir, "payloads/pending/${profile.profileId}").apply {
+            deleteRecursively()
+            require(mkdirs() || isDirectory) { context.getString(R.string.repo_finalize_failed, name) }
+        }
         val exploit = downloadArtifact(
             profile.exploit,
             File(directory, "cve-2026-43499-app.so"),
