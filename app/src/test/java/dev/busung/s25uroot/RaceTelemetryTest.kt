@@ -26,6 +26,19 @@ class RaceTelemetryTest {
         assertEquals(1, result.malformedRecords)
     }
 
+    @Test fun usesOnlyTheCompletedRunAttemptAndRace() {
+        val priorAttempt = trace(pselectReturn = 500_000, ret = 0, window = 0)
+            .replace("run=0123456789abcdef", "run=fedcba9876543210")
+            .replace("attempt=1|race=42", "attempt=1|race=41")
+            .replace("trace_complete=1", "trace_complete=0")
+        val completedAttempt = trace(pselectReturn = 100_100_000, ret = 7, window = 1)
+            .replace("attempt=1|race=42", "attempt=2|race=42")
+        val result = RaceTelemetryParser.analyze("$priorAttempt\n$completedAttempt")
+
+        assertEquals(100_000L, result.measurementsMicros["pselect_duration_us"])
+        assertTrue(result.traceComplete == true)
+    }
+
     @Test fun historyLogBoundIsExplicit() {
         assertTrue(InstallHistoryStore.MAX_LOG_CHARS >= 1_000_000)
         assertFalse(raceAnalysisReport("none").length > 4_096)

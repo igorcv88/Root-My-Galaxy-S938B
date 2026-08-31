@@ -1,6 +1,8 @@
 package dev.busung.s25uroot
 
 internal data class RaceRecord(
+    val runId: String,
+    val attempt: Int,
     val raceId: String,
     val role: String,
     val event: String,
@@ -28,7 +30,13 @@ internal object RaceTelemetryParser {
                 .getOrElse { malformed++; null }
         }.toList()
         val status = records.lastOrNull { it.event == "trace_status" }
-        val activeRecords = status?.let { completed -> records.filter { it.raceId == completed.raceId } }.orEmpty()
+        val activeRecords = status?.let { completed ->
+            records.filter {
+                it.runId == completed.runId &&
+                    it.attempt == completed.attempt &&
+                    it.raceId == completed.raceId
+            }
+        }.orEmpty()
         fun time(event: String): Long? = activeRecords.firstOrNull { it.event == event }?.timestampRawNanos
         fun delta(start: String, end: String): Long? {
             val first = time(start) ?: return null
@@ -36,9 +44,9 @@ internal object RaceTelemetryParser {
             return ((last - first).takeIf { it >= 0 })?.div(1_000)
         }
         val schedulerDeltas = listOf("parent", "owner", "waiter", "consumer").associateWith { role ->
-            schedulerDelta(log, role, "nr_migrations")
+            schedulerDelta(log, status?.runId, role, "nr_migrations")
         } + listOf("parent", "owner", "waiter", "consumer").associate { role ->
-            "${role}_involuntary_switches" to schedulerDelta(log, role, "nr_involuntary_switches")
+            "${role}_involuntary_switches" to schedulerDelta(log, status?.runId, role, "nr_involuntary_switches")
         }
         return RaceAnalysis(
             measurementsMicros = linkedMapOf(
@@ -57,9 +65,15 @@ internal object RaceTelemetryParser {
         )
     }
 
-    private fun schedulerDelta(log: String, role: String, field: String): Long? {
+    private fun schedulerDelta(log: String, runId: String?, role: String, field: String): Long? {
+        if (runId == null) return null
         fun value(phase: String): Long? = log.lineSequence()
-            .filter { it.contains("RMG_SYS_V1|") && it.contains("|phase=$phase|") && it.contains("|kind=${role}_sched|") }
+            .filter {
+                it.contains("RMG_SYS_V1|") &&
+                    it.contains("|run=$runId|") &&
+                    it.contains("|phase=$phase|") &&
+                    it.contains("|kind=${role}_sched|")
+            }
             .mapNotNull { line ->
                 val text = line.substringAfter("|line=", "")
                 if (!text.substringBefore(':').trim().endsWith(field)) null else text.substringAfter(':').trim().toDoubleOrNull()?.toLong()
@@ -78,9 +92,11 @@ internal object RaceTelemetryParser {
         }
         val role = requireNotNull(fields["role"]).also { require(it.matches(Regex("[a-z_]+"))) }
         val event = requireNotNull(fields["event"]).also { require(it.matches(Regex("[a-z0-9_]+"))) }
+        val runId = requireNotNull(fields["run"]).also { require(it.matches(Regex("[0-9a-fA-F]+"))) }
+        val attempt = requireNotNull(fields["attempt"]).toInt().also { require(it > 0) }
         val raceId = requireNotNull(fields["race"]).also { require(it.toLong() > 0) }
         val timestamp = requireNotNull(fields["ts_raw_ns"]).toLong().also { require(it >= 0) }
-        return RaceRecord(raceId, role, event, timestamp, fields - setOf("race", "role", "event", "ts_raw_ns"))
+        return RaceRecord(runId, attempt, raceId, role, event, timestamp, fields - setOf("run", "attempt", "race", "role", "event", "ts_raw_ns"))
     }
 }
 

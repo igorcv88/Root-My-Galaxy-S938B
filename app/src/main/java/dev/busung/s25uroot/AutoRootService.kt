@@ -33,6 +33,7 @@ class AutoRootService : Service() {
     private var runJob: Job? = null
     private var watchdogJob: Job? = null
     private var serviceStartedAtUptimeMillis: Long = -1
+    private var serviceStartedContext: String? = null
 
     @Volatile
     private var watchdogExpired = false
@@ -40,6 +41,7 @@ class AutoRootService : Service() {
     override fun onCreate() {
         super.onCreate()
         serviceStartedAtUptimeMillis = SystemClock.elapsedRealtime()
+        serviceStartedContext = AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis)
         createNotificationChannel()
     }
 
@@ -190,7 +192,11 @@ class AutoRootService : Service() {
                 payloadSha256 = payloads.profile.exploit.sha256,
                 payloadSize = payloads.profile.exploit.size,
             ).also(historyStore::save)
-            persist(AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis), force = true)
+            persist(
+                serviceStartedContext
+                    ?: AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis),
+                force = true,
+            )
             persist(AndroidRunContext.snapshot(this, "shizuku_health_complete", shizukuHealthCompletedAt), force = true)
             if (shizukuCandidate && !useShizuku) {
                 persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
