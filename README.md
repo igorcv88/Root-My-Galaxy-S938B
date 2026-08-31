@@ -39,7 +39,7 @@ This repository is derived from [BuSung-dev/Root-My-Galaxy](https://github.com/B
 - **Fail-closed boot-time behavior** — Auto Root does not download a newly published exploit during boot and does not silently substitute a different payload. If its last verified local snapshot is missing, modified or incompatible with the current firmware, it stops.
 - **Integrated signed release pipeline** — release builds validate the current CZG3 payload metadata, run tests and lint, sign and verify the APK, publish a checksum, and generate release notes.
 
-Shizuku support, Advanced mode, installation history and much of the base UI originate from or are also present in upstream and are therefore not presented here as fork-exclusive features.
+Shizuku support, Advanced mode, installation history and much of the base UI originate from upstream and are therefore not fork-exclusive features.
 
 ## Compatibility
 
