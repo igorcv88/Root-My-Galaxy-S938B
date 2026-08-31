@@ -35,6 +35,7 @@ object AppPreferences {
     private const val ADVANCED_MODE = "advanced_mode"
     private const val SHIZUKU_MODE = "shizuku_mode"
     private const val AUTO_ROOT_ENABLED = "auto_root_enabled"
+    private const val SOFT_REBOOT_AFTER_ROOT = "soft_reboot_after_root"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
@@ -81,6 +82,15 @@ object AppPreferences {
     fun setAutoRootEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit()
             .putBoolean(AUTO_ROOT_ENABLED, enabled)
+            .apply()
+    }
+
+    fun softRebootAfterRoot(context: Context): Boolean =
+        prefs(context).getBoolean(SOFT_REBOOT_AFTER_ROOT, false)
+
+    fun setSoftRebootAfterRoot(context: Context, enabled: Boolean) {
+        prefs(context).edit()
+            .putBoolean(SOFT_REBOOT_AFTER_ROOT, enabled)
             .apply()
     }
 

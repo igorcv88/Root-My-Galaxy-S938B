@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="soft_reboot_title">Redémarrage logiciel après le root</string>
+    <string name="soft_reboot_description">Redémarre l’espace utilisateur Android après l’obtention du root afin d’initialiser les services et modules KernelSU sans redémarrer complètement le noyau.</string>
+    <string name="soft_reboot_starting">Redémarrage de l’espace utilisateur Android pour KernelSU</string>
+    <string name="soft_reboot_failed">Le redémarrage logiciel n’a pas été lancé : %1$s</string>
+</resources>

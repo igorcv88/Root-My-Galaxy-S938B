@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,8 +90,16 @@ class InstallActivity : ComponentActivity() {
                 themeMode = AppPreferences.themeMode(this),
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
+                val history by installViewModel.history.collectAsStateWithLifecycle()
                 var autoRootEnabled by remember {
                     mutableStateOf(AppPreferences.autoRootEnabled(this@InstallActivity))
+                }
+                var softRebootEnabled by remember {
+                    mutableStateOf(AppPreferences.softRebootAfterRoot(this@InstallActivity))
+                }
+                var softRebootTriggered by rememberSaveable { mutableStateOf(false) }
+                var installSessionStartedAt by rememberSaveable {
+                    mutableStateOf(if (startInstall) System.currentTimeMillis() else 0L)
                 }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
@@ -130,15 +139,51 @@ class InstallActivity : ComponentActivity() {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
+                val setSoftReboot: (Boolean) -> Unit = { enabled ->
+                    AppPreferences.setSoftRebootAfterRoot(this@InstallActivity, enabled)
+                    softRebootEnabled = enabled
+                    if (!enabled) softRebootTriggered = false
+                }
+
                 BackHandler(enabled = installState.busy) {}
                 LaunchedEffect(startInstall, profileId) {
                     if (startInstall) installViewModel.install(profileId)
+                }
+                LaunchedEffect(installState.phase, history, softRebootEnabled, installSessionStartedAt) {
+                    val latestRun = history.firstOrNull()
+                    val persistedSuccess = installSessionStartedAt > 0L &&
+                        latestRun?.result == InstallRunResult.Succeeded &&
+                        latestRun.completedAtMillis != null &&
+                        latestRun.startedAtMillis >= installSessionStartedAt
+                    if (
+                        installState.phase == InstallPhase.Installed &&
+                        persistedSuccess &&
+                        softRebootEnabled &&
+                        !softRebootTriggered
+                    ) {
+                        softRebootTriggered = true
+                        val result = KernelSuSoftReboot.request(this@InstallActivity)
+                        if (!result.started) {
+                            softRebootTriggered = false
+                            Toast.makeText(
+                                this@InstallActivity,
+                                getString(R.string.soft_reboot_failed, result.detail.take(160)),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
                 }
                 InstallScreen(
                     installState = installState,
                     autoRootEnabled = autoRootEnabled,
                     onAutoRootEnabledChanged = setAutoRoot,
-                    onRetry = { installViewModel.install(profileId) },
+                    softRebootEnabled = softRebootEnabled,
+                    onSoftRebootEnabledChanged = setSoftReboot,
+                    onRetry = {
+                        installSessionStartedAt = System.currentTimeMillis()
+                        softRebootTriggered = false
+                        installViewModel.install(profileId)
+                    },
                     onClose = ::finish,
                 )
             }
@@ -179,6 +224,8 @@ private fun InstallScreen(
     installState: InstallUiState,
     autoRootEnabled: Boolean,
     onAutoRootEnabledChanged: (Boolean) -> Unit,
+    softRebootEnabled: Boolean,
+    onSoftRebootEnabledChanged: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -227,6 +274,10 @@ private fun InstallScreen(
                 AutoRootOptInCard(
                     enabled = autoRootEnabled,
                     onEnabledChanged = onAutoRootEnabledChanged,
+                )
+                SoftRebootOptInCard(
+                    enabled = softRebootEnabled,
+                    onEnabledChanged = onSoftRebootEnabledChanged,
                 )
             }
 
@@ -300,6 +351,45 @@ private fun AutoRootOptInCard(
                 )
                 Text(
                     text = stringResource(R.string.autoroot_opt_in_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChanged,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SoftRebootOptInCard(
+    enabled: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.soft_reboot_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.soft_reboot_description),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
