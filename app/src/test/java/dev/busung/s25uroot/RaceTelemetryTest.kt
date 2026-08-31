@@ -27,16 +27,31 @@ class RaceTelemetryTest {
     }
 
     @Test fun usesOnlyTheCompletedRunAttemptAndRace() {
-        val priorAttempt = trace(pselectReturn = 500_000, ret = 0, window = 0)
+        val priorRun = trace(pselectReturn = 500_000, ret = 0, window = 0)
             .replace("run=0123456789abcdef", "run=fedcba9876543210")
-            .replace("attempt=1|race=42", "attempt=1|race=41")
+            .replace("attempt=1|race=42", "attempt=2|race=42")
+            .replace("trace_complete=1", "trace_complete=0")
+        val priorAttempt = trace(pselectReturn = 700_000, ret = 0, window = 0)
             .replace("trace_complete=1", "trace_complete=0")
         val completedAttempt = trace(pselectReturn = 100_100_000, ret = 7, window = 1)
             .replace("attempt=1|race=42", "attempt=2|race=42")
-        val result = RaceTelemetryParser.analyze("$priorAttempt\n$completedAttempt")
+        val result = RaceTelemetryParser.analyze("$priorRun\n$priorAttempt\n$completedAttempt")
 
         assertEquals(100_000L, result.measurementsMicros["pselect_duration_us"])
         assertTrue(result.traceComplete == true)
+    }
+
+    @Test fun schedulerDeltasUseOnlyTheCompletedRun() {
+        val log = """
+            RMG_SYS_V1|run=fedcba9876543210|phase=pre|kind=parent_sched|available=1|line=nr_migrations : 100
+            RMG_SYS_V1|run=fedcba9876543210|phase=post|kind=parent_sched|available=1|line=nr_migrations : 120
+            RMG_SYS_V1|run=0123456789abcdef|phase=pre|kind=parent_sched|available=1|line=nr_migrations : 5
+            RMG_SYS_V1|run=0123456789abcdef|phase=post|kind=parent_sched|available=1|line=nr_migrations : 7
+            ${trace(pselectReturn = 100_100_000, ret = 7, window = 1)}
+        """.trimIndent()
+        val result = RaceTelemetryParser.analyze(log)
+
+        assertEquals(2L, result.schedulerDeltas["parent"])
     }
 
     @Test fun historyLogBoundIsExplicit() {
