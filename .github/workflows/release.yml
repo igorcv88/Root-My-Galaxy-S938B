@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Baixar repositório
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -164,7 +164,7 @@ jobs:
           fi
 
       - name: Preparar Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -241,6 +241,25 @@ jobs:
           sha256sum "$RELEASE_ASSET" | tee "${RELEASE_ASSET}.sha256"
           echo "RELEASE_ASSET=$RELEASE_ASSET" >> "$GITHUB_ENV"
 
+      - name: Gerar changelog detalhado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE_TAG="$(git tag --sort=-version:refname --list "v${RELEASE_SERIES}.*" | head -n 1)"
+          SHA256="$(awk '{print $1}' "${RELEASE_ASSET}.sha256")"
+          NOTES_PATH="$RUNNER_TEMP/release-notes.md"
+          export BASE_TAG
+          export HEAD_SHA="$GITHUB_SHA"
+          export VERSION_NAME
+          export SHA256
+          export PRODUCT_NAME="Root My Galaxy"
+          export BASE_BRANCH="main"
+          export NOTES_PATH
+          python3 .github/scripts/build_release_notes.py
+          test -s "$NOTES_PATH"
+          echo "NOTES_PATH=$NOTES_PATH" >> "$GITHUB_ENV"
+
       - name: Publicar release com changelog
         env:
           GH_TOKEN: ${{ github.token }}
@@ -251,7 +270,7 @@ jobs:
             "${RELEASE_ASSET}.sha256" \
             --target "$GITHUB_SHA" \
             --title "Root My Galaxy ${VERSION_NAME}" \
-            --generate-notes \
+            --notes-file "$NOTES_PATH" \
             --latest
 
       - name: Apagar chave temporária
