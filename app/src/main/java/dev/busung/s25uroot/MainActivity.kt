@@ -1226,6 +1226,7 @@ private fun HistoryDetail(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val logChunks = remember(entry.log) { historyLogChunks(entry.log) }
     val exportLogLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -1285,16 +1286,69 @@ private fun HistoryDetail(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 ),
             ) {
-                Text(
-                    text = entry.log.ifBlank { stringResource(R.string.history_log_empty) },
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                if (logChunks.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.history_log_empty),
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+                        contentPadding = PaddingValues(16.dp),
+                    ) {
+                        items(logChunks) { chunk ->
+                            Text(
+                                text = chunk,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+internal const val HISTORY_LOG_RENDER_CHUNK_CHARS = 4_096
+
+internal fun historyLogChunks(
+    log: String,
+    maxChunkChars: Int = HISTORY_LOG_RENDER_CHUNK_CHARS,
+): List<String> {
+    require(maxChunkChars > 0)
+    if (log.isEmpty()) return emptyList()
+
+    val chunks = ArrayList<String>((log.length + maxChunkChars - 1) / maxChunkChars)
+    var start = 0
+    while (start < log.length) {
+        val hardEnd = minOf(start + maxChunkChars, log.length)
+        var end = hardEnd
+        if (hardEnd < log.length) {
+            val newline = log.lastIndexOf('\n', hardEnd - 1)
+            if (newline >= start + maxChunkChars / 2) {
+                end = newline + 1
+            }
+        }
+        if (
+            end < log.length &&
+            end > start &&
+            Character.isHighSurrogate(log[end - 1]) &&
+            Character.isLowSurrogate(log[end])
+        ) {
+            end--
+        }
+        if (end <= start) {
+            end = minOf(hardEnd + 1, log.length)
+        }
+        chunks += log.substring(start, end)
+        start = end
+    }
+    return chunks
 }
 
 @Composable
