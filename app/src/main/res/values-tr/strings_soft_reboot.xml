@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="soft_reboot_title">Root sonrası yumuşak yeniden başlatma</string>
+    <string name="soft_reboot_description">Root başarıyla alındıktan sonra KernelSU hizmetlerini ve modüllerini tam çekirdek yeniden başlatması olmadan başlatmak için Android kullanıcı alanını yeniden başlatır.</string>
+    <string name="soft_reboot_starting">KernelSU için Android kullanıcı alanı yeniden başlatılıyor</string>
+    <string name="soft_reboot_failed">Yumuşak yeniden başlatma başlatılamadı: %1$s</string>
+</resources>
