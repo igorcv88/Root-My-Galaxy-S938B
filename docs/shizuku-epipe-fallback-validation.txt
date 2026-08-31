@@ -1,0 +1,1 @@
+Validation target: reproduce the prior hardware path where exploit reaches done=1 root=1 and KernelSU staging previously failed with EPIPE. Expected result after this change: fallback staging completes, exact byte count matches, and --late-load proceeds without rerunning the exploit.
