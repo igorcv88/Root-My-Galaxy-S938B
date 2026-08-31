@@ -1,5 +1,6 @@
 package dev.busung.s25uroot
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,6 +69,12 @@ class TargetProfileTest {
         assertTrue(genericOnly.matchesKernelVersion(device))
         assertFalse(genericOnly.matches(device))
         assertFalse(genericOnly.matchesKernel(device))
+    }
+
+    @Test
+    fun verifiedSnapshotManifestRoundTripsWithoutChangingProfile() {
+        val manifest = SupportManifest(3, listOf(profile))
+        assertEquals(manifest, SupportManifest.parse(manifest.toJsonBytes()))
     }
 
     private fun snapshot(
