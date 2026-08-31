@@ -33,6 +33,9 @@ class AutoRootService : Service() {
     private var runJob: Job? = null
     private var watchdogJob: Job? = null
 
+    @Volatile
+    private var watchdogExpired = false
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -52,23 +55,25 @@ class AutoRootService : Service() {
             startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
         }
 
+        watchdogExpired = false
         runJob = scope.launch {
             try {
                 runAutoRoot()
             } finally {
-                watchdogJob?.cancel()
+                if (!watchdogExpired) watchdogJob?.cancel()
                 watchdogJob = null
             }
         }
         watchdogJob = scope.launch {
             delay(AUTO_ROOT_SERVICE_WATCHDOG_MILLIS)
             if (runJob?.isActive == true) {
+                watchdogExpired = true
                 Log.e(TAG, "Auto Root service watchdog expired")
                 runJob?.cancel(CancellationException("Auto Root service watchdog expired"))
                 finishWithResult(
                     getString(
                         R.string.autoroot_failed,
-                        "service watchdog exceeded 25 minutes",
+                        getString(R.string.autoroot_service_watchdog_timeout),
                     ),
                 )
             }
