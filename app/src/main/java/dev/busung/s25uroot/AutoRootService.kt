@@ -186,7 +186,20 @@ class AutoRootService : Service() {
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
             persist("[+] Auto Root completed")
+            val softReboot = AppPreferences.softRebootAfterRoot(this)
+            if (softReboot) persist("[*] KernelSU soft reboot requested", force = true)
             finishHistory(InstallRunResult.Succeeded)
+
+            if (softReboot) {
+                updateNotification(getString(R.string.soft_reboot_starting))
+                val result = KernelSuSoftReboot.request(this)
+                if (result.started) {
+                    Log.i(TAG, "KernelSU soft reboot started")
+                    stopWithoutResult()
+                    return
+                }
+                Log.w(TAG, "KernelSU soft reboot was not started: ${result.detail}")
+            }
             finishWithResult(getString(R.string.autoroot_root_restored))
         } catch (error: Throwable) {
             if (!scope.isActive) {
