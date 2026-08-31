@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">Root automatique après redémarrage</string>
+    <string name="autoroot_opt_in_description">Restaure automatiquement KernelSU après un redémarrage complet. Auto Root s’exécute au maximum une fois par démarrage, exige le firmware exact pris en charge, vérifie le SHA-256 des charges utiles mises en cache et utilise Shizuku uniquement s’il est déjà disponible et autorisé.</string>
+    <string name="autoroot_channel_name">Restauration automatique du root</string>
+    <string name="autoroot_channel_description">Progression et résultats pendant que Root My Galaxy restaure KernelSU après le démarrage.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">En attente d’Android…</string>
+    <string name="autoroot_stabilizing_android">Android est prêt. En attente de la stabilisation du système…</string>
+    <string name="autoroot_checking_firmware">Vérification du firmware exact et des charges utiles en cache…</string>
+    <string name="autoroot_preparing_exploit">Préparation de l’exploit…</string>
+    <string name="autoroot_running_exploit">Exécution de l’exploit…</string>
+    <string name="autoroot_loading_ksu">Chargement de KernelSU…</string>
+    <string name="autoroot_verifying_root">Vérification du canal de contrôle KernelSU…</string>
+    <string name="autoroot_root_restored">Root restauré</string>
+    <string name="autoroot_failed">Échec d’Auto Root : %1$s</string>
+    <string name="autoroot_disable">Désactiver Auto Root</string>
+    <string name="autoroot_profile_invalid">Le profil Auto Root intégré n’est pas valide.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root interrompu : firmware non pris en charge ou modifié.</string>
+    <string name="autoroot_cached_payload_invalid">La vérification d’intégrité de la charge utile mise en cache a échoué : %1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root nécessite une installation manuelle de KernelSU préalablement vérifiée.</string>
+    <string name="autoroot_boot_timeout">Android n’a pas signalé la fin du démarrage dans le délai autorisé.</string>
+    <string name="autoroot_boot_changed">L’identifiant de démarrage du noyau a changé pendant l’attente d’Auto Root.</string>
+    <string name="autoroot_already_attempted">Auto Root a déjà effectué une tentative pendant ce démarrage. Aucune nouvelle tentative automatique ne sera effectuée.</string>
+    <string name="autoroot_notification_permission">L’autorisation des notifications est requise avant d’activer Auto Root.</string>
+</resources>

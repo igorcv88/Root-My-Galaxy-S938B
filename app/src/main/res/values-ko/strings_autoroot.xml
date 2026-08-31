@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">재부팅 후 자동 루트</string>
+    <string name="autoroot_opt_in_description">완전 재부팅 후 KernelSU를 자동으로 복원합니다. Auto Root는 부팅당 최대 한 번만 실행되며 정확히 지원되는 펌웨어를 요구하고, 캐시된 페이로드의 SHA-256을 검증하며, Shizuku가 이미 실행 중이고 권한이 있을 때만 사용합니다.</string>
+    <string name="autoroot_channel_name">자동 루트 복원</string>
+    <string name="autoroot_channel_description">부팅 후 Root My Galaxy가 KernelSU를 복원하는 동안의 진행 상황과 결과입니다.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">Android를 기다리는 중…</string>
+    <string name="autoroot_stabilizing_android">Android가 준비되었습니다. 시스템 안정화를 기다리는 중…</string>
+    <string name="autoroot_checking_firmware">정확한 펌웨어와 캐시된 페이로드를 확인하는 중…</string>
+    <string name="autoroot_preparing_exploit">익스플로잇 준비 중…</string>
+    <string name="autoroot_running_exploit">익스플로잇 실행 중…</string>
+    <string name="autoroot_loading_ksu">KernelSU 로드 중…</string>
+    <string name="autoroot_verifying_root">KernelSU 제어 채널 확인 중…</string>
+    <string name="autoroot_root_restored">루트가 복원되었습니다</string>
+    <string name="autoroot_failed">Auto Root 실패: %1$s</string>
+    <string name="autoroot_disable">Auto Root 비활성화</string>
+    <string name="autoroot_profile_invalid">내장 Auto Root 프로필이 올바르지 않습니다.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root 중단: 지원되지 않거나 변경된 펌웨어입니다.</string>
+    <string name="autoroot_cached_payload_invalid">캐시된 페이로드의 무결성 검증에 실패했습니다: %1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root를 사용하려면 이전에 검증된 KernelSU 수동 설치가 필요합니다.</string>
+    <string name="autoroot_boot_timeout">허용된 시간 내에 Android가 부팅 완료를 보고하지 않았습니다.</string>
+    <string name="autoroot_boot_changed">Auto Root 대기 중 커널 부팅 식별자가 변경되었습니다.</string>
+    <string name="autoroot_already_attempted">이번 부팅에서는 Auto Root가 이미 시도되었습니다. 자동 재시도는 수행되지 않습니다.</string>
+    <string name="autoroot_notification_permission">Auto Root를 활성화하려면 먼저 알림 권한이 필요합니다.</string>
+</resources>

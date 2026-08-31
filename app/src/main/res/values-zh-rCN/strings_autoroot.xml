@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">重启后自动 Root</string>
+    <string name="autoroot_opt_in_description">完整重启后自动恢复 KernelSU。Auto Root 每次启动最多运行一次，只允许完全匹配的受支持固件，验证缓存 payload 的 SHA-256，并且仅在 Shizuku 已运行且已授权时使用它。</string>
+    <string name="autoroot_channel_name">自动恢复 Root</string>
+    <string name="autoroot_channel_description">Root My Galaxy 在启动后恢复 KernelSU 时的进度和结果。</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">正在等待 Android…</string>
+    <string name="autoroot_stabilizing_android">Android 已就绪。正在等待系统稳定…</string>
+    <string name="autoroot_checking_firmware">正在检查精确固件和缓存 payload…</string>
+    <string name="autoroot_preparing_exploit">正在准备 exploit…</string>
+    <string name="autoroot_running_exploit">正在运行 exploit…</string>
+    <string name="autoroot_loading_ksu">正在加载 KernelSU…</string>
+    <string name="autoroot_verifying_root">正在验证 KernelSU 控制通道…</string>
+    <string name="autoroot_root_restored">Root 已恢复</string>
+    <string name="autoroot_failed">Auto Root 失败：%1$s</string>
+    <string name="autoroot_disable">禁用 Auto Root</string>
+    <string name="autoroot_profile_invalid">内置 Auto Root 配置无效。</string>
+    <string name="autoroot_unsupported_firmware">Auto Root 已中止：固件不受支持或已发生更改。</string>
+    <string name="autoroot_cached_payload_invalid">缓存 payload 完整性验证失败：%1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root 需要之前已验证成功的 KernelSU 手动安装。</string>
+    <string name="autoroot_boot_timeout">Android 未在允许时间内报告启动完成。</string>
+    <string name="autoroot_boot_changed">Auto Root 等待期间内核启动标识已更改。</string>
+    <string name="autoroot_already_attempted">Auto Root 在本次启动中已经尝试过。不会自动重试。</string>
+    <string name="autoroot_notification_permission">启用 Auto Root 前必须授予通知权限。</string>
+</resources>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">Tự động root sau khi khởi động lại</string>
+    <string name="autoroot_opt_in_description">Tự động khôi phục KernelSU sau khi khởi động lại hoàn toàn. Auto Root chỉ chạy tối đa một lần cho mỗi lần khởi động, yêu cầu đúng firmware được hỗ trợ, xác minh SHA-256 của payload đã lưu trong bộ nhớ đệm và chỉ dùng Shizuku khi dịch vụ đã sẵn sàng và được cấp quyền.</string>
+    <string name="autoroot_channel_name">Khôi phục root tự động</string>
+    <string name="autoroot_channel_description">Tiến trình và kết quả khi Root My Galaxy khôi phục KernelSU sau khi khởi động.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">Đang chờ Android…</string>
+    <string name="autoroot_stabilizing_android">Android đã sẵn sàng. Đang chờ hệ thống ổn định…</string>
+    <string name="autoroot_checking_firmware">Đang kiểm tra chính xác firmware và payload đã lưu…</string>
+    <string name="autoroot_preparing_exploit">Đang chuẩn bị exploit…</string>
+    <string name="autoroot_running_exploit">Đang chạy exploit…</string>
+    <string name="autoroot_loading_ksu">Đang tải KernelSU…</string>
+    <string name="autoroot_verifying_root">Đang xác minh kênh điều khiển KernelSU…</string>
+    <string name="autoroot_root_restored">Đã khôi phục root</string>
+    <string name="autoroot_failed">Auto Root thất bại: %1$s</string>
+    <string name="autoroot_disable">Tắt Auto Root</string>
+    <string name="autoroot_profile_invalid">Hồ sơ Auto Root nhúng không hợp lệ.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root đã dừng: firmware không được hỗ trợ hoặc đã thay đổi.</string>
+    <string name="autoroot_cached_payload_invalid">Payload đã lưu không vượt qua kiểm tra tính toàn vẹn: %1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root yêu cầu một lần cài đặt KernelSU thủ công đã được xác minh trước đó.</string>
+    <string name="autoroot_boot_timeout">Android không báo hoàn tất khởi động trong thời gian cho phép.</string>
+    <string name="autoroot_boot_changed">Mã định danh lần khởi động của kernel đã thay đổi khi Auto Root đang chờ.</string>
+    <string name="autoroot_already_attempted">Auto Root đã thử trong lần khởi động này. Sẽ không tự động thử lại.</string>
+    <string name="autoroot_notification_permission">Cần cấp quyền thông báo trước khi có thể bật Auto Root.</string>
+</resources>
