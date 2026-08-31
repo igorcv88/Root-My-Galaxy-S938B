@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">Автоматический root после перезагрузки</string>
+    <string name="autoroot_opt_in_description">Автоматически восстанавливает KernelSU после полной перезагрузки. Auto Root запускается не более одного раза за загрузку, требует точного поддерживаемого firmware, проверяет SHA-256 кэшированных payload-файлов и использует Shizuku только если он уже доступен и разрешён.</string>
+    <string name="autoroot_channel_name">Автоматическое восстановление root</string>
+    <string name="autoroot_channel_description">Ход и результат восстановления KernelSU приложением Root My Galaxy после загрузки.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">Ожидание Android…</string>
+    <string name="autoroot_stabilizing_android">Android готов. Ожидание стабилизации системы…</string>
+    <string name="autoroot_checking_firmware">Проверка точной версии firmware и кэшированных payload-файлов…</string>
+    <string name="autoroot_preparing_exploit">Подготовка эксплойта…</string>
+    <string name="autoroot_running_exploit">Запуск эксплойта…</string>
+    <string name="autoroot_loading_ksu">Загрузка KernelSU…</string>
+    <string name="autoroot_verifying_root">Проверка канала управления KernelSU…</string>
+    <string name="autoroot_root_restored">Root восстановлен</string>
+    <string name="autoroot_failed">Ошибка Auto Root: %1$s</string>
+    <string name="autoroot_disable">Отключить Auto Root</string>
+    <string name="autoroot_profile_invalid">Встроенный профиль Auto Root недействителен.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root остановлен: firmware не поддерживается или был изменён.</string>
+    <string name="autoroot_cached_payload_invalid">Проверка целостности кэшированного payload не пройдена: %1$s</string>
+    <string name="autoroot_prior_install_required">Для Auto Root требуется ранее проверенная ручная установка KernelSU.</string>
+    <string name="autoroot_boot_timeout">Android не сообщил о завершении загрузки за отведённое время.</string>
+    <string name="autoroot_boot_changed">Идентификатор загрузки ядра изменился во время ожидания Auto Root.</string>
+    <string name="autoroot_already_attempted">Auto Root уже выполнял попытку в этой загрузке. Автоматического повтора не будет.</string>
+    <string name="autoroot_notification_permission">Перед включением Auto Root необходимо разрешение на уведомления.</string>
+</resources>
