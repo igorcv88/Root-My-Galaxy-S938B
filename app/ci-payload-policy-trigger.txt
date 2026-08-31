@@ -1,0 +1,1 @@
+Temporary CI trigger for canonical Payloads/main + last-successful-manual snapshot validation.
