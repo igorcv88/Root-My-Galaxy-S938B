@@ -22,6 +22,17 @@ internal object AutoRootSupport {
         context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
             .getBoolean(RECEIPT_VERIFIED, false)
 
+    fun verifiedBootToken(context: Context): String? {
+        val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
+        if (!preferences.getBoolean(RECEIPT_VERIFIED, false)) return null
+        return preferences.getString(RECEIPT_BOOT_TOKEN, null)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+    }
+
+    fun shouldRunForBoot(context: Context, currentBootToken: String): Boolean =
+        shouldRunForBoot(currentBootToken, verifiedBootToken(context))
+
     fun markVerifiedForBoot(context: Context, bootToken: String) {
         val stored = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
             .edit()
@@ -61,6 +72,11 @@ internal object AutoRootSupport {
         }
         return VerifiedPayloads(profile, exploit, kernelSu)
     }
+}
+
+internal fun shouldRunForBoot(currentBootToken: String, verifiedBootToken: String?): Boolean {
+    if (currentBootToken.isBlank() || verifiedBootToken.isNullOrBlank()) return false
+    return currentBootToken != verifiedBootToken
 }
 
 internal fun fileMatchesArtifact(file: File, artifact: RemoteArtifact): Boolean {
