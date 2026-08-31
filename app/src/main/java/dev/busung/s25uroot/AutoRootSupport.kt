@@ -13,10 +13,8 @@ internal object AutoRootSupport {
     private const val RECEIPT_ACTIVE_SNAPSHOT = "active_payload_snapshot"
     private const val AUTO_ROOT_STATE = "auto_root_state"
     private const val LAST_ATTEMPT_BOOT_TOKEN = "last_attempt_boot_id"
-    private const val PENDING_ROOT = "payloads/pending"
     private const val SNAPSHOT_ROOT = "autoroot/snapshots"
     private const val SNAPSHOT_MANIFEST = "target-v3.json"
-    private const val SNAPSHOT_BOOT_TOKEN = "download-boot-id"
     private const val SNAPSHOT_EXPLOIT = "cve-2026-43499-app.so"
     private const val SNAPSHOT_KSUD = "ksud-s25u-kdp"
     private val SNAPSHOT_ID = Regex("v3-[0-9a-f]{16}-[0-9a-f]{16}")
@@ -28,9 +26,11 @@ internal object AutoRootSupport {
             .takeIf(String::isNotBlank)
     }.getOrNull()
 
-    fun hasVerifiedInstall(context: Context): Boolean =
-        context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
-            .getBoolean(RECEIPT_VERIFIED, false)
+    fun hasVerifiedInstall(context: Context): Boolean {
+        val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
+        return preferences.getBoolean(RECEIPT_VERIFIED, false) &&
+            !preferences.getString(RECEIPT_ACTIVE_SNAPSHOT, null).isNullOrBlank()
+    }
 
     fun verifiedBootToken(context: Context): String? {
         val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
@@ -52,6 +52,53 @@ internal object AutoRootSupport {
         require(stored) { context.getString(R.string.error_receipt) }
     }
 
+    /**
+     * Makes the exact payload set from a successful manual root the only source
+     * for future offline manual roots and Auto Root runs. Failed/manual downloads
+     * never replace this snapshot because this is called only after KernelSU has
+     * been late-loaded and verified successfully.
+     */
+    fun promoteManualPayloads(context: Context, payloads: VerifiedPayloads) {
+        require(payloads.profile.exactMatch != null) {
+            context.getString(R.string.autoroot_profile_invalid)
+        }
+        require(payloads.profile.matches(DeviceSnapshot.current())) {
+            context.getString(R.string.autoroot_unsupported_firmware)
+        }
+        require(fileMatchesArtifact(payloads.exploit, payloads.profile.exploit)) {
+            context.getString(R.string.autoroot_cached_payload_invalid, payloads.exploit.name)
+        }
+        require(fileMatchesArtifact(payloads.kernelSu, payloads.profile.kernelSu.artifact)) {
+            context.getString(R.string.autoroot_cached_payload_invalid, payloads.kernelSu.name)
+        }
+
+        val snapshotId = snapshotId(payloads.profile)
+        ensureSnapshot(context, payloads, snapshotId)
+        val stored = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
+            .edit()
+            .putString(RECEIPT_ACTIVE_SNAPSHOT, snapshotId)
+            .commit()
+        require(stored) { context.getString(R.string.error_receipt) }
+        cleanupSnapshots(context, snapshotId)
+    }
+
+    /**
+     * Deliberately network-free. Auto Root always runs the last payload set that
+     * completed a successful manual root. Manual install also uses this method as
+     * its offline fallback when GitHub cannot be reached.
+     */
+    fun loadVerifiedLocalPayloads(context: Context): VerifiedPayloads {
+        val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
+        val snapshotId = preferences.getString(RECEIPT_ACTIVE_SNAPSHOT, null)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: error(context.getString(R.string.autoroot_prior_install_required))
+        require(SNAPSHOT_ID.matches(snapshotId)) {
+            context.getString(R.string.autoroot_profile_invalid)
+        }
+        return loadSnapshot(context, File(context.filesDir, "$SNAPSHOT_ROOT/$snapshotId"))
+    }
+
     @Synchronized
     fun claimAttempt(context: Context, bootToken: String): Boolean {
         val preferences = context.getSharedPreferences(AUTO_ROOT_STATE, Context.MODE_PRIVATE)
@@ -59,77 +106,6 @@ internal object AutoRootSupport {
         return preferences.edit()
             .putString(LAST_ATTEMPT_BOOT_TOKEN, bootToken)
             .commit()
-    }
-
-    fun loadVerifiedLocalPayloads(context: Context): VerifiedPayloads {
-        val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
-
-        // A staged download becomes eligible only when its recorded boot id is
-        // the same boot id later written by the existing successful-install
-        // receipt. Failed manual attempts never update that receipt, so they can
-        // never replace the last known-good Auto Root payload set.
-        promoteSuccessfulPending(context, preferences)?.let { return it }
-
-        val snapshotId = preferences.getString(RECEIPT_ACTIVE_SNAPSHOT, null)
-        if (snapshotId != null) {
-            require(SNAPSHOT_ID.matches(snapshotId)) { context.getString(R.string.autoroot_profile_invalid) }
-            return loadSnapshot(context, File(context.filesDir, "$SNAPSHOT_ROOT/$snapshotId"))
-        }
-
-        // Migration path for users who enabled Auto Root before durable payload
-        // snapshots existed. The next successful manual installation is promoted
-        // automatically and becomes independent from future APK/feed changes.
-        return loadLegacyEmbeddedPayloads(context)
-    }
-
-    private fun promoteSuccessfulPending(
-        context: Context,
-        preferences: android.content.SharedPreferences,
-    ): VerifiedPayloads? {
-        if (!preferences.getBoolean(RECEIPT_VERIFIED, false)) return null
-        val verifiedBootToken = preferences.getString(RECEIPT_BOOT_TOKEN, null)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?: return null
-        val currentDevice = DeviceSnapshot.current()
-        val candidates = File(context.filesDir, PENDING_ROOT).listFiles()
-            ?.filter(File::isDirectory)
-            ?.mapNotNull { directory ->
-                runCatching {
-                    val downloadBootToken = File(directory, SNAPSHOT_BOOT_TOKEN)
-                        .readText(Charsets.US_ASCII)
-                        .trim()
-                    if (downloadBootToken != verifiedBootToken) return@runCatching null
-
-                    val manifest = SupportManifest.parse(File(directory, SNAPSHOT_MANIFEST).readBytes())
-                    val profile = manifest.targets.singleOrNull() ?: return@runCatching null
-                    if (profile.exactMatch == null || !profile.matches(currentDevice)) {
-                        return@runCatching null
-                    }
-
-                    val exploit = File(directory, SNAPSHOT_EXPLOIT)
-                    val kernelSu = File(directory, SNAPSHOT_KSUD)
-                    if (!fileMatchesArtifact(exploit, profile.exploit)) return@runCatching null
-                    if (!fileMatchesArtifact(kernelSu, profile.kernelSu.artifact)) return@runCatching null
-                    VerifiedPayloads(profile, exploit, kernelSu)
-                }.getOrNull()
-            }
-            .orEmpty()
-
-        if (candidates.isEmpty()) return null
-        require(candidates.size == 1) { context.getString(R.string.autoroot_profile_invalid) }
-
-        val candidate = candidates.single()
-        requireBuildPayloadProfile(context, candidate.profile)
-        val snapshotId = snapshotId(candidate.profile)
-        ensureSnapshot(context, candidate, snapshotId)
-        val stored = preferences.edit()
-            .putString(RECEIPT_ACTIVE_SNAPSHOT, snapshotId)
-            .commit()
-        require(stored) { context.getString(R.string.error_receipt) }
-        cleanupSnapshots(context, snapshotId)
-        candidate.exploit.parentFile?.deleteRecursively()
-        return loadSnapshot(context, File(context.filesDir, "$SNAPSHOT_ROOT/$snapshotId"))
     }
 
     private fun loadSnapshot(context: Context, directory: File): VerifiedPayloads {
@@ -143,7 +119,6 @@ internal object AutoRootSupport {
         require(profile.matches(DeviceSnapshot.current())) {
             context.getString(R.string.autoroot_unsupported_firmware)
         }
-        requireBuildPayloadProfile(context, profile)
 
         val exploit = File(directory, SNAPSHOT_EXPLOIT)
         val kernelSu = File(directory, SNAPSHOT_KSUD)
@@ -154,45 +129,6 @@ internal object AutoRootSupport {
             context.getString(R.string.autoroot_cached_payload_invalid, kernelSu.name)
         }
         return VerifiedPayloads(profile, exploit, kernelSu)
-    }
-
-    private fun loadLegacyEmbeddedPayloads(context: Context): VerifiedPayloads {
-        val manifestBytes = context.resources.openRawResource(R.raw.autoroot_target_v3).use { it.readBytes() }
-        val manifest = SupportManifest.parse(manifestBytes)
-        require(manifest.targets.size == 1) { context.getString(R.string.autoroot_profile_invalid) }
-        val profile = manifest.targets.single()
-        require(profile.exactMatch != null) { context.getString(R.string.autoroot_profile_invalid) }
-        require(profile.matches(DeviceSnapshot.current())) {
-            context.getString(R.string.autoroot_unsupported_firmware)
-        }
-        requireBuildPayloadProfile(context, profile)
-
-        val directory = File(context.filesDir, "payloads/${profile.profileId}")
-        val exploit = File(directory, SNAPSHOT_EXPLOIT)
-        val kernelSu = File(directory, SNAPSHOT_KSUD)
-        require(fileMatchesArtifact(exploit, profile.exploit)) {
-            context.getString(R.string.autoroot_cached_payload_invalid, exploit.name)
-        }
-        require(fileMatchesArtifact(kernelSu, profile.kernelSu.artifact)) {
-            context.getString(R.string.autoroot_cached_payload_invalid, kernelSu.name)
-        }
-        return VerifiedPayloads(profile, exploit, kernelSu)
-    }
-
-    private fun requireBuildPayloadProfile(context: Context, profile: TargetProfile) {
-        if (!BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) return
-        val expectedManifest = context.resources.openRawResource(R.raw.autoroot_target_v3).use { input ->
-            SupportManifest.parse(input.readBytes())
-        }
-        val expected = expectedManifest.targets.singleOrNull()
-            ?: error(context.getString(R.string.autoroot_profile_invalid))
-        val matchesExpected =
-            profile.profileId == expected.profileId &&
-                profile.exploit.size == expected.exploit.size &&
-                profile.exploit.sha256 == expected.exploit.sha256
-        require(matchesExpected) {
-            "Cached Auto Root exploit ${profile.exploit.sha256.take(12)} does not match the active CZG3 diagnostic payload ${expected.exploit.sha256.take(12)}. Run one successful manual root with this app version before the next Auto Root."
-        }
     }
 
     private fun snapshotId(profile: TargetProfile): String =
@@ -220,7 +156,9 @@ internal object AutoRootSupport {
             }
 
             if (destination.exists()) destination.deleteRecursively()
-            require(temporary.renameTo(destination)) { context.getString(R.string.autoroot_profile_invalid) }
+            require(temporary.renameTo(destination)) {
+                context.getString(R.string.autoroot_profile_invalid)
+            }
         } finally {
             temporary.deleteRecursively()
         }
