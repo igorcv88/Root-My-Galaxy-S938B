@@ -165,7 +165,7 @@ class InstallHistoryStore(private val context: Context) {
         )
     }
 
-    companion object { internal const val MAX_HISTORY_ENTRIES = 50; private const val MAX_LOG_CHARS = 200_000; private const val MAX_STAGE_TIMINGS = 128 }
+    companion object { internal const val MAX_HISTORY_ENTRIES = 50; internal const val MAX_LOG_CHARS = 1_000_000; private const val MAX_STAGE_TIMINGS = 128 }
 }
 
 private fun DeviceSnapshot.diagnosticIdentity(): String = listOf(manufacturer, model, device, buildId, fingerprint, kernelRelease, kernelVersionInfo, machine, sdk.toString(), abi, pageSize.toString()).joinToString("|")
