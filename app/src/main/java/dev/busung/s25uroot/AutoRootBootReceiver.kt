@@ -1,15 +1,19 @@
 package dev.busung.s25uroot
 
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.app.NotificationManager
 
 class AutoRootBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         if (!AppPreferences.autoRootEnabled(context)) return
         if (!AutoRootSupport.hasVerifiedInstall(context)) return
+
+        val bootToken = AutoRootSupport.currentBootToken() ?: return
+        if (!AutoRootSupport.shouldRunForBoot(context, bootToken)) return
+
         context.startForegroundService(Intent(context, AutoRootService::class.java))
     }
 }
