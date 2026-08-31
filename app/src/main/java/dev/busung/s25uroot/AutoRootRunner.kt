@@ -23,8 +23,9 @@ internal class AutoRootRunner(
     private val useShizuku: Boolean,
     private val onStage: (AutoRootStage) -> Unit,
     private val onLog: (String) -> Unit = {},
+    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
 ) {
-    suspend fun run(payloads: VerifiedPayloads, bootToken: String) {
+    suspend fun run(payloads: VerifiedPayloads, bootToken: String, runId: String) {
         if (useShizuku) {
             require(ShizukuController.isRunning() && ShizukuController.isGranted()) {
                 context.getString(R.string.error_shizuku_unavailable)
@@ -38,21 +39,23 @@ internal class AutoRootRunner(
         onLog("[*] helper_sha256=${nativeHelperFile().sha256()}")
 
         onStage(AutoRootStage.RunningExploit)
-        executeExploit(payloads.exploit, bootToken)
+        executeExploit(payloads.exploit, bootToken, runId)
 
         onStage(AutoRootStage.LoadingKernelSu)
         stageKernelSu(payloads)
 
         onStage(AutoRootStage.VerifyingRoot)
         val lateLoad = runHelper("--late-load")
-        require(lateLoad.code == 0) {
-            context.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
-        }
+        if (lateLoad.code != 0) throw ExploitRunException(
+            ExploitFailureClass.KernelSuVerification,
+            ExploitSafety.DoNotRetry,
+            context.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output),
+        )
         if (lateLoad.output.isNotBlank()) onLog(lateLoad.output)
         onLog(context.getString(R.string.log_ksu_control_verified))
     }
 
-    private suspend fun executeExploit(payload: File, bootToken: String) {
+    private suspend fun executeExploit(payload: File, bootToken: String, runId: String) {
         val logFile = if (useShizuku) File(SHIZUKU_LOG_PATH) else File(context.filesDir, "autoroot-exploit.log")
         if (useShizuku) {
             ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
@@ -69,7 +72,7 @@ internal class AutoRootRunner(
             val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
             ShizukuController.exec(
                 arrayOf("/system/bin/sh", "-c", "true"),
-                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath),
+                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath, runId),
             )
         } else {
             val processBuilder = ProcessBuilder(
@@ -83,6 +86,7 @@ internal class AutoRootRunner(
                 put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
                 put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
                 put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
+                put(RUN_ID_ENV, runId)
                 cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
             }
             processBuilder.start()
@@ -95,16 +99,37 @@ internal class AutoRootRunner(
             { output.snapshot(); logFile.readTextIfPresent() }
         }
         var publishedLog = ""
+        var consumedDiagnosticCharacters = 0
+        var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
         fun publishNewLog(rawLog: String) {
             val clean = stripAnsi(rawLog).trim()
-            if (clean.isBlank() || clean == publishedLog) return
-            val addition = if (clean.startsWith(publishedLog)) {
-                clean.substring(publishedLog.length).trim()
-            } else {
-                clean
+            if (clean.isNotBlank() && clean != publishedLog) {
+                val addition = if (clean.startsWith(publishedLog)) {
+                    clean.substring(publishedLog.length).trim()
+                } else {
+                    clean
+                }
+                if (addition.isNotBlank()) onLog(addition)
+                publishedLog = clean
             }
-            if (addition.isNotBlank()) onLog(addition)
-            publishedLog = clean
+
+            // Human-readable Shizuku output is a composite of stdout and the
+            // helper log file. That composite is not append-only because stdout
+            // grows in front of already-read file content. Machine diagnostics
+            // therefore consume only the authoritative append-only stdout stream
+            // under Shizuku; standalone mode consumes the payload log file.
+            val diagnosticLog = if (useShizuku) output.snapshot() else rawLog
+            val parsed = ExploitDiagnosticParser.parseNewEvents(
+                diagnosticLog,
+                consumedDiagnosticCharacters,
+                includeTrailingLine = !process.isAlive,
+            )
+            consumedDiagnosticCharacters = parsed.second
+            parsed.first.forEach { event ->
+                val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
+                diagnosticSnapshot = updated
+                onDiagnostic(updated)
+            }
         }
 
         try {
@@ -136,16 +161,10 @@ internal class AutoRootRunner(
             publishNewLog(rawLog)
             val earlyOutput = output.snapshot().trim()
             onLog("[*] stage=RunningExploit exit_code=$exitCode elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
-            require(exitCode == 0) {
-                context.getString(
-                    R.string.error_payload_exit,
-                    exitCode,
-                    earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: "",
-                )
+            if (exitCode != 0 && diagnosticSnapshot == null) {
+                error(context.getString(R.string.error_payload_exit, exitCode, earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: ""))
             }
-            require(rawLog.contains("exploit completed") && rawLog.contains("done=1 root=1")) {
-                context.getString(R.string.error_success_marker)
-            }
+            validateTerminalExploit(diagnosticSnapshot, exitCode)
         } finally {
             if (process.isAlive) {
                 process.destroy()
@@ -168,7 +187,11 @@ internal class AutoRootRunner(
                     "/system/bin/cp $source $SHIZUKU_KSUD_STAGE_PATH && " +
                     "/system/bin/chmod 755 $SHIZUKU_KSUD_PATH $SHIZUKU_KSUD_STAGE_PATH"
             val stage = runHelper("-c", stageCommand)
-            require(stage.code == 0) { context.getString(R.string.error_ksu_stage, stage.output) }
+            if (stage.code != 0) throw ExploitRunException(
+                ExploitFailureClass.KernelSuStaging,
+                ExploitSafety.DoNotRetry,
+                context.getString(R.string.error_ksu_stage, stage.output),
+            )
         }
         onLog(context.getString(R.string.log_ksu_staged))
     }
@@ -200,12 +223,14 @@ internal class AutoRootRunner(
         bootToken: String,
         payloadPath: String,
         helperPath: String,
+        runId: String,
     ): Array<String> = buildList {
         add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
         add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
         add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
         add("CVE43499_ROOT_HELPER=$helperPath")
         add("LD_PRELOAD=$payloadPath")
+        add("$RUN_ID_ENV=$runId")
         cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
     }.toTypedArray()
 
@@ -332,6 +357,7 @@ internal class AutoRootRunner(
         private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
+        private const val RUN_ID_ENV = "RMG_RUN_ID"
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
         private const val P0_CACHE = "p0_cache"
         private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"

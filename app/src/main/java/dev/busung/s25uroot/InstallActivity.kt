@@ -368,13 +368,13 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                     )
                 }
             }
-            LinearProgressIndicator(
-                progress = { installProgress(installState.phase) },
-                modifier = Modifier.fillMaxWidth(),
-                color = LocalContentColor.current,
-                trackColor = LocalContentColor.current.copy(alpha = 0.2f),
-                drawStopIndicator = {},
-            )
+            if (installState.busy) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = LocalContentColor.current,
+                    trackColor = LocalContentColor.current.copy(alpha = 0.2f),
+                )
+            }
         }
     }
 }
@@ -487,16 +487,6 @@ private fun installPhaseDetail(phase: InstallPhase): String = stringResource(
         InstallPhase.Failed -> R.string.phase_failed
     },
 )
-
-private fun installProgress(phase: InstallPhase): Float = when (phase) {
-    InstallPhase.Checking -> 0.1f
-    InstallPhase.Ready -> 0f
-    InstallPhase.Downloading -> 0.3f
-    InstallPhase.Exploiting -> 0.6f
-    InstallPhase.LoadingKernelSu -> 0.85f
-    InstallPhase.Installed -> 1f
-    InstallPhase.Failed -> 0f
-}
 
 private fun stepState(phase: InstallPhase, stepIndex: Int): Int {
     if (phase == InstallPhase.Installed) return 2

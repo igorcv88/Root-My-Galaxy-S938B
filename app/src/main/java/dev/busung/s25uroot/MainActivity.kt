@@ -2,6 +2,8 @@ package dev.busung.s25uroot
 
 import android.content.Context
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -63,6 +65,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -1066,6 +1069,7 @@ private fun HistoryList(
             if (history.isEmpty()) {
                 item { EmptyHistoryCard() }
             } else {
+                item { DiagnosticStatisticsCard(aggregateDiagnostics(history)) }
                 itemsIndexed(history, key = { _, entry -> entry.id }) { _, entry ->
                     HistoryEntryCard(
                         entry = entry,
@@ -1261,6 +1265,15 @@ private fun HistoryDetail(
                 }) {
                     Icon(Icons.Rounded.Save, contentDescription = stringResource(R.string.export_log))
                 }
+                IconButton(onClick = {
+                    clickHaptic(view)
+                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                        ClipData.newPlainText("Root My Galaxy diagnostics", diagnosticReport(entry)),
+                    )
+                    Toast.makeText(context, R.string.diagnostic_copied, Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = stringResource(R.string.copy_diagnostic))
+                }
             }
         }
         item { HistoryResultCard(entry) }
@@ -1342,6 +1355,7 @@ private fun historyResultLabel(result: InstallRunResult): String = stringResourc
         InstallRunResult.Running -> R.string.history_running
         InstallRunResult.Succeeded -> R.string.history_succeeded
         InstallRunResult.Failed -> R.string.history_failed
+        InstallRunResult.UnexpectedReboot -> R.string.history_unexpected_reboot
     },
 )
 
@@ -1349,6 +1363,7 @@ private fun historyResultIcon(result: InstallRunResult): ImageVector = when (res
     InstallRunResult.Running -> Icons.Rounded.Schedule
     InstallRunResult.Succeeded -> Icons.Rounded.CheckCircle
     InstallRunResult.Failed -> Icons.Rounded.Error
+    InstallRunResult.UnexpectedReboot -> Icons.Rounded.Warning
 }
 
 @Composable
@@ -1356,6 +1371,7 @@ private fun historyResultContainerColor(result: InstallRunResult): Color = when 
     InstallRunResult.Running -> MaterialTheme.colorScheme.tertiaryContainer
     InstallRunResult.Succeeded -> MaterialTheme.colorScheme.primaryContainer
     InstallRunResult.Failed -> MaterialTheme.colorScheme.errorContainer
+    InstallRunResult.UnexpectedReboot -> MaterialTheme.colorScheme.errorContainer
 }
 
 @Composable
@@ -1363,6 +1379,7 @@ private fun historyResultContentColor(result: InstallRunResult): Color = when (r
     InstallRunResult.Running -> MaterialTheme.colorScheme.onTertiaryContainer
     InstallRunResult.Succeeded -> MaterialTheme.colorScheme.onPrimaryContainer
     InstallRunResult.Failed -> MaterialTheme.colorScheme.onErrorContainer
+    InstallRunResult.UnexpectedReboot -> MaterialTheme.colorScheme.onErrorContainer
 }
 
 @Composable
@@ -1380,7 +1397,7 @@ private fun runLogFileName(entry: InstallHistoryEntry): String =
         "-${entry.result.name.lowercase(Locale.US)}.log"
 
 private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
-    val content = entry.log.ifBlank { context.getString(R.string.history_log_empty) }
+    val content = diagnosticReport(entry)
     val saved = runCatching {
         context.contentResolver.openOutputStream(uri)?.use { output ->
             output.write(content.toByteArray(Charsets.UTF_8))
@@ -1396,6 +1413,47 @@ private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
         },
         Toast.LENGTH_LONG,
     ).show()
+}
+
+@Composable
+private fun DiagnosticStatisticsCard(stats: DiagnosticAggregate) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.diagnostic_statistics), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.diagnostic_success_rate, stats.successfulRuns, stats.totalRuns, stats.successRate * 100.0))
+            stats.medianAcquisitionMillis?.let { Text(stringResource(R.string.diagnostic_latency, it / 1000.0, (stats.p90AcquisitionMillis ?: it) / 1000.0)) }
+            stats.medianAttemptCount?.let { Text(stringResource(R.string.diagnostic_attempts, it)) }
+            stats.uptimeBuckets.filterValues { it.first > 0 }.forEach { (bucket, counts) ->
+                Text(stringResource(R.string.diagnostic_uptime_bucket, bucket, counts.second, counts.first), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+private fun diagnosticReport(entry: InstallHistoryEntry): String = buildString {
+    appendLine("Root My Galaxy diagnostic report")
+    appendLine("run_id=${entry.id}")
+    appendLine("result=${entry.result}")
+    appendLine("boot_id=${entry.bootId.orEmpty()}")
+    appendLine("started_at_ms=${entry.startedAtMillis}")
+    appendLine("uptime_at_start_ms=${entry.startedAtUptimeMillis ?: "unknown"}")
+    appendLine("profile=${entry.profileId.orEmpty()}")
+    appendLine("app_version=${entry.appVersion.orEmpty()}")
+    appendLine("payload_sha256=${entry.payloadSha256.orEmpty()}")
+    appendLine("payload_size=${entry.payloadSize ?: "unknown"}")
+    appendLine("transport=${if (entry.usedShizuku) "shizuku" else "standalone"}")
+    appendLine("attempts=${entry.attemptCount}")
+    appendLine("exploit_elapsed_ms=${entry.exploitElapsedMillis ?: "unknown"}")
+    appendLine("failure_class=${entry.failureClass ?: "none"}")
+    appendLine("safety=${entry.safety ?: "unknown"}")
+    appendLine("unexpected_reboot=${entry.unexpectedReboot}")
+    appendLine("kernel_crash_record=${entry.crashRecordStatus ?: "not_checked"}")
+    appendLine("device_identity=${entry.deviceIdentity.orEmpty()}")
+    appendLine("stage_timings:")
+    entry.stageTimings.forEach { appendLine("  ${it.elapsedMillis}ms stage=${it.stage} attempt=${it.attempt ?: "-"}") }
+    entry.crashRecord?.let { appendLine("crash_record:\n$it") }
+    appendLine("log:")
+    append(entry.log)
 }
 
 @Composable

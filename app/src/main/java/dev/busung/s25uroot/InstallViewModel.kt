@@ -32,6 +32,9 @@ data class InstallUiState(
     val message: String = "",
     val probeOutput: String = "",
     val log: String = "",
+    val exploitStage: ExploitStage? = null,
+    val exploitAttempt: Int? = null,
+    val exploitElapsedMillis: Long = 0,
 ) {
     val busy: Boolean
         get() = phase in setOf(
@@ -85,6 +88,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private var discoveryJob: Job? = null
     private var installJob: Job? = null
     private var activeHistoryEntry: InstallHistoryEntry? = null
+    private var lastHistoryCheckpointAt = 0L
 
     @Volatile
     private var activeRunShizuku: Boolean? = null
@@ -193,17 +197,22 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 setPhase(InstallPhase.Downloading, app.getString(R.string.status_downloading_payload))
                 val payloads = repository.download(profile) { appendLog("[*] $it") }
                 appendLog(app.getString(R.string.log_download_verified))
+                updateHistory { it.copy(payloadSha256 = profile.exploit.sha256, payloadSize = profile.exploit.size) }
 
                 setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
                 executeExploit(payloads.exploit)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
+                checkpointAppStage(ExploitStage.StagingKernelSu)
                 installKernelSu(payloads)
 
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
                 appendLog(app.getString(R.string.log_install_complete))
                 finishHistory(InstallRunResult.Succeeded)
             } catch (error: Throwable) {
+                if (error is ExploitRunException) {
+                    updateHistory { it.copy(failureClass = error.failureClass, safety = error.safety, outcome = ExploitOutcome.Failed) }
+                }
                 appendLog("[-] ${error.message ?: error.javaClass.simpleName}")
                 setPhase(InstallPhase.Failed, app.getString(R.string.status_install_failed))
                 finishHistory(InstallRunResult.Failed)
@@ -227,11 +236,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
         val logPrefix = mutableState.value.log
         val bootToken = currentBootToken()
+        val runId = activeHistoryEntry?.id ?: error("Missing exploit run ID")
         val process = if (shizuku) {
             val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
             ShizukuController.exec(
                 arrayOf("/system/bin/sh", "-c", "true"),
-                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath),
+                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath, runId),
             )
         } else {
             val processBuilder = ProcessBuilder(
@@ -245,6 +255,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
                 put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
                 put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
+                put(RUN_ID_ENV, runId)
                 cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
             }
             processBuilder.start()
@@ -263,11 +274,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             val startedAt = SystemClock.elapsedRealtime()
             var lastProgressAt = startedAt
             var lastRawLog = ""
+            var consumedDiagnosticCharacters = 0
+            var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
                     cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(logPrefix, rawLog)
+                    val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters)
+                    consumedDiagnosticCharacters = parsed.second
+                    parsed.first.forEach { event ->
+                        diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId)
+                    }
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
                 }
@@ -285,19 +303,15 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             val rawLog = readLog()
             cacheP0Offset(bootToken, rawLog)
             publishExploitLog(logPrefix, rawLog)
+            val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = true)
+            parsed.first.forEach { event -> diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId) }
             // Both transports drain into `captured` during the poll loop, so
             // this never blocks on a child still holding the pipe open.
             val earlyOutput = captured.toString().trim()
-            require(exitCode == 0) {
-                app.getString(
-                    R.string.error_payload_exit,
-                    exitCode,
-                    earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: "",
-                )
+            if (exitCode != 0 && diagnosticSnapshot == null) {
+                error(app.getString(R.string.error_payload_exit, exitCode, earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: ""))
             }
-            require(rawLog.contains("exploit completed") && rawLog.contains("done=1 root=1")) {
-                app.getString(R.string.error_success_marker)
-            }
+            validateTerminalExploit(diagnosticSnapshot, exitCode)
         } finally {
             if (process.isAlive) {
                 process.destroy()
@@ -306,6 +320,22 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         appendLog(app.getString(R.string.log_bootstrap_root))
+    }
+
+    private fun applyDiagnosticEvent(
+        current: ExploitDiagnosticSnapshot?,
+        event: ExploitDiagnosticEvent,
+        runId: String,
+    ): ExploitDiagnosticSnapshot {
+        val updated = (current ?: ExploitDiagnosticSnapshot(runId)).apply(event)
+        mutableState.value = mutableState.value.copy(
+            exploitStage = updated.stage,
+            exploitAttempt = updated.attempt,
+            exploitElapsedMillis = updated.elapsedMillis,
+            message = updated.stage.userLabel(updated.attempt, updated.elapsedMillis),
+        )
+        checkpointDiagnostic(updated)
+        return updated
     }
 
     private fun drainProcessOutput(process: Process, buffer: StringBuilder): String {
@@ -348,15 +378,23 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     "/system/bin/cp $source $SHIZUKU_KSUD_STAGE_PATH && " +
                     "/system/bin/chmod 755 $SHIZUKU_KSUD_PATH $SHIZUKU_KSUD_STAGE_PATH"
             val stage = runHelper("-c", stageCommand)
-            require(stage.code == 0) { app.getString(R.string.error_ksu_stage, stage.output) }
+            if (stage.code != 0) throw ExploitRunException(
+                ExploitFailureClass.KernelSuStaging,
+                ExploitSafety.DoNotRetry,
+                app.getString(R.string.error_ksu_stage, stage.output),
+            )
             appendLog(app.getString(R.string.log_ksu_staged))
         }
 
+        checkpointAppStage(ExploitStage.LateLoadingKernelSu)
         val lateLoad = runHelper("--late-load")
-        require(lateLoad.code == 0) {
-            app.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
-        }
+        if (lateLoad.code != 0) throw ExploitRunException(
+            ExploitFailureClass.KernelSuVerification,
+            ExploitSafety.DoNotRetry,
+            app.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output),
+        )
         if (lateLoad.output.isNotBlank()) appendLog(lateLoad.output)
+        checkpointAppStage(ExploitStage.VerifyingKernelSu)
         storeInstallReceipt()
         appendLog(app.getString(R.string.log_ksu_control_verified))
     }
@@ -438,12 +476,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         bootToken: String?,
         payloadPath: String,
         helperPath: String,
+        runId: String,
     ): Array<String> = buildList {
         add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
         add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
         add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
         add("CVE43499_ROOT_HELPER=$helperPath")
         add("LD_PRELOAD=$payloadPath")
+        add("$RUN_ID_ENV=$runId")
         cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
     }.toTypedArray()
 
@@ -508,6 +548,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun startHistory() {
         val entry = historyStore.create()
         activeHistoryEntry = entry
+        lastHistoryCheckpointAt = 0L
         publishHistory(entry)
     }
 
@@ -520,7 +561,41 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun updateHistoryLog() =
-        updateHistory { it.copy(log = mutableState.value.log) }
+        checkpointHistory(force = false) { it.copy(log = mutableState.value.log) }
+
+    private fun checkpointDiagnostic(snapshot: ExploitDiagnosticSnapshot) {
+        checkpointHistory(force = snapshot.outcome != null) { entry ->
+            val timing = StageTiming(snapshot.stage, snapshot.elapsedMillis, snapshot.attempt)
+            entry.copy(
+                log = mutableState.value.log,
+                stage = snapshot.stage,
+                attemptCount = maxOf(entry.attemptCount, snapshot.attempt ?: 0),
+                exploitElapsedMillis = snapshot.elapsedMillis,
+                failureClass = snapshot.failureClass,
+                safety = snapshot.safety,
+                outcome = snapshot.outcome,
+                stageTimings = if (entry.stageTimings.lastOrNull() == timing) entry.stageTimings else entry.stageTimings + timing,
+            )
+        }
+    }
+
+    private fun checkpointAppStage(stage: ExploitStage) {
+        val elapsed = mutableState.value.exploitElapsedMillis
+        mutableState.value = mutableState.value.copy(exploitStage = stage, message = stage.userLabel(elapsedMillis = elapsed))
+        checkpointHistory(force = true) { it.copy(stage = stage, stageTimings = it.stageTimings + StageTiming(stage, elapsed)) }
+    }
+
+    private fun checkpointHistory(force: Boolean, transform: (InstallHistoryEntry) -> InstallHistoryEntry) {
+        val now = SystemClock.elapsedRealtime()
+        val entry = activeHistoryEntry ?: return
+        val updated = transform(entry)
+        activeHistoryEntry = updated
+        publishHistory(updated)
+        if (force || now - lastHistoryCheckpointAt >= HISTORY_CHECKPOINT_MILLIS) {
+            historyStore.save(updated)
+            lastHistoryCheckpointAt = now
+        }
+    }
 
     private fun updateHistoryProfile(profileId: String) =
         updateHistory { it.copy(profileId = profileId) }
@@ -549,6 +624,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
+        private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
+        private const val RUN_ID_ENV = "RMG_RUN_ID"
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
         private const val INSTALL_RECEIPT = "install_receipt"
         private const val RECEIPT_BOOT_TOKEN = "kernel_boot_id"
