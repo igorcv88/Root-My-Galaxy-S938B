@@ -12,7 +12,6 @@ concurrency:
 
 env:
   RELEASE_SERIES: "0.3"
-  PAYLOAD_REPOSITORY: igorcv88/Root-My-Galaxy-Payloads-S938B
 
 jobs:
   release:
@@ -61,94 +60,6 @@ jobs:
             echo "VERSION_CODE=$VERSION_CODE"
             echo "RELEASE_TAG=$RELEASE_TAG"
           } >> "$GITHUB_ENV"
-
-      - name: Sincronizar e verificar perfil CZG3 diagnóstico do Auto Root
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import re
-          import urllib.parse
-          import urllib.request
-
-          repo = os.environ["PAYLOAD_REPOSITORY"]
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/git/ref/heads/main",
-              headers={"User-Agent": "Root-My-Galaxy-Release"},
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              commit = json.load(response)["object"]["sha"]
-          if not re.fullmatch(r"[0-9a-f]{40}", commit):
-              raise SystemExit("Invalid payload commit")
-
-          raw = f"https://raw.githubusercontent.com/{repo}/{commit}"
-          with urllib.request.urlopen(f"{raw}/support/targets-v3-diagnostic.json", timeout=30) as response:
-              manifest = json.load(response)
-
-          if manifest.get("schemaVersion") != 3:
-              raise SystemExit("Unexpected payload manifest schema")
-          matches = [
-              item for item in manifest.get("payloads", [])
-              if item.get("payloadId") == "pa3q-S938BXXSBCZG3-diagnostic"
-          ]
-          if len(matches) != 1:
-              raise SystemExit("CZG3 diagnostic payload must exist exactly once")
-          target = matches[0]
-          expected_identity = {
-              "manufacturer": "samsung",
-              "model": "SM-S938B",
-              "device": "pa3q",
-              "buildDisplay": "BP4A.251205.006.S938BXXSBCZG3",
-              "buildFingerprint": (
-                  "samsung/pa3qxxx/pa3q:16/BP4A.251205.006/"
-                  "S938BXXSBCZG3_OXMBCZG3:user/release-keys"
-              ),
-              "kernelRelease": "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
-              "kernelVersionInfo": "#1 SMP PREEMPT Thu Jul  2 00:48:56 UTC 2026",
-              "machine": "aarch64",
-              "sdk": 36,
-              "abi": "arm64-v8a",
-              "pageSize": 4096,
-          }
-          if target.get("exactMatch") != expected_identity:
-              raise SystemExit("CZG3 identity changed unexpectedly")
-
-          prefix = f"https://raw.githubusercontent.com/{repo}/main/"
-          for artifact in (target["exploit"], target["kernelsu"]):
-              url = artifact["url"]
-              if not url.startswith(prefix):
-                  raise SystemExit(f"Unexpected payload URL: {url}")
-              relative = urllib.parse.unquote(url.removeprefix(prefix))
-              digest = hashlib.sha256()
-              total = 0
-              with urllib.request.urlopen(f"{raw}/{relative}", timeout=90) as response:
-                  while True:
-                      block = response.read(1024 * 1024)
-                      if not block:
-                          break
-                      digest.update(block)
-                      total += len(block)
-              if total != artifact["size"]:
-                  raise SystemExit(f"Payload size mismatch: {relative}")
-              if digest.hexdigest() != artifact["sha256"].lower():
-                  raise SystemExit(f"Payload SHA-256 mismatch: {relative}")
-
-          # While the CZG3 race-diagnostic campaign is active, the normal APK
-          # embeds the same exact diagnostic target used by manual installs.
-          # This prevents the release workflow from silently reverting Auto Root
-          # to the production payload after the app was built for diagnostics.
-          embedded = {"schemaVersion": 3, "payloads": [target]}
-          pathlib.Path("app/src/main/res/raw/autoroot_target_v3.json").write_text(
-              json.dumps(embedded, indent=2) + "\n",
-              encoding="utf-8",
-          )
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"PAYLOAD_COMMIT={commit}\n")
-          print(f"Diagnostic Auto Root fallback synchronized with payload commit {commit}")
-          PY
 
       - name: Verificar regras do Auto Root
         run: |
