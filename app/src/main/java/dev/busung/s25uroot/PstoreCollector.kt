@@ -31,24 +31,24 @@ object PstoreCollector {
         var sawInaccessibleContent = false
         val sections = mutableListOf<String>()
 
-        PSTORE_PATHS.forEach { path ->
+        PSTORE_PATHS.forEach pathLoop@ { path ->
             val directory = File(path)
-            if (!directory.isDirectory) return@forEach
+            if (!directory.isDirectory) return@pathLoop
             sawDirectory = true
             if (!directory.canRead()) {
                 sawInaccessibleContent = true
-                return@forEach
+                return@pathLoop
             }
             val files = directory.listFiles()
             if (files == null) {
                 sawInaccessibleContent = true
-                return@forEach
+                return@pathLoop
             }
             sawReadableDirectory = true
-            files.filter(File::isFile).sortedBy(File::getName).forEach { file ->
+            files.filter { it.isFile }.sortedBy { it.name }.forEach fileLoop@ { file ->
                 if (!file.canRead()) {
                     sawInaccessibleContent = true
-                    return@forEach
+                    return@fileLoop
                 }
                 val text = runCatching { file.readText().take(MAX_CRASH_CHARS) }.getOrNull()
                 if (text == null) {
