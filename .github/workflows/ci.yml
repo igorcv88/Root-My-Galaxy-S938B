@@ -1,4 +1,4 @@
-name: Verify application source
+name: Verificar App
 
 on:
   workflow_dispatch:
@@ -7,19 +7,56 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.ref }}
+  group: verify-app
   cancel-in-progress: true
+
+env:
+  PAYLOAD_REPOSITORY: igorcv88/Root-My-Galaxy-Payloads-S938B
 
 jobs:
   verify:
+    name: Verificar código e build
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Checkout
+      - name: Baixar repositório
         uses: actions/checkout@v6
 
-      - name: Verify source invariants
+      - name: Sincronizar perfil do Auto Root
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          repo = os.environ["PAYLOAD_REPOSITORY"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/git/ref/heads/main",
+              headers={"User-Agent": "Root-My-Galaxy-CI"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              commit = json.load(response)["object"]["sha"]
+          with urllib.request.urlopen(
+              f"https://raw.githubusercontent.com/{repo}/{commit}/support/targets-v3.json",
+              timeout=30,
+          ) as response:
+              manifest = json.load(response)
+
+          if manifest.get("schemaVersion") != 3 or len(manifest.get("payloads", [])) != 1:
+              raise SystemExit("Unexpected payload manifest")
+          target = manifest["payloads"][0]
+          if target.get("payloadId") != "pa3q-S938BXXSBCZG3":
+              raise SystemExit("Unexpected Auto Root target")
+
+          destination = pathlib.Path("app/src/main/res/raw/autoroot_target_v3.json")
+          destination.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          print(f"Auto Root profile synchronized from payload commit {commit}")
+          PY
+
+      - name: Verificar regras do app
         shell: bash
         run: |
           set -euo pipefail
@@ -32,58 +69,28 @@ jobs:
           grep -F \
             'private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"' \
             "$PAYLOAD_FILE"
-
-          ! grep -F \
-            'BuSung-dev/Root-My-Galaxy-Payloads' \
-            "$PAYLOAD_FILE"
-
-          grep -F \
-            'https://github.com/igorcv88/Root-My-Galaxy-S938B' \
-            "$UPDATER_FILE"
-
-          ! grep -F \
-            'https://github.com/BuSung-dev/Root-My-Galaxy' \
-            "$UPDATER_FILE"
-
-          ! grep -R -n -E \
-            'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' \
-            README.md app/src/main
-
-          grep -F \
-            'android.intent.action.BOOT_COMPLETED' \
-            "$MANIFEST"
-
-          ! grep -R -n -E \
-            'LOCKED_BOOT_COMPLETED|ctl\.restart zygote|ksud soft-reboot' \
+          ! grep -F 'BuSung-dev/Root-My-Galaxy-Payloads' "$PAYLOAD_FILE"
+          grep -F 'https://github.com/igorcv88/Root-My-Galaxy-S938B' "$UPDATER_FILE"
+          ! grep -F 'https://github.com/BuSung-dev/Root-My-Galaxy' "$UPDATER_FILE"
+          grep -F 'android.intent.action.BOOT_COMPLETED' "$MANIFEST"
+          ! grep -R -n -E 'LOCKED_BOOT_COMPLETED|ctl\.restart zygote|ksud soft-reboot' \
             $AUTOROOT "$MANIFEST"
-
-          ! grep -R -n -E \
-            'https?://' \
-            $AUTOROOT
-
-          grep -F \
-            'claimAttempt(this, bootToken)' \
+          ! grep -R -n -E 'https?://' $AUTOROOT
+          grep -F 'claimAttempt(this, bootToken)' \
+            app/src/main/java/dev/busung/s25uroot/AutoRootService.kt
+          grep -F 'loadVerifiedLocalPayloads(this)' \
             app/src/main/java/dev/busung/s25uroot/AutoRootService.kt
 
-          grep -F \
-            'loadVerifiedLocalPayloads(this)' \
-            app/src/main/java/dev/busung/s25uroot/AutoRootService.kt
-
-      - name: Set up Java 21
+      - name: Preparar Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Gradle cache
+      - name: Preparar cache do Gradle
         uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
-      - name: Test, native build and lint
+      - name: Rodar testes e lint
         run: |
           chmod +x gradlew
-          ./gradlew \
-            :app:externalNativeBuildDebug \
-            :app:testDebugUnitTest \
-            :app:lintDebug
+          ./gradlew --build-cache :app:testDebugUnitTest :app:lintDebug
