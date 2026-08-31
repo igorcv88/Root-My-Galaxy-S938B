@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/igorcv88/Root-My-Galaxy-S938B?label=release" /></a>
   <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/igorcv88/Root-My-Galaxy-S938B/total" /></a>
-  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/igorcv88/Root-My-Galaxy-S938B?label=stars&amp;labelColor=555&amp;color=2f81f7" /></a>
+  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/stargazers"><img alt="Stars" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Figorcv88%2FRoot-My-Galaxy-S938B&amp;query=%24.stargazers_count&amp;label=stars&amp;logo=github&amp;labelColor=555&amp;color=2f81f7&amp;style=flat" /></a>
   <img alt="Android" src="https://img.shields.io/badge/Android-16-3DDC84?logo=android&amp;logoColor=white" />
   <img alt="KernelSU" src="https://img.shields.io/badge/KernelSU-3.3.0-2f81f7" />
   <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/igorcv88/Root-My-Galaxy-S938B/release.yml?branch=main&amp;label=build" /></a>
