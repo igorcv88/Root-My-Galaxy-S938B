@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,7 +97,10 @@ class InstallActivity : ComponentActivity() {
                 var softRebootEnabled by remember {
                     mutableStateOf(AppPreferences.softRebootAfterRoot(this@InstallActivity))
                 }
-                var softRebootTriggered by remember { mutableStateOf(false) }
+                var softRebootTriggered by rememberSaveable { mutableStateOf(false) }
+                var installSessionStartedAt by rememberSaveable {
+                    mutableStateOf(if (startInstall) System.currentTimeMillis() else 0L)
+                }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -145,10 +149,12 @@ class InstallActivity : ComponentActivity() {
                 LaunchedEffect(startInstall, profileId) {
                     if (startInstall) installViewModel.install(profileId)
                 }
-                LaunchedEffect(installState.phase, history, softRebootEnabled) {
+                LaunchedEffect(installState.phase, history, softRebootEnabled, installSessionStartedAt) {
                     val latestRun = history.firstOrNull()
-                    val persistedSuccess = latestRun?.result == InstallRunResult.Succeeded &&
-                        latestRun.completedAtMillis != null
+                    val persistedSuccess = installSessionStartedAt > 0L &&
+                        latestRun?.result == InstallRunResult.Succeeded &&
+                        latestRun.completedAtMillis != null &&
+                        latestRun.startedAtMillis >= installSessionStartedAt
                     if (
                         installState.phase == InstallPhase.Installed &&
                         persistedSuccess &&
@@ -173,7 +179,11 @@ class InstallActivity : ComponentActivity() {
                     onAutoRootEnabledChanged = setAutoRoot,
                     softRebootEnabled = softRebootEnabled,
                     onSoftRebootEnabledChanged = setSoftReboot,
-                    onRetry = { installViewModel.install(profileId) },
+                    onRetry = {
+                        installSessionStartedAt = System.currentTimeMillis()
+                        softRebootTriggered = false
+                        installViewModel.install(profileId)
+                    },
                     onClose = ::finish,
                 )
             }
