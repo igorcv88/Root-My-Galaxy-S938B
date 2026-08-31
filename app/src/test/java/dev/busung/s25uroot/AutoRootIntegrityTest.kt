@@ -45,6 +45,23 @@ class AutoRootIntegrityTest {
         assertFalse(fileMatchesArtifact(File(temporaryFolder.root, "missing.bin"), artifact))
     }
 
+    @Test
+    fun unchangedKernelBootIdIsTreatedAsSoftReboot() {
+        assertFalse(shouldRunForBoot("boot-a", "boot-a"))
+    }
+
+    @Test
+    fun changedKernelBootIdAllowsFullBootRestore() {
+        assertTrue(shouldRunForBoot("boot-b", "boot-a"))
+    }
+
+    @Test
+    fun missingBootReceiptFailsClosed() {
+        assertFalse(shouldRunForBoot("boot-b", null))
+        assertFalse(shouldRunForBoot("boot-b", ""))
+        assertFalse(shouldRunForBoot("", "boot-a"))
+    }
+
     private fun artifactFor(file: File): RemoteArtifact = RemoteArtifact(
         url = "https://example.invalid/payload",
         size = file.length(),
