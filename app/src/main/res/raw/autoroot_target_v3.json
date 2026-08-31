@@ -2,14 +2,10 @@
   "schemaVersion": 3,
   "payloads": [
     {
-      "payloadId": "pa3q-S938BXXSBCZG3",
-      "displayName": "Galaxy S25 Ultra SM-S938B | S938BXXSBCZG3",
-      "models": [
-        "SM-S938B"
-      ],
-      "kernelVersions": [
-        "6.6.98"
-      ],
+      "payloadId": "pa3q-S938BXXSBCZG3-diagnostic",
+      "displayName": "Galaxy S25 Ultra SM-S938B | S938BXXSBCZG3 | race telemetry",
+      "models": ["SM-S938B"],
+      "kernelVersions": ["6.6.98"],
       "exactMatch": {
         "manufacturer": "samsung",
         "model": "SM-S938B",
@@ -24,9 +20,9 @@
         "pageSize": 4096
       },
       "exploit": {
-        "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/artifacts/pa3q-S938BXXSBCZG3-v0266/cve-2026-43499-app.so",
-        "size": 104128,
-        "sha256": "bc7dacd90796cfbf0d6e008b478072f52a1e6d5c4bf31f282a305e42ae1d6861"
+        "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/artifacts/pa3q-S938BXXSBCZG3-v0267-diag/cve-2026-43499-app.so",
+        "size": 108008,
+        "sha256": "fc0e339fd6732474e4ddd6c3286a220fe169bbad51144c9b03a462249f0fe4a4"
       },
       "kernelsu": {
         "url": "https://raw.githubusercontent.com/igorcv88/Root-My-Galaxy-Payloads-S938B/main/kernelsu/ksud-s25u-kdp-v3.3.0",
