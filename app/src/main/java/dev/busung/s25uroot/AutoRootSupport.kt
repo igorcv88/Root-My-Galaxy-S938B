@@ -120,6 +120,7 @@ internal object AutoRootSupport {
         require(candidates.size == 1) { context.getString(R.string.autoroot_profile_invalid) }
 
         val candidate = candidates.single()
+        requireBuildPayloadProfile(context, candidate.profile)
         val snapshotId = snapshotId(candidate.profile)
         ensureSnapshot(context, candidate, snapshotId)
         val stored = preferences.edit()
@@ -142,6 +143,7 @@ internal object AutoRootSupport {
         require(profile.matches(DeviceSnapshot.current())) {
             context.getString(R.string.autoroot_unsupported_firmware)
         }
+        requireBuildPayloadProfile(context, profile)
 
         val exploit = File(directory, SNAPSHOT_EXPLOIT)
         val kernelSu = File(directory, SNAPSHOT_KSUD)
@@ -163,6 +165,7 @@ internal object AutoRootSupport {
         require(profile.matches(DeviceSnapshot.current())) {
             context.getString(R.string.autoroot_unsupported_firmware)
         }
+        requireBuildPayloadProfile(context, profile)
 
         val directory = File(context.filesDir, "payloads/${profile.profileId}")
         val exploit = File(directory, SNAPSHOT_EXPLOIT)
@@ -174,6 +177,22 @@ internal object AutoRootSupport {
             context.getString(R.string.autoroot_cached_payload_invalid, kernelSu.name)
         }
         return VerifiedPayloads(profile, exploit, kernelSu)
+    }
+
+    private fun requireBuildPayloadProfile(context: Context, profile: TargetProfile) {
+        if (!BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) return
+        val expectedManifest = context.resources.openRawResource(R.raw.autoroot_target_v3).use { input ->
+            SupportManifest.parse(input.readBytes())
+        }
+        val expected = expectedManifest.targets.singleOrNull()
+            ?: error(context.getString(R.string.autoroot_profile_invalid))
+        val matchesExpected =
+            profile.profileId == expected.profileId &&
+                profile.exploit.size == expected.exploit.size &&
+                profile.exploit.sha256 == expected.exploit.sha256
+        require(matchesExpected) {
+            "Cached Auto Root exploit ${profile.exploit.sha256.take(12)} does not match the active CZG3 diagnostic payload ${expected.exploit.sha256.take(12)}. Run one successful manual root with this app version before the next Auto Root."
+        }
     }
 
     private fun snapshotId(profile: TargetProfile): String =
