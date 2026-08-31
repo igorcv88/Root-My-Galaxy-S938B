@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import java.io.File
 import java.io.InputStream
+import java.security.MessageDigest
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -32,6 +33,9 @@ internal class AutoRootRunner(
 
         onStage(AutoRootStage.PreparingExploit)
         onLog("[*] profile=${payloads.profile.profileId} transport=${if (useShizuku) "shizuku" else "standalone"}")
+        onLog("[*] boot_id=$bootToken")
+        onLog("[*] exploit_sha256=${payloads.exploit.sha256()}")
+        onLog("[*] helper_sha256=${nativeHelperFile().sha256()}")
 
         onStage(AutoRootStage.RunningExploit)
         executeExploit(payloads.exploit, bootToken)
@@ -84,11 +88,23 @@ internal class AutoRootRunner(
             processBuilder.start()
         }
 
-        val captured = StringBuilder()
+        val output = ProcessOutputCollector(process)
         val readLog: () -> String = if (useShizuku) {
-            { drainProcessOutput(process, captured) }
+            { output.snapshot() + readShizukuLog() }
         } else {
-            { drainProcessOutput(process, captured); logFile.readTextIfPresent() }
+            { output.snapshot(); logFile.readTextIfPresent() }
+        }
+        var publishedLog = ""
+        fun publishNewLog(rawLog: String) {
+            val clean = stripAnsi(rawLog).trim()
+            if (clean.isBlank() || clean == publishedLog) return
+            val addition = if (clean.startsWith(publishedLog)) {
+                clean.substring(publishedLog.length).trim()
+            } else {
+                clean
+            }
+            if (addition.isNotBlank()) onLog(addition)
+            publishedLog = clean
         }
 
         try {
@@ -99,7 +115,7 @@ internal class AutoRootRunner(
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
                     cacheP0Offset(bootToken, rawLog)
-                    publishExploitLog(rawLog)
+                    publishNewLog(rawLog)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
                 }
@@ -114,10 +130,12 @@ internal class AutoRootRunner(
             }
 
             val exitCode = process.waitFor()
+            output.awaitCompletion()
             val rawLog = readLog()
             cacheP0Offset(bootToken, rawLog)
-            publishExploitLog(rawLog)
-            val earlyOutput = captured.toString().trim()
+            publishNewLog(rawLog)
+            val earlyOutput = output.snapshot().trim()
+            onLog("[*] stage=RunningExploit exit_code=$exitCode elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
             require(exitCode == 0) {
                 context.getString(
                     R.string.error_payload_exit,
@@ -134,6 +152,7 @@ internal class AutoRootRunner(
                 delay(500.milliseconds)
                 if (process.isAlive) process.destroyForcibly()
             }
+            output.awaitCompletion()
         }
         onLog(context.getString(R.string.log_bootstrap_root))
     }
@@ -234,6 +253,11 @@ internal class AutoRootRunner(
         }
     }
 
+    private fun readShizukuLog(): String = runCatching {
+        val log = ShizukuController.exec(arrayOf("/system/bin/cat", SHIZUKU_LOG_PATH))
+        log.inputStream.bufferedReader().use { it.readText() }.also { log.waitFor() }
+    }.getOrDefault("")
+
     private fun drainStream(stream: InputStream, buffer: StringBuilder) {
         val data = ByteArray(4096)
         while (stream.available() > 0) {
@@ -241,11 +265,6 @@ internal class AutoRootRunner(
             if (count <= 0) break
             buffer.append(String(data, 0, count, Charsets.UTF_8))
         }
-    }
-
-    private fun publishExploitLog(rawLog: String) {
-        val clean = stripAnsi(rawLog).trim()
-        if (clean.isNotBlank()) onLog(clean)
     }
 
     private fun cachedP0Offset(bootToken: String): String? {
@@ -272,6 +291,40 @@ internal class AutoRootRunner(
     private fun shellQuote(value: String) = "'${value.replace("'", "'\\''")}'"
 
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
+
+    private fun File.sha256(): String = inputStream().use { input ->
+        val digest = MessageDigest.getInstance("SHA-256")
+        val data = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(data)
+            if (count < 0) break
+            digest.update(data, 0, count)
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Drains both remote pipes continuously; `available()` can miss their final bytes. */
+    private class ProcessOutputCollector(process: Process) {
+        private val buffer = StringBuilder()
+        private val readers = listOf(process.inputStream, process.errorStream).mapIndexed { index, stream ->
+            Thread({
+                runCatching {
+                    val data = ByteArray(4096)
+                    while (true) {
+                        val count = stream.read(data)
+                        if (count < 0) break
+                        synchronized(buffer) { buffer.append(String(data, 0, count, Charsets.UTF_8)) }
+                    }
+                }
+            }, "autoroot-output-$index").apply { start() }
+        }
+
+        fun snapshot(): String = synchronized(buffer) { buffer.toString() }
+
+        fun awaitCompletion() = readers.forEach { reader ->
+            runCatching { reader.join(2_000) }
+        }
+    }
 
     companion object {
         private const val EXPLOIT_ATTEMPTS = "24"
