@@ -89,9 +89,14 @@ class InstallActivity : ComponentActivity() {
                 themeMode = AppPreferences.themeMode(this),
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
+                val history by installViewModel.history.collectAsStateWithLifecycle()
                 var autoRootEnabled by remember {
                     mutableStateOf(AppPreferences.autoRootEnabled(this@InstallActivity))
                 }
+                var softRebootEnabled by remember {
+                    mutableStateOf(AppPreferences.softRebootAfterRoot(this@InstallActivity))
+                }
+                var softRebootTriggered by remember { mutableStateOf(false) }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -130,14 +135,44 @@ class InstallActivity : ComponentActivity() {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
+                val setSoftReboot: (Boolean) -> Unit = { enabled ->
+                    AppPreferences.setSoftRebootAfterRoot(this@InstallActivity, enabled)
+                    softRebootEnabled = enabled
+                    if (!enabled) softRebootTriggered = false
+                }
+
                 BackHandler(enabled = installState.busy) {}
                 LaunchedEffect(startInstall, profileId) {
                     if (startInstall) installViewModel.install(profileId)
+                }
+                LaunchedEffect(installState.phase, history, softRebootEnabled) {
+                    val latestRun = history.firstOrNull()
+                    val persistedSuccess = latestRun?.result == InstallRunResult.Succeeded &&
+                        latestRun.completedAtMillis != null
+                    if (
+                        installState.phase == InstallPhase.Installed &&
+                        persistedSuccess &&
+                        softRebootEnabled &&
+                        !softRebootTriggered
+                    ) {
+                        softRebootTriggered = true
+                        val result = KernelSuSoftReboot.request(this@InstallActivity)
+                        if (!result.started) {
+                            softRebootTriggered = false
+                            Toast.makeText(
+                                this@InstallActivity,
+                                getString(R.string.soft_reboot_failed, result.detail.take(160)),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
                 }
                 InstallScreen(
                     installState = installState,
                     autoRootEnabled = autoRootEnabled,
                     onAutoRootEnabledChanged = setAutoRoot,
+                    softRebootEnabled = softRebootEnabled,
+                    onSoftRebootEnabledChanged = setSoftReboot,
                     onRetry = { installViewModel.install(profileId) },
                     onClose = ::finish,
                 )
@@ -179,6 +214,8 @@ private fun InstallScreen(
     installState: InstallUiState,
     autoRootEnabled: Boolean,
     onAutoRootEnabledChanged: (Boolean) -> Unit,
+    softRebootEnabled: Boolean,
+    onSoftRebootEnabledChanged: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -227,6 +264,10 @@ private fun InstallScreen(
                 AutoRootOptInCard(
                     enabled = autoRootEnabled,
                     onEnabledChanged = onAutoRootEnabledChanged,
+                )
+                SoftRebootOptInCard(
+                    enabled = softRebootEnabled,
+                    onEnabledChanged = onSoftRebootEnabledChanged,
                 )
             }
 
@@ -300,6 +341,45 @@ private fun AutoRootOptInCard(
                 )
                 Text(
                     text = stringResource(R.string.autoroot_opt_in_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChanged,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SoftRebootOptInCard(
+    enabled: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.soft_reboot_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.soft_reboot_description),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
