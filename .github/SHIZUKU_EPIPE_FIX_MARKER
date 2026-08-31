@@ -1,0 +1,1 @@
+Shizuku staging fallback avoids remote stdin after an EPIPE while preserving fail-closed behavior.
