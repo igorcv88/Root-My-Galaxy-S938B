@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">Automatic root after reboot</string>
+    <string name="autoroot_opt_in_description">Restore KernelSU automatically after a full reboot. Auto Root runs at most once per boot, requires the exact supported firmware, verifies cached payload SHA-256, and uses Shizuku only when it is already available and authorized.</string>
+    <string name="autoroot_channel_name">Automatic root restore</string>
+    <string name="autoroot_channel_description">Progress and results while Root My Galaxy restores KernelSU after boot.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">Waiting for Android…</string>
+    <string name="autoroot_stabilizing_android">Android is ready. Waiting for system stabilization…</string>
+    <string name="autoroot_checking_firmware">Checking exact firmware and cached payloads…</string>
+    <string name="autoroot_preparing_exploit">Preparing exploit…</string>
+    <string name="autoroot_running_exploit">Running exploit…</string>
+    <string name="autoroot_loading_ksu">Loading KernelSU…</string>
+    <string name="autoroot_verifying_root">Verifying KernelSU control channel…</string>
+    <string name="autoroot_root_restored">Root restored</string>
+    <string name="autoroot_failed">Auto Root failed: %1$s</string>
+    <string name="autoroot_disable">Disable Auto Root</string>
+    <string name="autoroot_profile_invalid">The embedded Auto Root profile is invalid.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root aborted: unsupported or changed firmware.</string>
+    <string name="autoroot_cached_payload_invalid">Cached payload failed integrity verification: %1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root requires a previously verified manual KernelSU installation.</string>
+    <string name="autoroot_boot_timeout">Android did not report boot completion within the allowed window.</string>
+    <string name="autoroot_boot_changed">The kernel boot identifier changed while Auto Root was waiting.</string>
+    <string name="autoroot_already_attempted">Auto Root has already attempted this boot. No automatic retry will be performed.</string>
+    <string name="autoroot_notification_permission">Notification permission is required before Auto Root can be enabled.</string>
+    <string name="autoroot_fgs_subtype" translatable="false">User-enabled automatic post-boot KernelSU restoration using a locally cached, cryptographically verified payload for an exact supported device firmware.</string>
+</resources>

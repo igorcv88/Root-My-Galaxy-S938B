@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">Root automático após reiniciar</string>
+    <string name="autoroot_opt_in_description">Restaura o KernelSU automaticamente após um reboot completo. O Auto Root executa no máximo uma vez por boot, exige o firmware exato suportado, verifica o SHA-256 dos payloads em cache e só usa Shizuku se ele já estiver disponível e autorizado.</string>
+    <string name="autoroot_channel_name">Restauração automática de root</string>
+    <string name="autoroot_channel_description">Progresso e resultado enquanto o Root My Galaxy restaura o KernelSU após o boot.</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">Aguardando o Android…</string>
+    <string name="autoroot_stabilizing_android">Android pronto. Aguardando estabilização do sistema…</string>
+    <string name="autoroot_checking_firmware">Verificando firmware exato e payloads em cache…</string>
+    <string name="autoroot_preparing_exploit">Preparando exploit…</string>
+    <string name="autoroot_running_exploit">Executando exploit…</string>
+    <string name="autoroot_loading_ksu">Carregando KernelSU…</string>
+    <string name="autoroot_verifying_root">Verificando o canal de controle do KernelSU…</string>
+    <string name="autoroot_root_restored">Root restaurado</string>
+    <string name="autoroot_failed">Falha no Auto Root: %1$s</string>
+    <string name="autoroot_disable">Desativar Auto Root</string>
+    <string name="autoroot_profile_invalid">O perfil embutido do Auto Root é inválido.</string>
+    <string name="autoroot_unsupported_firmware">Auto Root abortado: firmware não suportado ou alterado.</string>
+    <string name="autoroot_cached_payload_invalid">O payload em cache falhou na verificação de integridade: %1$s</string>
+    <string name="autoroot_prior_install_required">O Auto Root exige uma instalação manual do KernelSU previamente verificada.</string>
+    <string name="autoroot_boot_timeout">O Android não confirmou a conclusão do boot dentro do intervalo permitido.</string>
+    <string name="autoroot_boot_changed">O identificador do boot do kernel mudou enquanto o Auto Root aguardava.</string>
+    <string name="autoroot_already_attempted">O Auto Root já tentou executar neste boot. Não haverá nova tentativa automática.</string>
+    <string name="autoroot_notification_permission">A permissão de notificações é necessária antes de ativar o Auto Root.</string>
+</resources>

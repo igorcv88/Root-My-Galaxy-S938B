@@ -54,10 +54,28 @@ jobs:
       - name: Reject legacy Zygisk integration
         run: |
           set -eu
-          if grep -R -n -E 'NeoZygisk|ReZygisk|ctl\.restart zygote|ksud soft-reboot' README.md app/src/main; then
+          if grep -R -n -E 'NeoZygisk|ReZygisk|Zygisk Next|ctl\.restart zygote|kill.*zygote|zygote.*(kill|restart)|ksud.*soft-reboot' README.md app/src/main; then
             echo "Legacy provider-specific or automatic zygote/soft-reboot integration found" >&2
             exit 1
           fi
+
+      - name: Verify Auto Root boundaries
+        run: |
+          set -eu
+          grep -F 'android.intent.action.BOOT_COMPLETED' app/src/main/AndroidManifest.xml
+          if grep -R -n -E 'LOCKED_BOOT_COMPLETED|ctl\.restart zygote|kill.*zygote|zygote.*(kill|restart)|ksud.*soft-reboot' \
+              app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt app/src/main/AndroidManifest.xml; then
+            echo "Auto Root crossed the post-boot or no-soft-reboot boundary" >&2
+            exit 1
+          fi
+          if grep -R -n -E 'https?://' app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt; then
+            echo "Auto Root runtime must not depend on network URLs" >&2
+            exit 1
+          fi
+          grep -F 'claimAttempt(this, bootToken)' \
+            app/src/main/java/dev/busung/s25uroot/AutoRootService.kt
+          grep -F 'loadVerifiedLocalPayloads(this)' \
+            app/src/main/java/dev/busung/s25uroot/AutoRootService.kt
 
       - name: Validate controlled payload feed
         run: |
@@ -91,6 +109,7 @@ jobs:
           target = next(item for item in payloads if item["payloadId"] == "pa3q-S938BXXSBCZG3")
           assert target["models"] == ["SM-S938B"]
           assert target["kernelVersions"] == ["6.6.98"]
+          mutable_prefix = f"https://raw.githubusercontent.com/{repo}/main/"
           assert target["exactMatch"] == {
               "manufacturer": "samsung",
               "model": "SM-S938B",
@@ -107,8 +126,24 @@ jobs:
               "abi": "arm64-v8a",
               "pageSize": 4096,
           }
+          assert target["exploit"] == {
+              "url": f"{mutable_prefix}artifacts/pa3q-S938BXXSBCZG3-v0265/cve-2026-43499-app.so",
+              "size": 104128,
+              "sha256": "1719e9362cd19e58521cb785fcaa40c4613ca854d0c3c9fb8320edf8e9046303",
+          }
+          assert target["kernelsu"] == {
+              "url": f"{mutable_prefix}kernelsu/ksud-s25u-kdp-v3.3.0",
+              "size": 4823504,
+              "sha256": "46c6bd8eb251d28ee22fd846cd6959e9e6da66ba74421a01f917d4e927818953",
+          }
 
-          mutable_prefix = f"https://raw.githubusercontent.com/{repo}/main/"
+          with open("app/src/main/res/raw/autoroot_target_v3.json", encoding="utf-8") as source:
+              embedded = json.load(source)
+          assert embedded["schemaVersion"] == 3
+          assert embedded["payloads"] == [target], (
+              "embedded Auto Root profile must exactly mirror the controlled CZG3 target"
+          )
+
           for item in payloads:
               for artifact in (item["exploit"], item["kernelsu"]):
                   url = artifact["url"]
