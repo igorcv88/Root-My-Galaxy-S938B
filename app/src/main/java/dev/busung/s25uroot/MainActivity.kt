@@ -1452,6 +1452,7 @@ private fun diagnosticReport(entry: InstallHistoryEntry): String = buildString {
     appendLine("stage_timings:")
     entry.stageTimings.forEach { appendLine("  ${it.elapsedMillis}ms stage=${it.stage} attempt=${it.attempt ?: "-"}") }
     entry.crashRecord?.let { appendLine("crash_record:\n$it") }
+    append(raceAnalysisReport(entry.log))
     appendLine("log:")
     append(entry.log)
 }
