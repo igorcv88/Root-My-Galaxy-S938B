@@ -1,16 +1,13 @@
 name: Verify application source
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.event.pull_request.number || github.ref }}
+  group: verify-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
