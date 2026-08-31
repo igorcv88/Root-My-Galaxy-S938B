@@ -62,6 +62,21 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
+
+        // The existing install receipt is written only after KernelSU late-load
+        // succeeds. Recording the download boot id here lets Auto Root prove on
+        // the next boot that this exact staged set belonged to that successful
+        // installation, without changing the proven manual execution path.
+        val bootToken = AutoRootSupport.currentBootToken()
+            ?: error(context.getString(R.string.error_boot_id))
+        writeSynced(
+            File(directory, "target-v3.json"),
+            SupportManifest(3, listOf(profile)).toJsonBytes(),
+        )
+        writeSynced(
+            File(directory, "download-boot-id"),
+            "$bootToken\n".toByteArray(Charsets.US_ASCII),
+        )
         return VerifiedPayloads(profile, exploit, kernelSu)
     }
 
@@ -114,6 +129,13 @@ class PayloadRepository(private val context: Context) {
         }
         onProgress(context.getString(R.string.repo_verified, label))
         return destination
+    }
+
+    private fun writeSynced(destination: File, bytes: ByteArray) {
+        FileOutputStream(destination).use { output ->
+            output.write(bytes)
+            output.fd.sync()
+        }
     }
 
     private fun resolveMainCommit(): String {
