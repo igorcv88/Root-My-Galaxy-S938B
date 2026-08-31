@@ -1,6 +1,7 @@
 package dev.busung.s25uroot
 
 internal data class RaceRecord(
+    val raceId: String,
     val role: String,
     val event: String,
     val timestampRawNanos: Long,
@@ -26,13 +27,14 @@ internal object RaceTelemetryParser {
             runCatching { parse(line.substring(marker + PREFIX.length)) }
                 .getOrElse { malformed++; null }
         }.toList()
-        fun time(event: String): Long? = records.firstOrNull { it.event == event }?.timestampRawNanos
+        val status = records.lastOrNull { it.event == "trace_status" }
+        val activeRecords = status?.let { completed -> records.filter { it.raceId == completed.raceId } }.orEmpty()
+        fun time(event: String): Long? = activeRecords.firstOrNull { it.event == event }?.timestampRawNanos
         fun delta(start: String, end: String): Long? {
             val first = time(start) ?: return null
             val last = time(end) ?: return null
             return ((last - first).takeIf { it >= 0 })?.div(1_000)
         }
-        val status = records.lastOrNull { it.event == "trace_status" }
         val schedulerDeltas = listOf("parent", "owner", "waiter", "consumer").associateWith { role ->
             schedulerDelta(log, role, "nr_migrations")
         } + listOf("parent", "owner", "waiter", "consumer").associate { role ->
@@ -76,8 +78,9 @@ internal object RaceTelemetryParser {
         }
         val role = requireNotNull(fields["role"]).also { require(it.matches(Regex("[a-z_]+"))) }
         val event = requireNotNull(fields["event"]).also { require(it.matches(Regex("[a-z0-9_]+"))) }
+        val raceId = requireNotNull(fields["race"]).also { require(it.toLong() > 0) }
         val timestamp = requireNotNull(fields["ts_raw_ns"]).toLong().also { require(it >= 0) }
-        return RaceRecord(role, event, timestamp, fields - setOf("role", "event", "ts_raw_ns"))
+        return RaceRecord(raceId, role, event, timestamp, fields - setOf("race", "role", "event", "ts_raw_ns"))
     }
 }
 

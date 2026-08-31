@@ -53,7 +53,7 @@ android {
             isDebuggable = true
             matchingFallbacks += listOf("debug")
             buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "true")
-            buildConfigField("String", "PAYLOAD_REF", "\"f03472c0b40fb5e3435c2e53c9c7e23a7818b7a1\"")
+            buildConfigField("String", "PAYLOAD_REF", "\"0548064879c8cf6436d580f824c46af027ca8d1b\"")
         }
     }
 
