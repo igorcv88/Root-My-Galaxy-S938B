@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autoroot_opt_in_title">重新啟動後自動 Root</string>
+    <string name="autoroot_opt_in_description">完整重新啟動後自動還原 KernelSU。Auto Root 每次開機最多執行一次，只允許完全符合的支援韌體，驗證快取 payload 的 SHA-256，且只有在 Shizuku 已執行並已授權時才會使用。</string>
+    <string name="autoroot_channel_name">自動還原 Root</string>
+    <string name="autoroot_channel_description">Root My Galaxy 在開機後還原 KernelSU 時的進度與結果。</string>
+    <string name="autoroot_notification_title">Root My Galaxy</string>
+    <string name="autoroot_waiting_android">正在等待 Android…</string>
+    <string name="autoroot_stabilizing_android">Android 已就緒。正在等待系統穩定…</string>
+    <string name="autoroot_checking_firmware">正在檢查精確韌體與快取 payload…</string>
+    <string name="autoroot_preparing_exploit">正在準備 exploit…</string>
+    <string name="autoroot_running_exploit">正在執行 exploit…</string>
+    <string name="autoroot_loading_ksu">正在載入 KernelSU…</string>
+    <string name="autoroot_verifying_root">正在驗證 KernelSU 控制通道…</string>
+    <string name="autoroot_root_restored">Root 已還原</string>
+    <string name="autoroot_failed">Auto Root 失敗：%1$s</string>
+    <string name="autoroot_disable">停用 Auto Root</string>
+    <string name="autoroot_profile_invalid">內嵌的 Auto Root 設定檔無效。</string>
+    <string name="autoroot_unsupported_firmware">Auto Root 已中止：韌體不受支援或已變更。</string>
+    <string name="autoroot_cached_payload_invalid">快取 payload 完整性驗證失敗：%1$s</string>
+    <string name="autoroot_prior_install_required">Auto Root 需要先前已驗證成功的 KernelSU 手動安裝。</string>
+    <string name="autoroot_boot_timeout">Android 未在允許時間內回報開機完成。</string>
+    <string name="autoroot_boot_changed">Auto Root 等待期間核心開機識別碼已變更。</string>
+    <string name="autoroot_already_attempted">Auto Root 在本次開機中已經嘗試過。不會自動重試。</string>
+    <string name="autoroot_notification_permission">啟用 Auto Root 前必須授予通知權限。</string>
+</resources>
