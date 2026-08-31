@@ -62,7 +62,7 @@ jobs:
             echo "RELEASE_TAG=$RELEASE_TAG"
           } >> "$GITHUB_ENV"
 
-      - name: Sincronizar e verificar payloads do Auto Root
+      - name: Sincronizar e verificar perfil CZG3 do Auto Root
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -88,9 +88,15 @@ jobs:
           with urllib.request.urlopen(f"{raw}/support/targets-v3.json", timeout=30) as response:
               manifest = json.load(response)
 
-          if manifest.get("schemaVersion") != 3 or len(manifest.get("payloads", [])) != 1:
-              raise SystemExit("Unexpected payload manifest")
-          target = manifest["payloads"][0]
+          if manifest.get("schemaVersion") != 3:
+              raise SystemExit("Unexpected payload manifest schema")
+          matches = [
+              item for item in manifest.get("payloads", [])
+              if item.get("payloadId") == "pa3q-S938BXXSBCZG3"
+          ]
+          if len(matches) != 1:
+              raise SystemExit("CZG3 payload must exist exactly once")
+          target = matches[0]
           expected_identity = {
               "manufacturer": "samsung",
               "model": "SM-S938B",
@@ -107,8 +113,6 @@ jobs:
               "abi": "arm64-v8a",
               "pageSize": 4096,
           }
-          if target.get("payloadId") != "pa3q-S938BXXSBCZG3":
-              raise SystemExit("Unexpected payload target")
           if target.get("exactMatch") != expected_identity:
               raise SystemExit("CZG3 identity changed unexpectedly")
 
@@ -132,13 +136,17 @@ jobs:
               if digest.hexdigest() != artifact["sha256"].lower():
                   raise SystemExit(f"Payload SHA-256 mismatch: {relative}")
 
+          # The full remote catalog may contain many devices. The APK fallback
+          # intentionally embeds only the exact CZG3 profile used to migrate
+          # older Auto Root installations that do not yet have a local snapshot.
+          embedded = {"schemaVersion": 3, "payloads": [target]}
           pathlib.Path("app/src/main/res/raw/autoroot_target_v3.json").write_text(
-              json.dumps(manifest, indent=2) + "\n",
+              json.dumps(embedded, indent=2) + "\n",
               encoding="utf-8",
           )
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"PAYLOAD_COMMIT={commit}\n")
-          print(f"Auto Root synchronized with payload commit {commit}")
+          print(f"Auto Root fallback synchronized with payload commit {commit}")
           PY
 
       - name: Verificar regras do Auto Root
@@ -164,12 +172,13 @@ jobs:
       - name: Preparar cache do Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Testar e gerar APK
+      - name: Testar, validar e gerar APK
         run: |
           set -euo pipefail
           chmod +x gradlew
           ./gradlew --build-cache \
             :app:testDebugUnitTest \
+            :app:lintDebug \
             :app:assembleRelease \
             -PreleaseVersionCode="$VERSION_CODE" \
             -PreleaseVersionName="$VERSION_NAME"
