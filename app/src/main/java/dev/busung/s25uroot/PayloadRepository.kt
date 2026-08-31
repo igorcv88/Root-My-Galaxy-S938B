@@ -5,6 +5,7 @@ import android.system.Os
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -16,10 +17,21 @@ data class VerifiedPayloads(
     val kernelSu: File,
 )
 
+private class PayloadNetworkException(
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
 class PayloadRepository(private val context: Context) {
+    /**
+     * Manual root always starts from the current Payloads `main`. The branch is
+     * resolved to one commit at the beginning of the request so the manifest and
+     * both artifacts come from the same repository state even if `main` moves
+     * while files are being downloaded.
+     */
     fun loadTargets(): List<TargetProfile> {
         val commit = resolveMainCommit()
-        val manifestBytes = downloadBytes(rawUrl(commit, manifestPath()), MAX_MANIFEST_BYTES)
+        val manifestBytes = downloadBytes(rawUrl(commit, MANIFEST_PATH), MAX_MANIFEST_BYTES)
         return SupportManifest.parse(manifestBytes).targets.map { profile ->
             profile.copy(
                 exploit = profile.exploit.copy(url = pinArtifactUrl(profile.exploit.url, commit)),
@@ -40,10 +52,38 @@ class PayloadRepository(private val context: Context) {
         .firstOrNull { it.profileId == profileId }
         ?: error(context.getString(R.string.repo_profile_missing, profileId))
 
-    fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        // Manual updates are staged separately from the last known-good Auto Root
-        // snapshot. A failed exploit or late-load therefore cannot overwrite the
-        // payload set that will be used on the next full boot.
+    /**
+     * Exact manual-root policy:
+     *  - online: resolve and download the current Payloads/main payload;
+     *  - network unavailable: use the last successful manual-root snapshot;
+     *  - no prior successful manual snapshot: fail instead of inventing an APK
+     *    embedded fallback.
+     */
+    fun prepareManualPayloads(
+        profileId: String? = null,
+        onProgress: (String) -> Unit,
+    ): VerifiedPayloads {
+        return try {
+            val profile = if (profileId == null) {
+                resolveTarget(DeviceSnapshot.current())
+            } else {
+                resolveTarget(profileId)
+            }
+            onProgress("Payload source: Root-My-Galaxy-Payloads-S938B/main")
+            download(profile, onProgress)
+        } catch (error: PayloadNetworkException) {
+            onProgress("Payloads/main unavailable; using last successful manual-root snapshot")
+            val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
+            if (profileId != null && cached.profile.profileId != profileId) {
+                error(context.getString(R.string.repo_profile_missing, profileId))
+            }
+            cached
+        }
+    }
+
+    private fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
+        // A remote manual download stays separate from the active snapshot until
+        // this exact payload set completes exploit + KernelSU verification.
         val directory = File(context.filesDir, "payloads/pending/${profile.profileId}").apply {
             deleteRecursively()
             require(mkdirs() || isDirectory) { context.getString(R.string.repo_finalize_failed, name) }
@@ -62,20 +102,9 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
-
-        // The existing install receipt is written only after KernelSU late-load
-        // succeeds. Recording the download boot id here lets Auto Root prove on
-        // the next boot that this exact staged set belonged to that successful
-        // installation, without changing the proven manual execution path.
-        val bootToken = AutoRootSupport.currentBootToken()
-            ?: error(context.getString(R.string.error_boot_id))
         writeSynced(
             File(directory, "target-v3.json"),
             SupportManifest(3, listOf(profile)).toJsonBytes(),
-        )
-        writeSynced(
-            File(directory, "download-boot-id"),
-            "$bootToken\n".toByteArray(Charsets.US_ASCII),
         )
         return VerifiedPayloads(profile, exploit, kernelSu)
     }
@@ -96,21 +125,25 @@ class PayloadRepository(private val context: Context) {
             }
             val digest = MessageDigest.getInstance("SHA-256")
             var total = 0L
-            connection.inputStream.use { input ->
-                FileOutputStream(temporary).use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        total += count
-                        require(total <= artifact.size) {
-                            context.getString(R.string.repo_size_exceeded, label)
+            try {
+                connection.inputStream.use { input ->
+                    FileOutputStream(temporary).use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= artifact.size) {
+                                context.getString(R.string.repo_size_exceeded, label)
+                            }
+                            digest.update(buffer, 0, count)
+                            output.write(buffer, 0, count)
                         }
-                        digest.update(buffer, 0, count)
-                        output.write(buffer, 0, count)
+                        output.fd.sync()
                     }
-                    output.fd.sync()
                 }
+            } catch (error: IOException) {
+                throw PayloadNetworkException("Network failed while downloading $label", error)
             }
             require(total == artifact.size) { context.getString(R.string.repo_incomplete, label) }
             val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
@@ -139,24 +172,17 @@ class PayloadRepository(private val context: Context) {
     }
 
     private fun resolveMainCommit(): String {
-        val configuredRef = BuildConfig.PAYLOAD_REF
-        if (configuredRef.matches(Regex("[0-9a-f]{40}"))) return configuredRef
-        require(configuredRef == "main") { context.getString(R.string.repo_commit_invalid) }
-        val response = downloadBytes("$COMMIT_API_PREFIX$configuredRef", MAX_COMMIT_RESPONSE_BYTES)
+        val response = downloadBytes("$COMMIT_API_PREFIX$MAIN_BRANCH", MAX_COMMIT_RESPONSE_BYTES)
         val commit = JSONObject(response.toString(Charsets.UTF_8))
             .getJSONObject("object")
             .getString("sha")
-        require(commit.matches(Regex("[0-9a-f]{40}"))) { context.getString(R.string.repo_commit_invalid) }
+        require(commit.matches(Regex("[0-9a-f]{40}"))) {
+            context.getString(R.string.repo_commit_invalid)
+        }
         return commit
     }
 
     private fun rawUrl(commit: String, path: String) = "$RAW_REPOSITORY/$commit/$path"
-
-    private fun manifestPath(): String = if (BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) {
-        "support/targets-v3-diagnostic.json"
-    } else {
-        "support/targets-v3.json"
-    }
 
     private fun pinArtifactUrl(url: String, commit: String): String {
         require(url.startsWith(MUTABLE_RAW_PREFIX)) { context.getString(R.string.repo_url_invalid) }
@@ -166,36 +192,54 @@ class PayloadRepository(private val context: Context) {
     private fun downloadBytes(url: String, maximum: Int): ByteArray {
         val connection = open(url)
         return try {
-            connection.inputStream.use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    require(output.size() + count <= maximum) {
-                        context.getString(R.string.repo_response_too_large)
+            try {
+                connection.inputStream.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        require(output.size() + count <= maximum) {
+                            context.getString(R.string.repo_response_too_large)
+                        }
+                        output.write(buffer, 0, count)
                     }
-                    output.write(buffer, 0, count)
+                    output.toByteArray()
                 }
-                output.toByteArray()
+            } catch (error: IOException) {
+                throw PayloadNetworkException("Network failed while reading Payloads/main", error)
             }
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun open(url: String): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 60_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "S25URoot/${BuildConfig.VERSION_NAME}")
-            connect()
-            require(responseCode == HttpURLConnection.HTTP_OK) { "HTTP $responseCode" }
+    private fun open(url: String): HttpURLConnection {
+        try {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 60_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "S25URoot/${BuildConfig.VERSION_NAME}")
+                connect()
+            }
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                val code = connection.responseCode
+                connection.disconnect()
+                throw PayloadNetworkException("Payloads/main returned HTTP $code")
+            }
+            return connection
+        } catch (error: PayloadNetworkException) {
+            throw error
+        } catch (error: IOException) {
+            throw PayloadNetworkException("Unable to reach Payloads/main", error)
         }
+    }
 
     companion object {
         private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"
+        private const val MAIN_BRANCH = "main"
+        private const val MANIFEST_PATH = "support/targets-v3.json"
         private const val COMMIT_API_PREFIX =
             "https://api.github.com/repos/$PAYLOAD_REPOSITORY/git/ref/heads/"
         private const val RAW_REPOSITORY =
