@@ -8,7 +8,8 @@ on:
       - "settings.gradle.kts"
       - "gradle.properties"
       - "gradle/**"
-      - ".github/workflows/verify-pr.yml"
+      - ".github/scripts/**"
+      - ".github/workflows/**"
       - ".github/dependabot.yml"
 
 permissions:
@@ -39,6 +40,9 @@ jobs:
 
       - name: Preparar Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Validar gerador de release notes
+        run: python3 -m py_compile .github/scripts/build_release_notes.py
 
       - name: Rodar testes e lint
         run: |
