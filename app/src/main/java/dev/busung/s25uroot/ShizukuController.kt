@@ -43,6 +43,43 @@ object ShizukuController {
         false
     }
 
+    /**
+     * Boot-time Auto Root must not treat a merely-present Binder as a healthy transport.
+     * Exercise remote process creation and the stdin pipe with a tiny command. This catches
+     * stale/half-started Shizuku sessions and broken Binder streams before an exploit attempt
+     * is claimed, allowing the caller to fall back to standalone instead of failing mid-run.
+     */
+    suspend fun canRunUnattended(timeoutMillis: Long = 1_500): Boolean {
+        if (!isGranted()) return false
+        val process = try {
+            exec(arrayOf("/system/bin/sh", "-c", "cat >/dev/null"))
+        } catch (_: Throwable) {
+            return false
+        }
+        val deadline = SystemClock.elapsedRealtime() + timeoutMillis
+        return try {
+            try {
+                process.outputStream.use { output ->
+                    output.write(byteArrayOf('R'.code.toByte(), 'M'.code.toByte(), 'G'.code.toByte()))
+                    output.flush()
+                }
+            } catch (_: Throwable) {
+                return false
+            }
+
+            while (process.isAlive && SystemClock.elapsedRealtime() < deadline) {
+                delay(50)
+            }
+            if (process.isAlive) {
+                false
+            } else {
+                runCatching { process.exitValue() == 0 }.getOrDefault(false)
+            }
+        } finally {
+            if (process.isAlive) process.destroy()
+        }
+    }
+
     suspend fun requestPermission(): Boolean {
         if (isGranted()) return true
         if (!isRunning()) return false

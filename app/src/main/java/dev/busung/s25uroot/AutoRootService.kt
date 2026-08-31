@@ -12,6 +12,10 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,15 +25,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.PrintWriter
-import java.io.StringWriter
-import java.time.Instant
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
 
 class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
+    private var watchdogJob: Job? = null
+
+    @Volatile
+    private var watchdogExpired = false
 
     override fun onCreate() {
         super.onCreate()
@@ -50,13 +55,37 @@ class AutoRootService : Service() {
             startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
         }
 
-        runJob = scope.launch { runAutoRoot() }
+        watchdogExpired = false
+        runJob = scope.launch {
+            try {
+                runAutoRoot()
+            } finally {
+                if (!watchdogExpired) watchdogJob?.cancel()
+                watchdogJob = null
+            }
+        }
+        watchdogJob = scope.launch {
+            delay(AUTO_ROOT_SERVICE_WATCHDOG_MILLIS)
+            if (runJob?.isActive == true) {
+                watchdogExpired = true
+                Log.e(TAG, "Auto Root service watchdog expired")
+                runJob?.cancel(CancellationException("Auto Root service watchdog expired"))
+                finishWithResult(
+                    getString(
+                        R.string.autoroot_failed,
+                        getString(R.string.autoroot_service_watchdog_timeout),
+                    ),
+                )
+            }
+        }
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        watchdogJob?.cancel()
+        watchdogJob = null
         scope.cancel()
         super.onDestroy()
     }
@@ -119,7 +148,10 @@ class AutoRootService : Service() {
 
             require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
             updateNotification(getString(R.string.autoroot_stabilizing_android))
-            delay(STABILIZATION_DELAY_MILLIS)
+            if (waitForStabilizationOrRoot(initialBootToken)) {
+                finishWithResult(getString(R.string.autoroot_root_restored))
+                return
+            }
 
             if (!AppPreferences.autoRootEnabled(this)) {
                 stopWithoutResult()
@@ -139,17 +171,25 @@ class AutoRootService : Service() {
             updateNotification(getString(R.string.autoroot_checking_firmware))
             val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
 
+            // Upstream #483 avoids Shizuku at boot entirely. Preserve the faster
+            // Shizuku path when it is actually usable, but verify more than Binder
+            // presence before spending the single automatic attempt for this boot.
+            val shizukuCandidate = ShizukuController.isRunning() && ShizukuController.isGranted()
+            val useShizuku = shizukuCandidate && ShizukuController.canRunUnattended()
+
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            val useShizuku = ShizukuController.isRunning() && ShizukuController.isGranted()
             historyEntry = historyStore.create().copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = useShizuku,
                 payloadSha256 = payloads.profile.exploit.sha256,
                 payloadSize = payloads.profile.exploit.size,
             ).also(historyStore::save)
+            if (shizukuCandidate && !useShizuku) {
+                persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
+            }
             persist("[*] Auto Root starting transport=${if (useShizuku) "shizuku" else "standalone"}")
             val runner = AutoRootRunner(
                 context = this,
@@ -188,19 +228,18 @@ class AutoRootService : Service() {
             persist("[+] Auto Root completed")
             finishHistory(InstallRunResult.Succeeded)
             finishWithResult(getString(R.string.autoroot_root_restored))
+        } catch (error: CancellationException) {
+            persist("[-] Auto Root cancelled: ${error.message ?: "cancelled"}", force = true)
+            finishHistory(InstallRunResult.Failed)
+            throw error
         } catch (error: Throwable) {
-            if (!scope.isActive) {
-                persist("[-] Auto Root cancelled")
-                finishHistory(InstallRunResult.Failed)
-                return
-            }
             val detail = error.message ?: error.javaClass.simpleName
             if (error is ExploitRunException) {
                 historyEntry = historyEntry?.copy(failureClass = error.failureClass, safety = error.safety, outcome = ExploitOutcome.Failed)
             }
             Log.e(TAG, "Auto Root failed", error)
             val trace = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
-            persist("[-] Auto Root failed\n$trace")
+            persist("[-] Auto Root failed\n$trace", force = true)
             finishHistory(InstallRunResult.Failed)
             finishWithResult(getString(R.string.autoroot_failed, detail.take(160)))
         } finally {
@@ -215,6 +254,25 @@ class AutoRootService : Service() {
             }
             scope.isActive
         } == true
+
+    /**
+     * Keep the existing conservative stabilization window, but stop waiting if
+     * KernelSU becomes active during it. This preserves the safer timing while
+     * avoiding up to 45 seconds of pointless latency when root was restored by
+     * another mechanism after BOOT_COMPLETED.
+     */
+    private suspend fun waitForStabilizationOrRoot(bootToken: String): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + STABILIZATION_DELAY_MILLIS
+        while (scope.isActive && SystemClock.elapsedRealtime() < deadline) {
+            if (NativeProbe.isKernelSuActive()) {
+                AutoRootSupport.markVerifiedForBoot(this, bootToken)
+                return true
+            }
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining > 0) delay(minOf(STABILIZATION_POLL_MILLIS, remaining))
+        }
+        return false
+    }
 
     private fun readBootCompletedProperty(): String = runCatching {
         val process = ProcessBuilder("/system/bin/getprop", "sys.boot_completed")
@@ -292,9 +350,11 @@ class AutoRootService : Service() {
         private const val TAG = "RootMyGalaxyAutoRoot"
         private const val CHANNEL_ID = "auto_root_postboot"
         private const val STABILIZATION_DELAY_MILLIS = 45_000L
+        private const val STABILIZATION_POLL_MILLIS = 5_000L
         private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
         private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
-        private const val MAX_WAKELOCK_MILLIS = 20 * 60 * 1_000L
+        private const val AUTO_ROOT_SERVICE_WATCHDOG_MILLIS = 25 * 60 * 1_000L
+        private const val MAX_WAKELOCK_MILLIS = AUTO_ROOT_SERVICE_WATCHDOG_MILLIS
         private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
     }
 }
