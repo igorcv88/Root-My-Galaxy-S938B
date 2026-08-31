@@ -14,23 +14,26 @@ data class SoftRebootResult(
 
 object KernelSuSoftReboot {
     suspend fun request(context: Context): SoftRebootResult = withContext(Dispatchers.IO) {
-        var lastFailure: SoftRebootResult? = null
+        val script = softRebootScript(managerKsudPath(context))
+        val failures = mutableListOf<String>()
         val directHelper = File(context.applicationInfo.nativeLibraryDir, "libcve43499root.so")
         if (directHelper.canExecute()) {
-            val result = runCommand(arrayOf(directHelper.absolutePath, "-c", SOFT_REBOOT_SCRIPT))
+            val result = runCommand(arrayOf(directHelper.absolutePath, "-c", script))
             if (result.started) return@withContext result
-            lastFailure = result
+            failures += "direct bootstrap helper:\n${result.detail}"
         }
 
         if (ShizukuController.isRunning() && ShizukuController.isGranted()) {
-            val result = runShizuku(arrayOf(SHIZUKU_HELPER_PATH, "-c", SOFT_REBOOT_SCRIPT))
+            val result = runShizuku(arrayOf(SHIZUKU_HELPER_PATH, "-c", script))
             if (result.started) return@withContext result
-            lastFailure = result
+            failures += "Shizuku bootstrap helper:\n${result.detail}"
         }
 
-        lastFailure ?: SoftRebootResult(
+        SoftRebootResult(
             started = false,
-            detail = "Bootstrap root helper is unavailable for the soft reboot",
+            detail = failures.joinToString("\n---\n").ifBlank {
+                "Bootstrap root helper is unavailable for the soft reboot"
+            },
         )
     }
 
@@ -68,11 +71,10 @@ object KernelSuSoftReboot {
         }
 
         // `ksud soft-reboot` daemonizes and its launcher can return 0 before
-        // Android userspace has actually stopped.  Do not mistake a successful
-        // launcher exit (or KernelSU's historical UAPI-mismatch no-op) for a
-        // real restart.  The native implementation resets sys.boot_completed
-        // to 0 immediately before `stop`, so observing that transition is a
-        // reliable acknowledgement while this app process is still alive.
+        // Android userspace has actually stopped. Do not mistake a successful
+        // launcher exit (including KernelSU's UAPI-mismatch no-op path) for a
+        // real restart. The implementation resets sys.boot_completed to 0
+        // immediately before `stop`, so observing that transition is the ack.
         if (bootCompletedBefore == "1") {
             repeat(BOOT_RESET_POLL_COUNT) {
                 if (readBootCompleted() == "0") {
@@ -92,9 +94,6 @@ object KernelSuSoftReboot {
             )
         }
 
-        // BOOT_COMPLETED was not 1 before the request, so the property cannot
-        // be used as an edge detector.  Preserve the command result rather than
-        // inventing a failure in this unusual state.
         return SoftRebootResult(
             started = true,
             detail = output.ifBlank { "KernelSU soft reboot command accepted" },
@@ -110,12 +109,17 @@ object KernelSuSoftReboot {
         output
     }.getOrDefault("")
 
-    private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
-    private const val COMMAND_TIMEOUT_SECONDS = 10L
-    private const val BOOT_RESET_POLL_COUNT = 40
-    private const val BOOT_RESET_POLL_MILLIS = 100L
+    @Suppress("DEPRECATION")
+    private fun managerKsudPath(context: Context): String? = runCatching {
+        val info = context.packageManager.getApplicationInfo(KERNEL_SU_MANAGER_PACKAGE, 0)
+        File(info.nativeLibraryDir, "libksud.so").absolutePath
+    }.getOrNull()
 
-    private val SOFT_REBOOT_SCRIPT = """
+    private fun shellQuote(value: String): String = "'${value.replace("'", "'\\''")}'"
+
+    private fun softRebootScript(managerKsud: String?): String {
+        val managerPath = managerKsud?.let(::shellQuote) ?: "''"
+        return """
 set -u
 trace=/data/local/tmp/rmg-soft-reboot-last
 : > "${'$'}trace" 2>/dev/null || true
@@ -151,24 +155,29 @@ done
   log "RMG_SOFT_REBOOT_V1|stage=keeper|status=group-missing"
   exit 44
 }
-ksud=/data/adb/ksud
-if [ ! -x "${'$'}ksud" ]; then
+manager_ksud=$managerPath
+ksud=
+if [ -n "${'$'}manager_ksud" ] && [ -x "${'$'}manager_ksud" ]; then
+  ksud="${'$'}manager_ksud"
+  log "RMG_SOFT_REBOOT_V1|stage=ksud|status=found|source=manager|path=${'$'}ksud"
+elif [ -x /data/adb/ksud ]; then
+  ksud=/data/adb/ksud
+  log "RMG_SOFT_REBOOT_V1|stage=ksud|status=found|source=installed|path=${'$'}ksud"
+elif [ -x /data/local/tmp/ksud-s25u-kdp ]; then
   ksud=/data/local/tmp/ksud-s25u-kdp
-fi
-[ -x "${'$'}ksud" ] || {
-  log "RMG_SOFT_REBOOT_V1|stage=ksud|status=missing"
+  log "RMG_SOFT_REBOOT_V1|stage=ksud|status=found|source=staged|path=${'$'}ksud"
+else
+  log "RMG_SOFT_REBOOT_V1|stage=ksud|status=missing|manager_path=${'$'}manager_ksud"
   exit 45
-}
-log "RMG_SOFT_REBOOT_V1|stage=ksud|status=found|path=${'$'}ksud"
+fi
 info=${'$'}("${'$'}ksud" debug info 2>&1)
 info_rc=${'$'}?
 log "RMG_SOFT_REBOOT_V1|stage=ksud-info|rc=${'$'}info_rc|detail=${'$'}(printf '%s' "${'$'}info" | tr '\n|' '  ' | cut -c1-320)"
 [ "${'$'}info_rc" -eq 0 ] || exit 46
 
-# Match the KernelSU Manager's successful path: create a new KernelSU root
-# shell in the global mount namespace, then execute the soft-reboot command
-# from inside that shell.  This avoids relying solely on the bootstrap
-# helper's post-late-load security context.
+# Reproduce the KernelSU Manager path exactly: the selected ksud creates a
+# fresh KernelSU root shell in the global mount namespace, and that shell then
+# invokes the same selected ksud binary with `soft-reboot`.
 log "RMG_SOFT_REBOOT_V1|stage=launch|route=ksu-debug-su"
 if printf 'exec "%s" soft-reboot\n' "${'$'}ksud" | "${'$'}ksud" debug su -g; then
   log "RMG_SOFT_REBOOT_V1|stage=launcher-exit|route=ksu-debug-su|rc=0"
@@ -177,13 +186,20 @@ fi
 rc=${'$'}?
 log "RMG_SOFT_REBOOT_V1|stage=launcher-exit|route=ksu-debug-su|rc=${'$'}rc"
 
-# Conservative fallback for devices/builds where debug-su is unavailable to a
-# bootstrap-root caller.  `soft_reboot()` itself detaches into init's process
-# group/cgroups and mount namespace before stopping Android userspace.
+# Fallback for an environment where debug-su cannot be entered from the
+# bootstrap caller. soft_reboot() still daemonizes into init cgroups/process
+# group and the global mount namespace before stopping Android userspace.
 log "RMG_SOFT_REBOOT_V1|stage=launch|route=direct"
 "${'$'}ksud" soft-reboot
 rc=${'$'}?
 log "RMG_SOFT_REBOOT_V1|stage=launcher-exit|route=direct|rc=${'$'}rc"
 exit "${'$'}rc"
 """.trimIndent()
+    }
+
+    private const val KERNEL_SU_MANAGER_PACKAGE = "me.weishu.kernelsu"
+    private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
+    private const val COMMAND_TIMEOUT_SECONDS = 10L
+    private const val BOOT_RESET_POLL_COUNT = 40
+    private const val BOOT_RESET_POLL_MILLIS = 100L
 }
