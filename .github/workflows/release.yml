@@ -62,7 +62,7 @@ jobs:
             echo "RELEASE_TAG=$RELEASE_TAG"
           } >> "$GITHUB_ENV"
 
-      - name: Sincronizar e verificar perfil CZG3 do Auto Root
+      - name: Sincronizar e verificar perfil CZG3 diagnóstico do Auto Root
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -85,17 +85,17 @@ jobs:
               raise SystemExit("Invalid payload commit")
 
           raw = f"https://raw.githubusercontent.com/{repo}/{commit}"
-          with urllib.request.urlopen(f"{raw}/support/targets-v3.json", timeout=30) as response:
+          with urllib.request.urlopen(f"{raw}/support/targets-v3-diagnostic.json", timeout=30) as response:
               manifest = json.load(response)
 
           if manifest.get("schemaVersion") != 3:
               raise SystemExit("Unexpected payload manifest schema")
           matches = [
               item for item in manifest.get("payloads", [])
-              if item.get("payloadId") == "pa3q-S938BXXSBCZG3"
+              if item.get("payloadId") == "pa3q-S938BXXSBCZG3-diagnostic"
           ]
           if len(matches) != 1:
-              raise SystemExit("CZG3 payload must exist exactly once")
+              raise SystemExit("CZG3 diagnostic payload must exist exactly once")
           target = matches[0]
           expected_identity = {
               "manufacturer": "samsung",
@@ -136,9 +136,10 @@ jobs:
               if digest.hexdigest() != artifact["sha256"].lower():
                   raise SystemExit(f"Payload SHA-256 mismatch: {relative}")
 
-          # The full remote catalog may contain many devices. The APK fallback
-          # intentionally embeds only the exact CZG3 profile used to migrate
-          # older Auto Root installations that do not yet have a local snapshot.
+          # While the CZG3 race-diagnostic campaign is active, the normal APK
+          # embeds the same exact diagnostic target used by manual installs.
+          # This prevents the release workflow from silently reverting Auto Root
+          # to the production payload after the app was built for diagnostics.
           embedded = {"schemaVersion": 3, "payloads": [target]}
           pathlib.Path("app/src/main/res/raw/autoroot_target_v3.json").write_text(
               json.dumps(embedded, indent=2) + "\n",
@@ -146,7 +147,7 @@ jobs:
           )
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"PAYLOAD_COMMIT={commit}\n")
-          print(f"Auto Root fallback synchronized with payload commit {commit}")
+          print(f"Diagnostic Auto Root fallback synchronized with payload commit {commit}")
           PY
 
       - name: Verificar regras do Auto Root
