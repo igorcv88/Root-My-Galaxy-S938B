@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <string name="auto_root_card_title">Restore root after reboot</string>
+    <string name="auto_root_card_description">After Android finishes booting, wait 45 seconds and make one standalone attempt using the exact cached profile. No Shizuku or soft reboot.</string>
+    <string name="auto_root_not_prepared">Auto Root is not prepared for this exact firmware. Complete a normal installation first.</string>
+    <string name="auto_root_notification_required">Notification permission is required because Auto Root runs as a visible foreground service.</string>
+    <string name="repo_cached_verified">%1$s cached copy verified</string>
+    <string name="auto_root_cached_profile_missing">No verified Auto Root cache matches this exact firmware and kernel</string>
+    <string name="auto_root_cache_build_mismatch">The Auto Root cache was verified by a different app or native-helper build. Complete one normal installation with this app build to re-arm it.</string>
+    <string name="auto_root_cached_artifact_missing">Cached %1$s payload is missing</string>
+    <string name="auto_root_cached_artifact_invalid">Cached %1$s payload failed size or SHA-256 validation</string>
+    <string name="auto_root_channel_progress">Auto Root progress</string>
+    <string name="auto_root_channel_alerts">Auto Root alerts</string>
+    <string name="auto_root_notification_title">Auto Root Post-Boot</string>
+    <string name="auto_root_waiting_android">Waiting for Android</string>
+    <string name="auto_root_checking_firmware">Checking exact firmware</string>
+    <string name="auto_root_preparing_exploit">Verifying cached payloads</string>
+    <string name="auto_root_running_exploit">Running kernel exploit</string>
+    <string name="auto_root_loading_kernelsu">Loading KernelSU</string>
+    <string name="auto_root_verifying_root">Verifying KernelSU control channel</string>
+    <string name="auto_root_root_restored">Root restored</string>
+    <string name="auto_root_already_active">KernelSU is already active</string>
+    <string name="auto_root_failed">Auto Root failed</string>
+    <string name="auto_root_disable">Disable Auto Root</string>
+    <string name="auto_root_boot_timeout">Android did not reach boot completion before the Auto Root timeout</string>
+</resources>

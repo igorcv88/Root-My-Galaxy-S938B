@@ -34,6 +34,8 @@ object AppPreferences {
     private const val THEME_MODE = "theme_mode"
     private const val ADVANCED_MODE = "advanced_mode"
     private const val SHIZUKU_MODE = "shizuku_mode"
+    private const val AUTO_ROOT_ENABLED = "auto_root_post_boot_enabled"
+    private const val AUTO_ROOT_LAST_ATTEMPT_BOOT_ID = "auto_root_last_attempt_boot_id"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
@@ -72,6 +74,30 @@ object AppPreferences {
         prefs(context).edit()
             .putBoolean(SHIZUKU_MODE, enabled)
             .apply()
+    }
+
+    fun autoRootEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(AUTO_ROOT_ENABLED, false)
+
+    fun setAutoRootEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit()
+            .putBoolean(AUTO_ROOT_ENABLED, enabled)
+            .apply()
+    }
+
+    /**
+     * Claims the single automatic run allowed for this kernel boot. The value is
+     * intentionally retained when Auto Root is disabled, so toggling the feature
+     * off and back on cannot cause a second automatic exploit in the same boot.
+     */
+    @Synchronized
+    fun claimAutoRootAttempt(context: Context, bootId: String?): Boolean {
+        if (bootId.isNullOrBlank()) return false
+        val preferences = prefs(context)
+        if (preferences.getString(AUTO_ROOT_LAST_ATTEMPT_BOOT_ID, null) == bootId) return false
+        return preferences.edit()
+            .putString(AUTO_ROOT_LAST_ATTEMPT_BOOT_ID, bootId)
+            .commit()
     }
 
     @Synchronized
