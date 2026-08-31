@@ -83,7 +83,11 @@ for comm in /proc/[0-9]*/comm; do
 done
 [ "${'$'}hold_seen" -gt 0 ] || exit 43
 [ -d "${'$'}group" ] || exit 44
-[ -x /data/local/tmp/ksud-s25u-kdp ] || exit 45
-exec /data/local/tmp/ksud-s25u-kdp soft-reboot
+ksud=/data/adb/ksud
+if [ ! -x "${'$'}ksud" ]; then
+  ksud=/data/local/tmp/ksud-s25u-kdp
+fi
+[ -x "${'$'}ksud" ] || exit 45
+exec "${'$'}ksud" soft-reboot
 """.trimIndent()
 }
