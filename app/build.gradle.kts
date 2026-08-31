@@ -22,6 +22,7 @@ android {
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
+        buildConfigField("String", "PAYLOAD_REF", "\"main\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -38,10 +39,12 @@ android {
     buildTypes {
         getByName("debug") {
             buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
+            buildConfigField("String", "PAYLOAD_REF", "\"main\"")
         }
         getByName("release") {
             isMinifyEnabled = false
             buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
+            buildConfigField("String", "PAYLOAD_REF", "\"main\"")
         }
         create("diagnostic") {
             initWith(getByName("debug"))
@@ -50,6 +53,7 @@ android {
             isDebuggable = true
             matchingFallbacks += listOf("debug")
             buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "true")
+            buildConfigField("String", "PAYLOAD_REF", "\"f03472c0b40fb5e3435c2e53c9c7e23a7818b7a1\"")
         }
     }
 

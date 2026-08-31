@@ -139,7 +139,10 @@ class PayloadRepository(private val context: Context) {
     }
 
     private fun resolveMainCommit(): String {
-        val response = downloadBytes(COMMIT_API_URL, MAX_COMMIT_RESPONSE_BYTES)
+        val configuredRef = BuildConfig.PAYLOAD_REF
+        if (configuredRef.matches(Regex("[0-9a-f]{40}"))) return configuredRef
+        require(configuredRef == "main") { context.getString(R.string.repo_commit_invalid) }
+        val response = downloadBytes("$COMMIT_API_PREFIX$configuredRef", MAX_COMMIT_RESPONSE_BYTES)
         val commit = JSONObject(response.toString(Charsets.UTF_8))
             .getJSONObject("object")
             .getString("sha")
@@ -193,8 +196,8 @@ class PayloadRepository(private val context: Context) {
 
     companion object {
         private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"
-        private const val COMMIT_API_URL =
-            "https://api.github.com/repos/$PAYLOAD_REPOSITORY/git/ref/heads/main"
+        private const val COMMIT_API_PREFIX =
+            "https://api.github.com/repos/$PAYLOAD_REPOSITORY/git/ref/heads/"
         private const val RAW_REPOSITORY =
             "https://raw.githubusercontent.com/$PAYLOAD_REPOSITORY"
         private const val MUTABLE_RAW_PREFIX = "$RAW_REPOSITORY/main/"
