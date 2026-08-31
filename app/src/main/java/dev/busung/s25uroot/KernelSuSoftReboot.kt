@@ -13,24 +13,21 @@ data class SoftRebootResult(
 
 object KernelSuSoftReboot {
     suspend fun request(context: Context): SoftRebootResult = withContext(Dispatchers.IO) {
+        var lastFailure: SoftRebootResult? = null
         val directHelper = File(context.applicationInfo.nativeLibraryDir, "libcve43499root.so")
         if (directHelper.canExecute()) {
-            runCommand(arrayOf(directHelper.absolutePath, "-c", SOFT_REBOOT_SCRIPT)).let { result ->
-                if (result.started) return@withContext result
-            }
+            val result = runCommand(arrayOf(directHelper.absolutePath, "-c", SOFT_REBOOT_SCRIPT))
+            if (result.started) return@withContext result
+            lastFailure = result
         }
 
         if (ShizukuController.isRunning() && ShizukuController.isGranted()) {
-            val stagedHelper = File(SHIZUKU_HELPER_PATH)
-            if (stagedHelper.exists()) {
-                runShizuku(arrayOf(stagedHelper.absolutePath, "-c", SOFT_REBOOT_SCRIPT)).let { result ->
-                    if (result.started) return@withContext result
-                    return@withContext result
-                }
-            }
+            val result = runShizuku(arrayOf(SHIZUKU_HELPER_PATH, "-c", SOFT_REBOOT_SCRIPT))
+            if (result.started) return@withContext result
+            lastFailure = result
         }
 
-        SoftRebootResult(
+        lastFailure ?: SoftRebootResult(
             started = false,
             detail = "Bootstrap root helper is unavailable for the soft reboot",
         )
@@ -70,23 +67,23 @@ object KernelSuSoftReboot {
     private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
     private const val COMMAND_TIMEOUT_SECONDS = 10L
 
-    private const val SOFT_REBOOT_SCRIPT = """
+    private val SOFT_REBOOT_SCRIPT = """
 set -eu
 group=/sys/fs/cgroup/rmg-keepers
 hold_seen=0
 for comm in /proc/[0-9]*/comm; do
-  [ -r "$comm" ] || continue
-  name=$(cat "$comm" 2>/dev/null) || continue
-  [ "$name" = "cve43499-hold" ] || continue
-  hold_seen=$((hold_seen + 1))
-  pid=${comm#/proc/}
-  pid=${pid%/comm}
-  [ -r "/proc/$pid/cgroup" ] || exit 41
-  grep -Fq '/rmg-keepers' "/proc/$pid/cgroup" || exit 42
+  [ -r "${'$'}comm" ] || continue
+  name=${'$'}(cat "${'$'}comm" 2>/dev/null) || continue
+  [ "${'$'}name" = "cve43499-hold" ] || continue
+  hold_seen=${'$'}((hold_seen + 1))
+  pid=${'$'}{comm#/proc/}
+  pid=${'$'}{pid%/comm}
+  [ -r "/proc/${'$'}pid/cgroup" ] || exit 41
+  grep -Fq '/rmg-keepers' "/proc/${'$'}pid/cgroup" || exit 42
 done
-[ "$hold_seen" -gt 0 ] || exit 43
-[ -d "$group" ] || exit 44
+[ "${'$'}hold_seen" -gt 0 ] || exit 43
+[ -d "${'$'}group" ] || exit 44
 [ -x /data/local/tmp/ksud-s25u-kdp ] || exit 45
 exec /data/local/tmp/ksud-s25u-kdp soft-reboot
-"""
+""".trimIndent()
 }
