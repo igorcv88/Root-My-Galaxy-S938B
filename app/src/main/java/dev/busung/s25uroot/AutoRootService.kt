@@ -32,12 +32,14 @@ class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
     private var watchdogJob: Job? = null
+    private var serviceStartedAtUptimeMillis: Long = -1
 
     @Volatile
     private var watchdogExpired = false
 
     override fun onCreate() {
         super.onCreate()
+        serviceStartedAtUptimeMillis = SystemClock.elapsedRealtime()
         createNotificationChannel()
     }
 
@@ -176,6 +178,7 @@ class AutoRootService : Service() {
             // presence before spending the single automatic attempt for this boot.
             val shizukuCandidate = ShizukuController.isRunning() && ShizukuController.isGranted()
             val useShizuku = shizukuCandidate && ShizukuController.canRunUnattended()
+            val shizukuHealthCompletedAt = SystemClock.elapsedRealtime()
 
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
                 getString(R.string.autoroot_already_attempted)
@@ -187,6 +190,8 @@ class AutoRootService : Service() {
                 payloadSha256 = payloads.profile.exploit.sha256,
                 payloadSize = payloads.profile.exploit.size,
             ).also(historyStore::save)
+            persist(AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis), force = true)
+            persist(AndroidRunContext.snapshot(this, "shizuku_health_complete", shizukuHealthCompletedAt), force = true)
             if (shizukuCandidate && !useShizuku) {
                 persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
             }
@@ -222,6 +227,7 @@ class AutoRootService : Service() {
                     }
                 },
             )
+            persist(AndroidRunContext.snapshot(this, "exploit_launch"), force = true)
             runner.run(payloads, bootToken, requireNotNull(historyEntry).id)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)

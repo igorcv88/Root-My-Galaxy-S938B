@@ -8,6 +8,7 @@ import android.content.Intent
 class AutoRootBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        AndroidRunContext.recordBootReceiver(context)
         if (!AppPreferences.autoRootEnabled(context)) return
         if (!AutoRootSupport.hasVerifiedInstall(context)) return
 
