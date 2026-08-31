@@ -1,107 +1,149 @@
-# Root My Galaxy — S938B
+<p align="center">
+  <img src=".github/assets/root-my-galaxy-banner.svg" alt="Root My Galaxy" width="100%" />
+</p>
 
-Root My Galaxy is a firmware-profiled installer for temporary KernelSU root on supported Samsung builds. This fork is maintained and hardware-validated primarily for the Galaxy S25 Ultra `SM-S938B`.
+<p align="center">
+  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/igorcv88/Root-My-Galaxy-S938B?style=for-the-badge" />
+  </a>
+  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/releases">
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/igorcv88/Root-My-Galaxy-S938B/total?style=for-the-badge" />
+  </a>
+  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/igorcv88/Root-My-Galaxy-S938B?style=for-the-badge" />
+  </a>
+  <img alt="Galaxy S25 Ultra" src="https://img.shields.io/badge/Galaxy%20S25%20Ultra-SM--S938B-78966F?style=for-the-badge" />
+  <img alt="Android 16" src="https://img.shields.io/badge/Android-16-3DDC84?style=for-the-badge&logo=android&logoColor=white" />
+  <a href="https://github.com/igorcv88/Root-My-Galaxy-S938B/actions/workflows/release.yml">
+    <img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/igorcv88/Root-My-Galaxy-S938B/release.yml?style=for-the-badge&label=release" />
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/igorcv88/Root-My-Galaxy-S938B?style=for-the-badge" />
+  </a>
+</p>
 
-Validated target:
+<p align="center">
+  <strong>Temporary KernelSU root for supported Samsung Galaxy firmware without unlocking the bootloader or flashing a modified boot image.</strong>
+</p>
+
+Root My Galaxy checks the phone and firmware, downloads the matching verified payload, runs the kernel exploit, and late-loads KernelSU. Root remains active for the current kernel boot. A full reboot returns the phone to the stock kernel state; the optional **Auto Root** feature can restore KernelSU after Android starts again.
+
+> [!WARNING]
+> This software uses a kernel exploit. The exploit is timing-sensitive, may take several minutes, can make the phone temporarily unresponsive or warm, and can cause a kernel panic/reboot on a failed attempt. Use it only on a device you own or are explicitly authorized to test.
+
+## Supported device
+
+The maintained automatic profile currently supports this exact configuration:
+
+| | Supported configuration |
+| --- | --- |
+| Device | Samsung Galaxy S25 Ultra `SM-S938B` (`pa3q`) |
+| Firmware | `S938BXXSBCZG3` |
+| Android | Android 16 / API 36 |
+| Kernel | `6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k` |
+| ABI | `arm64-v8a` |
+| Page size | 4K |
+
+Firmware updates can change the kernel and invalidate the exploit profile. If the exact supported identity no longer matches, normal installation and Auto Root stop instead of silently using the old profile.
+
+## Installation
+
+1. Download the latest signed APK from [GitHub Releases](https://github.com/igorcv88/Root-My-Galaxy-S938B/releases/latest).
+2. Install and open **Root My Galaxy**.
+3. Check the device and firmware information shown on the Home screen.
+4. Optional: open **Settings → Use Shizuku** if Shizuku is already installed and running.
+5. Tap the installation card and confirm **Install KernelSU**.
+6. Keep the installer screen open while it runs. The exploit stage can finish quickly or take several minutes.
+7. When **KernelSU active** appears, install or open KernelSU Manager from the app.
+8. Optional: enable **Automatic root after reboot** on the successful-install screen.
+
+Official APKs are distributed through this repository. The release also includes a `.sha256` file for checksum verification.
+
+## What happens during installation
+
+The app shows the complete process in four stages:
+
+1. **Support check** — reads the device, firmware and kernel information and selects the matching support profile.
+2. **Download** — downloads the exploit and KernelSU payload for that profile and verifies their expected size and SHA-256.
+3. **Kernel exploit** — runs the exploit until temporary bootstrap root is acquired or the attempt fails/times out.
+4. **Load KernelSU** — stages the KernelSU payload, late-loads the kernel module and verifies the KernelSU control channel before reporting success.
+
+The app does not unlock the bootloader, flash `boot`, replace the Samsung kernel, or make the kernel modification persistent across a full reboot.
+
+## Auto Root
+
+**Automatic root after reboot** becomes available after a successful manual KernelSU installation.
+
+When enabled, a full reboot follows this flow:
 
 ```text
-Model:       SM-S938B
-Device:      pa3q
-Build:       BP4A.251205.006.S938BXXSBCZG3
-Fingerprint: samsung/pa3qxxx/pa3q:16/BP4A.251205.006/S938BXXSBCZG3_OXMBCZG3:user/release-keys
-Kernel:      6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k
-Android:     16 / SDK 36
-ABI:         arm64-v8a
-Page size:   4096
-```
-
-[Download the latest signed APK](https://github.com/igorcv88/Root-My-Galaxy-S938B/releases/latest)
-
-The application and payload feed are intentionally separated:
-
-- application: this repository;
-- controlled payload feed: [Root-My-Galaxy-Payloads-S938B](https://github.com/igorcv88/Root-My-Galaxy-Payloads-S938B).
-
-## Scope
-
-The application performs only the root bootstrap flow:
-
-```text
-supported device
-    ↓
-exact firmware/profile validation
-    ↓
-kernel exploit
-    ↓
-bootstrap privilege
-    ↓
+Android boots normally
+        ↓
+Root My Galaxy waits for boot completion
+        ↓
+short stabilization period
+        ↓
+firmware + cached payload verification
+        ↓
+exploit run
+        ↓
 KernelSU late-load
-    ↓
-KernelSU control channel verification
-    ↓
-verified temporary root
+        ↓
+root restored
 ```
 
-Zygisk providers, LSPosed, Shamiko and other KernelSU modules are outside the scope of Root My Galaxy and are managed separately through KernelSU Manager.
+Auto Root uses the payloads cached by the verified manual installation and does not download files during the boot-time run. It attempts restoration at most once for each full kernel boot. If that automatic attempt fails, it does not keep retrying in the background; open the app and run the normal installation again.
 
-The root is temporary. A full reboot or shutdown returns the device to the stock Samsung kernel state and removes the active KernelSU late-load session.
+A foreground notification shows the current Auto Root stage and includes an action to disable Auto Root. Notification permission is required when the feature is enabled.
 
-## Auto Root post-boot
+If Shizuku is already running and Root My Galaxy already has permission when Auto Root starts, it may be used. Auto Root does not stop at boot to request or start Shizuku.
 
-After a successful manual installation, the installer can explicitly enable **Automatic root after reboot**. This does not make the kernel modification persistent: Android still boots the stock Samsung kernel first and Root My Galaxy restores the KernelSU late-load session afterward.
+## Shizuku
 
-The automatic path is deliberately fail-closed:
+Shizuku is optional. Root My Galaxy can run without it.
 
-- it listens only for `BOOT_COMPLETED`; Direct Boot is not used in this phase;
-- it waits for `sys.boot_completed=1` and an additional 45-second stabilization interval;
-- it starts at most one automatic run for each `/proc/sys/kernel/random/boot_id`, with no automatic retry after a failed run; low-level retries performed internally by the existing exploit helper remain part of that single run;
-- it requires a prior verified manual installation receipt;
-- it requires the exact embedded v3 CZG3 identity to match the current device snapshot;
-- it uses only the locally cached exploit and KernelSU payload and verifies both byte size and SHA-256 before execution;
-- it performs no network request during the automatic run;
-- it uses Shizuku only when its binder is already running and permission is already granted; otherwise it falls back to standalone execution without requesting Shizuku at boot;
-- it stops after KernelSU late-load/control verification and does not manage Zygisk or other KernelSU modules.
+When **Use Shizuku** is enabled, the app uses the Shizuku shell context for payload execution and staging. This can improve reliability on the supported device. Shizuku must already be running, and Root My Galaxy must have permission to use it.
 
-A foreground notification reports the current stage and can disable Auto Root directly. Notification permission is therefore requested when the user opts in.
+If Shizuku is unavailable, either start it from the Shizuku app and grant permission or disable **Use Shizuku** to use the standalone path.
 
-## Safety model
+## Advanced mode
 
-Automatic profile selection is fail-closed. A target must match the maintained manifest exactly, including device/build/kernel identity and platform properties. Advanced/manual selection is intended only for deliberate interactive testing and must not be treated as equivalent to automatic matching.
+**Advanced mode** changes installation from automatic profile selection to a manual payload picker. The picker shows device and kernel compatibility and warns before continuing with a mismatch.
 
-Use only on devices you own or are explicitly authorized to test.
+Use manual selection only when you deliberately want to test a specific support profile. A payload intended for another device, kernel or firmware can crash the device.
 
-## Shizuku execution
+## History and logs
 
-When Shizuku is enabled, authorized and running, Root My Galaxy can execute the helper and staging flow through the Shizuku shell context. The transport choice is frozen for the duration of each install run so execution cannot switch between Shizuku and standalone mode midway through the exploit or KernelSU staging steps.
+The **History** tab keeps each installation run with its result, time, selected payload, whether Shizuku was used, and the captured log.
 
-Standalone execution remains available as the fallback path.
+Open a run to inspect the full log. Use **Export log** to save it as a text file when troubleshooting or reporting a reproducible problem. Old entries can be selected and deleted from the History screen.
 
-## Payload integrity
+## App updates
 
-The APK resolves the current commit of `igorcv88/Root-My-Galaxy-Payloads-S938B`, downloads `targets-v3.json` from that immutable commit and rewrites payload URLs to the same pinned commit before use. Each downloaded artifact must match both the declared byte size and SHA-256 before the temporary file is promoted for execution. The maintained feed is validated separately from upstream so the installed APK does not silently follow mutable third-party payload URLs.
+Root My Galaxy checks this repository for newer releases. When an update is available, it can download the new signed APK and open the Android installer directly from the app. You can also check manually from **Settings → Check for updates**.
 
-The Auto Root path does not perform this network resolution during boot. Its exact target metadata is embedded in the APK at build time, and CI/release gates require that embedded profile to remain equivalent at the JSON object level to the controlled CZG3 target before an APK can be accepted. Cached files are then re-verified locally against the embedded size and SHA-256 values before every automatic run.
+## Common problems
 
-## Signed releases
+**Support check failed:** the phone, firmware or kernel does not match a maintained automatic profile. Do not force another profile unless you know it is compatible.
 
-Stable APKs are built, aligned, signed and published by the repository release workflow. Release builds use monotonically increasing version codes so a later build can update an earlier stable installation when the signing certificate is unchanged. The release workflow independently validates the same controlled v3 manifest, exact CZG3 identity, artifact sizes and SHA-256 values before signing.
+**The exploit is taking a long time:** the acquisition step is timing-sensitive. Keep the installer open. The app monitors progress and stops attempts that stall or exceed its overall time limit.
 
-## Local development build
+**The phone rebooted during the exploit:** a kernel panic can occur on an unsuccessful run. After Android boots normally, open Root My Galaxy and try again. The stock kernel is used after a full reboot.
 
-Requirements:
+**Auto Root failed after reboot:** Auto Root performs one automatic run for that boot. Open the app, check the run result/log, and perform a manual installation if needed.
 
-- Android Studio JBR 21;
-- Android SDK 37;
-- Android NDK 28 or newer;
-- CMake 3.22.1.
+**Shizuku is not running:** start Shizuku and grant Root My Galaxy permission, or turn off the Shizuku option.
 
-```powershell
-$env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-.\gradlew.bat :app:assembleDebug
-```
+## KernelSU and modules
 
-Local debug APK:
+Root My Galaxy installs **KernelSU** through late-load. KernelSU Manager is used to grant root access to apps and manage KernelSU modules after root is active.
 
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
+Root My Galaxy does not install Magisk or APatch and does not manage Zygisk, LSPosed or other KernelSU modules itself.
+
+## Payload repository
+
+The firmware profiles and executable payloads used by the app are maintained separately in [Root-My-Galaxy-Payloads-S938B](https://github.com/igorcv88/Root-My-Galaxy-Payloads-S938B). Normal users do not need to download files from that repository manually.
+
+## License and credits
+
+This project is distributed under the license in [LICENSE](LICENSE). It builds on the Root My Galaxy exploit work and uses [KernelSU](https://github.com/tiann/KernelSU) for kernel-based root management.
