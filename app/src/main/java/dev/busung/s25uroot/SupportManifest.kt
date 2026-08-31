@@ -124,7 +124,7 @@ data class SupportManifest(
 ) {
     fun toJsonBytes(): ByteArray {
         val payloads = JSONArray()
-        targets.forEach { payloads.put(it.toJson()) }
+        targets.forEach { payloads.put(it.toJsonObject()) }
         return (JSONObject()
             .put("schemaVersion", schemaVersion)
             .put("payloads", payloads)
@@ -179,47 +179,47 @@ data class SupportManifest(
             }
             return SupportManifest(schemaVersion, payloads)
         }
-
-        private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
-            url = getString("url"),
-            size = getLong("size"),
-            sha256 = getString("sha256").lowercase(),
-        )
-
-        private fun JSONArray.strings(): Set<String> = buildSet {
-            for (index in 0 until length()) add(getString(index))
-        }
-
-        private fun TargetProfile.toJson(): JSONObject = JSONObject()
-            .put("payloadId", profileId)
-            .put("displayName", displayName)
-            .put("models", JSONArray(models.toList()))
-            .put("kernelVersions", JSONArray(kernelVersions.toList()))
-            .apply { exactMatch?.let { put("exactMatch", it.toJson()) } }
-            .put("exploit", exploit.toJson())
-            .put(
-                "kernelsu",
-                kernelSu.artifact.toJson()
-                    .put("kmi", kernelSu.kmi)
-                    .put("managerPackage", kernelSu.managerPackage),
-            )
-
-        private fun ExactTargetMatch.toJson(): JSONObject = JSONObject()
-            .put("manufacturer", manufacturer)
-            .put("model", model)
-            .put("device", device)
-            .put("buildDisplay", buildDisplay)
-            .put("buildFingerprint", buildFingerprint)
-            .put("kernelRelease", kernelRelease)
-            .put("kernelVersionInfo", kernelVersionInfo)
-            .put("machine", machine)
-            .put("sdk", sdk)
-            .put("abi", abi)
-            .put("pageSize", pageSize)
-
-        private fun RemoteArtifact.toJson(): JSONObject = JSONObject()
-            .put("url", url)
-            .put("size", size)
-            .put("sha256", sha256)
     }
 }
+
+private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
+    url = getString("url"),
+    size = getLong("size"),
+    sha256 = getString("sha256").lowercase(),
+)
+
+private fun JSONArray.strings(): Set<String> = buildSet {
+    for (index in 0 until length()) add(getString(index))
+}
+
+private fun TargetProfile.toJsonObject(): JSONObject = JSONObject()
+    .put("payloadId", profileId)
+    .put("displayName", displayName)
+    .put("models", JSONArray(models.toList()))
+    .put("kernelVersions", JSONArray(kernelVersions.toList()))
+    .apply { exactMatch?.let { put("exactMatch", it.toJsonObject()) } }
+    .put("exploit", exploit.toJsonObject())
+    .put(
+        "kernelsu",
+        kernelSu.artifact.toJsonObject()
+            .put("kmi", kernelSu.kmi)
+            .put("managerPackage", kernelSu.managerPackage),
+    )
+
+private fun ExactTargetMatch.toJsonObject(): JSONObject = JSONObject()
+    .put("manufacturer", manufacturer)
+    .put("model", model)
+    .put("device", device)
+    .put("buildDisplay", buildDisplay)
+    .put("buildFingerprint", buildFingerprint)
+    .put("kernelRelease", kernelRelease)
+    .put("kernelVersionInfo", kernelVersionInfo)
+    .put("machine", machine)
+    .put("sdk", sdk)
+    .put("abi", abi)
+    .put("pageSize", pageSize)
+
+private fun RemoteArtifact.toJsonObject(): JSONObject = JSONObject()
+    .put("url", url)
+    .put("size", size)
+    .put("sha256", sha256)
