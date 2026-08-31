@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -62,14 +63,24 @@ class AutoRootService : Service() {
 
     private suspend fun runAutoRoot() {
         val historyStore = InstallHistoryStore(this)
+        historyStore.closeInterruptedRuns()
         var historyEntry: InstallHistoryEntry? = null
-        fun persist(line: String) {
+        var lastHistoryWriteAt = 0L
+        fun saveHistory(force: Boolean = false) {
+            val entry = historyEntry ?: return
+            val now = SystemClock.elapsedRealtime()
+            if (force || now - lastHistoryWriteAt >= HISTORY_CHECKPOINT_MILLIS) {
+                historyStore.save(entry)
+                lastHistoryWriteAt = now
+            }
+        }
+        fun persist(line: String, force: Boolean = false) {
             Log.i(TAG, line)
             val entry = historyEntry ?: return
             val timestamped = "${Instant.now()} $line"
             val updated = entry.copy(log = (entry.log + "\n" + timestamped).trim())
-            historyStore.save(updated)
             historyEntry = updated
+            saveHistory(force)
         }
         fun finishHistory(result: InstallRunResult) {
             val entry = historyEntry ?: return
@@ -136,6 +147,8 @@ class AutoRootService : Service() {
             historyEntry = historyStore.create().copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = useShizuku,
+                payloadSha256 = payloads.profile.exploit.sha256,
+                payloadSize = payloads.profile.exploit.size,
             ).also(historyStore::save)
             persist("[*] Auto Root starting transport=${if (useShizuku) "shizuku" else "standalone"}")
             val runner = AutoRootRunner(
@@ -151,9 +164,25 @@ class AutoRootService : Service() {
                     }
                     updateNotification(getString(message))
                 },
-                onLog = ::persist,
+                onLog = { line -> persist(line) },
+                onDiagnostic = { diagnostic ->
+                    historyEntry?.let { entry ->
+                        val timing = StageTiming(diagnostic.stage, diagnostic.elapsedMillis, diagnostic.attempt)
+                        historyEntry = entry.copy(
+                            stage = diagnostic.stage,
+                            attemptCount = maxOf(entry.attemptCount, diagnostic.attempt ?: 0),
+                            exploitElapsedMillis = diagnostic.elapsedMillis,
+                            failureClass = diagnostic.failureClass,
+                            safety = diagnostic.safety,
+                            outcome = diagnostic.outcome,
+                            stageTimings = if (entry.stageTimings.lastOrNull() == timing) entry.stageTimings else entry.stageTimings + timing,
+                        )
+                        saveHistory(diagnostic.outcome != null)
+                        updateNotification(diagnostic.stage.userLabel(diagnostic.attempt, diagnostic.elapsedMillis))
+                    }
+                },
             )
-            runner.run(payloads, bootToken)
+            runner.run(payloads, bootToken, requireNotNull(historyEntry).id)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
             persist("[+] Auto Root completed")
@@ -166,6 +195,9 @@ class AutoRootService : Service() {
                 return
             }
             val detail = error.message ?: error.javaClass.simpleName
+            if (error is ExploitRunException) {
+                historyEntry = historyEntry?.copy(failureClass = error.failureClass, safety = error.safety, outcome = ExploitOutcome.Failed)
+            }
             Log.e(TAG, "Auto Root failed", error)
             val trace = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
             persist("[-] Auto Root failed\n$trace")
@@ -263,5 +295,6 @@ class AutoRootService : Service() {
         private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
         private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
         private const val MAX_WAKELOCK_MILLIS = 20 * 60 * 1_000L
+        private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
     }
 }

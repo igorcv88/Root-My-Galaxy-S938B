@@ -82,6 +82,31 @@ The APK resolves the current commit of `igorcv88/Root-My-Galaxy-Payloads-S938B`,
 
 The Auto Root path does not perform this network resolution during boot. Its exact target metadata is embedded in the APK at build time, and CI/release gates require that embedded profile to remain equivalent at the JSON object level to the controlled CZG3 target before an APK can be accepted. Cached files are then re-verified locally against the embedded size and SHA-256 values before every automatic run.
 
+## Exploit diagnostics and retry contract
+
+The payload owns its bounded low-level race retry policy. The application launches one payload process for a root run and does not restart that process for a clean race miss. Verified payload and helper artifacts are reused within that run; exact firmware matching, immutable-commit resolution, byte-size checks, SHA-256 checks, and the frozen Shizuku/standalone transport remain unchanged.
+
+Machine decisions use newline-delimited structured events, not the human log. Each event starts with `RMG_DIAG:` followed by one JSON object:
+
+```text
+RMG_DIAG:{"schema":1,"run_id":"...","stage":"attempting_race","attempt":2,"elapsed_ms":4210,"failure_class":"clean_race_miss","safety":"safe_retry","retryable":true,"timing":{"window_ns":420}}
+RMG_DIAG:{"schema":1,"run_id":"...","stage":"acquiring_privilege","attempt":2,"elapsed_ms":4890,"outcome":"succeeded"}
+```
+
+The app supplies the expected ID through `RMG_RUN_ID`. Supported stages are `preparing_exploit`, `resolving_kernel_state`, `attempting_race`, `validating_primitive`, `acquiring_privilege`, `staging_kernelsu`, `late_loading_kernelsu`, and `verifying_kernelsu`. A terminal event is mandatory. Unknown/malformed events, a changed run ID, elapsed time moving backwards, and missing terminal diagnostics fail closed.
+
+Failure classes distinguish a clean race miss, deterministic precondition failure, unsafe or ambiguous kernel state, privilege bootstrap failure, KernelSU staging failure, and KernelSU verification failure. A clean miss may be retried only inside the same bounded payload run. `do_not_retry`, `unknown`, or an unsafe terminal outcome prevents an app-level immediate retry. Auto Root still performs at most one automatic run per boot and never opens Shizuku permission UI.
+
+## Local diagnostic history
+
+The History screen retains at most 50 recent runs. Each record includes the run and boot IDs, wall-clock start time, `CLOCK_BOOTTIME`-based uptime, exact controlled device/build identity, app version, payload size/SHA-256, frozen transport, coarse stage transitions, attempt count, stage timing, failure/safety classification, and terminal outcome. Timing-sensitive updates are checkpointed at most once every two seconds, with terminal transitions forced to disk.
+
+If a persisted running record is found on a later boot ID, it is classified as **previous exploit run ended during an unexpected reboot**. A boot-ID change alone is not evidence of a kernel panic. The app then checks `/sys/fs/pstore` and `/proc/fs/pstore` directly. It may use Shizuku only when the service is already running and permission is already granted; it never prompts or weakens SELinux/permissions for diagnostics. The record explicitly distinguishes a crash record found, no record found, and pstore present but inaccessible.
+
+History shows local success rate, median/P90 acquisition time, median attempt count, and success counts in coarse uptime buckets. These statistics are observational: the app records uptime but does not reject a run based on uptime, and they must not be used to claim that uptime causes a panic without further evidence.
+
+Open a run to copy or export its diagnostic report. When tuning the controlled CZG3 payload, compare reports by payload hash and app/profile version, then inspect attempt counts, stage timings, failure class, unexpected-reboot flag, and pstore status. Remove unrelated log content before sharing outside the development team; the report intentionally excludes unrelated personal data.
+
 ## Signed releases
 
 Stable APKs are built, aligned, signed and published by the repository release workflow. Release builds use monotonically increasing version codes so a later build can update an earlier stable installation when the signing certificate is unchanged. The release workflow independently validates the same controlled v3 manifest, exact CZG3 identity, artifact sizes and SHA-256 values before signing.

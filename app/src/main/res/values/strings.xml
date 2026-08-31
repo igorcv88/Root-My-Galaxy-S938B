@@ -166,6 +166,14 @@
     <string name="updater_up_to_date">You\'re up to date</string>
     <string name="updater_failed">Failed to check for updates</string>
     <string name="history_delete">Delete</string>
+    <string name="history_unexpected_reboot" translatable="false">Unexpected reboot during run</string>
+    <string name="copy_diagnostic" translatable="false">Copy diagnostic report</string>
+    <string name="diagnostic_copied" translatable="false">Diagnostic report copied</string>
+    <string name="diagnostic_statistics" translatable="false">Recent reliability</string>
+    <string name="diagnostic_success_rate" translatable="false">Success: %1$d/%2$d (%3$.1f%%)</string>
+    <string name="diagnostic_latency" translatable="false">Acquisition time: median %1$.1fs, P90 %2$.1fs</string>
+    <string name="diagnostic_attempts" translatable="false">Median race attempts: %1$.1f</string>
+    <string name="diagnostic_uptime_bucket" translatable="false">Uptime %1$s: %2$d/%3$d succeeded</string>
     <string name="history_select_all">Select all</string>
     <string name="history_clear_selection">Clear selection</string>
     <string name="history_delete_selected">Delete (%1$d)</string>
