@@ -5,20 +5,69 @@ import java.io.File
 data class KernelCrashRecord(val status: KernelCrashRecordStatus, val content: String? = null)
 
 object PstoreCollector {
-    fun collect(shizukuAlreadyAuthorized: Boolean): KernelCrashRecord {
-        readDirect()?.let { return it }
-        if (shizukuAlreadyAuthorized && ShizukuController.isRunning() && ShizukuController.isGranted()) readWithShizuku()?.let { return it }
-        return KernelCrashRecord(if (PSTORE_PATHS.any { File(it).exists() }) KernelCrashRecordStatus.NotAccessible else KernelCrashRecordStatus.NoneFound)
+    fun collect(_shizukuAlreadyAuthorized: Boolean): KernelCrashRecord {
+        val direct = readDirect()
+        if (direct?.status == KernelCrashRecordStatus.Found ||
+            direct?.status == KernelCrashRecordStatus.NoneFound
+        ) return requireNotNull(direct)
+
+        // After a reboot, current authorization is what determines whether the
+        // already-running Shizuku service can read pstore. Never prompt or start it.
+        if (ShizukuController.isRunning() && ShizukuController.isGranted()) {
+            readWithShizuku()?.let { return it }
+        }
+        return direct ?: KernelCrashRecord(
+            if (PSTORE_PATHS.any { File(it).exists() }) {
+                KernelCrashRecordStatus.NotAccessible
+            } else {
+                KernelCrashRecordStatus.NoneFound
+            },
+        )
     }
 
     private fun readDirect(): KernelCrashRecord? = runCatching {
-        PSTORE_PATHS.firstNotNullOfOrNull { path ->
+        var sawDirectory = false
+        var sawReadableDirectory = false
+        var sawInaccessibleContent = false
+        val sections = mutableListOf<String>()
+
+        PSTORE_PATHS.forEach { path ->
             val directory = File(path)
-            if (!directory.isDirectory || !directory.canRead()) return@firstNotNullOfOrNull null
-            val files = directory.listFiles() ?: return@firstNotNullOfOrNull null
-            val content = files.filter { it.isFile && it.canRead() }.sortedBy { it.name }
-                .joinToString("\n") { file -> "== ${file.name} ==\n${file.readText().take(MAX_CRASH_CHARS)}" }.takeIf(String::isNotBlank)
-            KernelCrashRecord(if (content == null) KernelCrashRecordStatus.NoneFound else KernelCrashRecordStatus.Found, content)
+            if (!directory.isDirectory) return@forEach
+            sawDirectory = true
+            if (!directory.canRead()) {
+                sawInaccessibleContent = true
+                return@forEach
+            }
+            val files = directory.listFiles()
+            if (files == null) {
+                sawInaccessibleContent = true
+                return@forEach
+            }
+            sawReadableDirectory = true
+            files.filter(File::isFile).sortedBy(File::getName).forEach { file ->
+                if (!file.canRead()) {
+                    sawInaccessibleContent = true
+                    return@forEach
+                }
+                val text = runCatching { file.readText().take(MAX_CRASH_CHARS) }.getOrNull()
+                if (text == null) {
+                    sawInaccessibleContent = true
+                } else {
+                    sections += "== ${file.name} ==\n$text"
+                }
+            }
+        }
+
+        when {
+            sections.isNotEmpty() -> KernelCrashRecord(
+                KernelCrashRecordStatus.Found,
+                sections.joinToString("\n").take(MAX_CRASH_CHARS),
+            )
+            sawInaccessibleContent || (sawDirectory && !sawReadableDirectory) ->
+                KernelCrashRecord(KernelCrashRecordStatus.NotAccessible)
+            sawReadableDirectory -> KernelCrashRecord(KernelCrashRecordStatus.NoneFound)
+            else -> null
         }
     }.getOrNull()
 
@@ -27,8 +76,13 @@ object PstoreCollector {
         val process = ShizukuController.exec(arrayOf("/system/bin/sh", "-c", command))
         val output = process.inputStream.bufferedReader().use { it.readText() }.take(MAX_CRASH_CHARS)
         if (process.waitFor() == 0) {
-            KernelCrashRecord(if (output.isBlank()) KernelCrashRecordStatus.NoneFound else KernelCrashRecordStatus.Found, output.takeIf(String::isNotBlank))
-        } else null
+            KernelCrashRecord(
+                if (output.isBlank()) KernelCrashRecordStatus.NoneFound else KernelCrashRecordStatus.Found,
+                output.takeIf(String::isNotBlank),
+            )
+        } else {
+            null
+        }
     }.getOrNull()
 
     private val PSTORE_PATHS = listOf("/sys/fs/pstore", "/proc/fs/pstore")
