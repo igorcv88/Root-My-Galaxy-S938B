@@ -103,15 +103,27 @@ internal class AutoRootRunner(
         var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
         fun publishNewLog(rawLog: String) {
             val clean = stripAnsi(rawLog).trim()
-            if (clean.isBlank() || clean == publishedLog) return
-            val addition = if (clean.startsWith(publishedLog)) {
-                clean.substring(publishedLog.length).trim()
-            } else {
-                clean
+            if (clean.isNotBlank() && clean != publishedLog) {
+                val addition = if (clean.startsWith(publishedLog)) {
+                    clean.substring(publishedLog.length).trim()
+                } else {
+                    clean
+                }
+                if (addition.isNotBlank()) onLog(addition)
+                publishedLog = clean
             }
-            if (addition.isNotBlank()) onLog(addition)
-            publishedLog = clean
-            val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = !process.isAlive)
+
+            // Human-readable Shizuku output is a composite of stdout and the
+            // helper log file. That composite is not append-only because stdout
+            // grows in front of already-read file content. Machine diagnostics
+            // therefore consume only the authoritative append-only stdout stream
+            // under Shizuku; standalone mode consumes the payload log file.
+            val diagnosticLog = if (useShizuku) output.snapshot() else rawLog
+            val parsed = ExploitDiagnosticParser.parseNewEvents(
+                diagnosticLog,
+                consumedDiagnosticCharacters,
+                includeTrailingLine = !process.isAlive,
+            )
             consumedDiagnosticCharacters = parsed.second
             parsed.first.forEach { event ->
                 val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
