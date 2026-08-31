@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="soft_reboot_title">Soft reboot after root</string>
+    <string name="soft_reboot_description">Restart Android userspace after a successful root so KernelSU services and modules initialize without a full kernel reboot.</string>
+    <string name="soft_reboot_failed">Soft reboot was not started: %1$s</string>
+</resources>
