@@ -21,6 +21,7 @@ android {
         targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
+        buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -35,8 +36,20 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
+        }
         getByName("release") {
             isMinifyEnabled = false
+            buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
+        }
+        create("diagnostic") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".diagnostic"
+            versionNameSuffix = "-czg3-diag"
+            isDebuggable = true
+            matchingFallbacks += listOf("debug")
+            buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "true")
         }
     }
 

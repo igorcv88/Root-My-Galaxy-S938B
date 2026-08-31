@@ -19,7 +19,7 @@ data class VerifiedPayloads(
 class PayloadRepository(private val context: Context) {
     fun loadTargets(): List<TargetProfile> {
         val commit = resolveMainCommit()
-        val manifestBytes = downloadBytes(rawUrl(commit, "support/targets-v3.json"), MAX_MANIFEST_BYTES)
+        val manifestBytes = downloadBytes(rawUrl(commit, manifestPath()), MAX_MANIFEST_BYTES)
         return SupportManifest.parse(manifestBytes).targets.map { profile ->
             profile.copy(
                 exploit = profile.exploit.copy(url = pinArtifactUrl(profile.exploit.url, commit)),
@@ -148,6 +148,12 @@ class PayloadRepository(private val context: Context) {
     }
 
     private fun rawUrl(commit: String, path: String) = "$RAW_REPOSITORY/$commit/$path"
+
+    private fun manifestPath(): String = if (BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) {
+        "support/targets-v3-diagnostic.json"
+    } else {
+        "support/targets-v3.json"
+    }
 
     private fun pinArtifactUrl(url: String, commit: String): String {
         require(url.startsWith(MUTABLE_RAW_PREFIX)) { context.getString(R.string.repo_url_invalid) }
