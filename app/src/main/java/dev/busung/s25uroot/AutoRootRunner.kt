@@ -102,7 +102,7 @@ internal class AutoRootRunner(
         val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
             AppPreferences.czg3BootMinUptimeSeconds(context)
         } else {
-            DiagnosticUptime.DEFAULT_SECONDS
+            null
         }
         val launchWindow = ExploitRunControl.waitForLaunchWindow(
             requestedAtUptimeMillis,

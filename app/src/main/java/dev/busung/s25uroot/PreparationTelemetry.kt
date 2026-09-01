@@ -20,6 +20,8 @@ internal data class PreparationScopeAnalysis(
     val preparationBeginUptimeMillis: Long?,
     val mode: Long?,
     val preparationAttempt: Long?,
+    val preparationCycles: Int,
+    val failedCycles: Int,
     val totalMicros: Long?,
     val kernelSnitchSetupMicros: Long?,
     val allocationsMicros: Long?,
@@ -31,6 +33,7 @@ internal data class PreparationScopeAnalysis(
     val skBuffSendsCompleted: Long?,
     val result: String?,
     val traceComplete: Boolean?,
+    val phaseDurationsMicros: Map<String, Long>,
 )
 
 internal data class PreparationAnalysis(
@@ -77,12 +80,17 @@ internal object PreparationTelemetryParser {
         val reclaim = active.filter { record ->
             record.event.contains("partial_free") ||
                 record.event.contains("partial_drain") ||
-                record.event.contains("sk_buff_reclaim") ||
-                record.event.contains("pipe_drain_allocation") ||
-                record.event.contains("pipe_reclaim_allocation")
+                record.event.contains("sk_buff_reclaim")
         }
         val skBuff = active.lastOrNull { it.event == "sk_buff_reclaim" }
-        val preparationContext = active.lastOrNull { it.event == "preparation_context" }
+        val preparationContexts = active.filter { it.event == "preparation_context" }
+        val preparationContext = preparationContexts.lastOrNull()
+        val phaseDurations = linkedMapOf<String, Long>()
+        active.asSequence()
+            .filterNot { it.event == "preparation_begin" || it.event == "preparation_context" || it.event == "total" }
+            .forEach { record ->
+                phaseDurations[record.event] = phaseDurations.getOrDefault(record.event, 0L) + record.durationMicros
+            }
         return PreparationScopeAnalysis(
             preparationBeginUptimeMillis = active.firstOrNull { it.event == "preparation_begin" }
                 ?.arguments?.get("arg0")?.toLongOrNull(),
@@ -90,6 +98,8 @@ internal object PreparationTelemetryParser {
                 ?.arguments?.get("arg1")?.toLongOrNull(),
             preparationAttempt = preparationContext
                 ?.arguments?.get("arg0")?.toLongOrNull(),
+            preparationCycles = totals.size,
+            failedCycles = totals.count { it.result != "ok" },
             totalMicros = totals.map(PreparationRecord::durationMicros)
                 .takeIf(List<Long>::isNotEmpty)?.sum(),
             kernelSnitchSetupMicros = duration("kernelsnitch_setup"),
@@ -110,6 +120,7 @@ internal object PreparationTelemetryParser {
             result = lastTotal?.result,
             traceComplete = totals.takeIf(List<PreparationRecord>::isNotEmpty)
                 ?.all { it.arguments["trace_complete"] == "1" },
+            phaseDurationsMicros = phaseDurations,
         )
     }
 
@@ -158,6 +169,8 @@ internal fun preparationAnalysisReport(log: String): String = buildString {
         appendLine("preparation_begin_uptime_ms=${value.preparationBeginUptimeMillis ?: "unknown"}")
         appendLine("mode=${value.mode ?: "unknown"}")
         appendLine("preparation_attempt=${value.preparationAttempt ?: "unknown"}")
+        appendLine("preparation_cycles=${value.preparationCycles}")
+        appendLine("failed_cycles=${value.failedCycles}")
         appendLine("total_us=${value.totalMicros ?: "unknown"}")
         appendLine("kernelsnitch_setup_us=${value.kernelSnitchSetupMicros ?: "unknown"}")
         appendLine("allocations_us=${value.allocationsMicros ?: "unknown"}")
@@ -169,6 +182,14 @@ internal fun preparationAnalysisReport(log: String): String = buildString {
         appendLine("sk_buff_sends_completed=${value.skBuffSendsCompleted ?: "unknown"}")
         appendLine("result=${value.result ?: "unknown"}")
         appendLine("trace_complete=${value.traceComplete ?: "unknown"}")
+        appendLine("phases:")
+        if (value.phaseDurationsMicros.isEmpty()) {
+            appendLine("  none")
+        } else {
+            value.phaseDurationsMicros.forEach { (event, duration) ->
+                appendLine("  ${event}_us=$duration")
+            }
+        }
     }
     appendLine("malformed_records=${analysis.malformedRecords}")
 }

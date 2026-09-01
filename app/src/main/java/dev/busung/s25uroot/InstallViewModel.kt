@@ -222,7 +222,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                         selectedMinUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
                             AppPreferences.czg3BootMinUptimeSeconds(app)
                         } else {
-                            DiagnosticUptime.DEFAULT_SECONDS
+                            null
                         },
                     )
                 }
@@ -274,7 +274,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
             AppPreferences.czg3BootMinUptimeSeconds(app)
         } else {
-            DiagnosticUptime.DEFAULT_SECONDS
+            null
         }
         val launchWindow = ExploitRunControl.waitForLaunchWindow(
             requestedAtUptimeMillis = rootRequestedAtUptimeMillis,
@@ -344,6 +344,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
+                    val prepDelta = if (rawLog.startsWith(lastRawLog)) {
+                        rawLog.substring(lastRawLog.length)
+                    } else {
+                        rawLog
+                    }
                     cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(logPrefix, rawLog)
                     val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters)
@@ -351,7 +356,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     parsed.first.forEach { event ->
                         diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId)
                     }
-                    checkpointPreparation(rawLog)
+                    checkpointPreparation(prepDelta)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
                 }
@@ -367,11 +372,16 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
             val exitCode = process.waitFor()
             val rawLog = readLog()
+            val prepDelta = if (rawLog.startsWith(lastRawLog)) {
+                rawLog.substring(lastRawLog.length)
+            } else {
+                rawLog
+            }
             cacheP0Offset(bootToken, rawLog)
             publishExploitLog(logPrefix, rawLog)
             val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = true)
             parsed.first.forEach { event -> diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId) }
-            checkpointPreparation(rawLog)
+            checkpointPreparation(prepDelta)
             // Both transports drain into `captured` during the poll loop, so
             // this never blocks on a child still holding the pipe open.
             val earlyOutput = captured.toString().trim()

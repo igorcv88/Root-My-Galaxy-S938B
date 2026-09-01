@@ -27,12 +27,39 @@ class PreparationTelemetryTest {
         assertEquals(1_500L, p0.totalMicros)
         assertEquals(0L, p0.mode)
         assertEquals(2L, p0.preparationAttempt)
+        assertEquals(1, p0.preparationCycles)
+        assertEquals(0, p0.failedCycles)
         assertEquals(500L, p0.allocationsMicros)
         assertEquals(400L, p0.bruteForceMicros)
         assertEquals(9L, p0.objectIndex)
         assertEquals(4L, p0.skBuffSendsRequested)
         assertEquals(3L, p0.skBuffSendsCompleted)
+        assertEquals(100L, p0.phaseDurationsMicros["kernelsnitch_setup"])
+        assertEquals(400L, p0.phaseDurationsMicros["kernelsnitch_bruteforce"])
         assertTrue(p0.traceComplete == true)
+    }
+
+    @Test
+    fun aggregatesMultiplePreparationCyclesForOneSupervisorAttempt() {
+        val log = listOf(
+            record("fops", "preparation_context", 0)
+                .replace("|arg0=0|arg1=0", "|arg0=1|arg1=1"),
+            record("fops", "kernelsnitch_setup", 100),
+            record("fops", "total", 600, "|object_index=0|trace_complete=1")
+                .replace("|result=ok|", "|result=collision_not_ready|"),
+            record("fops", "preparation_context", 0)
+                .replace("|arg0=0|arg1=0", "|arg0=2|arg1=1"),
+            record("fops", "kernelsnitch_setup", 150),
+            record("fops", "total", 900, "|object_index=7|trace_complete=1"),
+        ).joinToString("\n")
+
+        val fops = PreparationTelemetryParser.analyze(log).scopes.getValue("fops")
+        assertEquals(2, fops.preparationCycles)
+        assertEquals(1, fops.failedCycles)
+        assertEquals(1_500L, fops.totalMicros)
+        assertEquals(250L, fops.kernelSnitchSetupMicros)
+        assertEquals(2L, fops.preparationAttempt)
+        assertEquals(7L, fops.objectIndex)
     }
 
     @Test
