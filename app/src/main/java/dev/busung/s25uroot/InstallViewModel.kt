@@ -272,7 +272,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             payload
         }
         val transport = if (shizuku) "shizuku" else "standalone"
-        val observer = if (profile.profileId == CZG3_PROFILE_ID) {
+        val externalObserverMode = profile.profileId == CZG3_PROFILE_ID
+        val observer = if (externalObserverMode) {
             ExploitObserverSession.start(
                 context = app,
                 runId = runId,
@@ -348,13 +349,22 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
         val logPrefix = mutableState.value.log
         val captured = StringBuilder()
+        val incrementalLog = if (externalObserverMode && !shizuku) {
+            IncrementalFileLogReader(logFile)
+        } else {
+            null
+        }
         val readLog: () -> String = if (shizuku) {
             { drainProcessOutput(process, captured) }
         } else {
             // Keep draining stdout while polling: if the helper fills the OS
-            // pipe buffer it blocks on write and stops making log progress,
-            // which would trip the stall detector spuriously.
-            { drainProcessOutput(process, captured); logFile.readTextIfPresent() }
+            // pipe buffer it blocks on write and stops making log progress.
+            // CZG3 reads only appended log bytes to avoid repeatedly scanning
+            // the whole file from the controller process.
+            {
+                drainProcessOutput(process, captured)
+                incrementalLog?.snapshot() ?: logFile.readTextIfPresent()
+            }
         }
 
         try {
@@ -372,15 +382,26 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         rawLog
                     }
-                    cacheP0Offset(bootToken, rawLog)
-                    publishExploitLog(logPrefix, rawLog)
+                    if (!externalObserverMode) {
+                        cacheP0Offset(bootToken, rawLog)
+                        publishExploitLog(logPrefix, rawLog)
+                    }
                     val parsed = SupervisorAttemptParser.parseNewEvents(
                         rawLog,
                         consumedDiagnosticCharacters,
                         supervisorAttempt,
                     )
                     consumedDiagnosticCharacters = parsed.consumedCharacters
+                    val previousSupervisorAttempt = supervisorAttempt
                     supervisorAttempt = parsed.supervisorAttempt
+                    supervisorAttempt?.let { attempt ->
+                        if (diagnosticSnapshot == null && attempt != previousSupervisorAttempt) {
+                            checkpointSupervisorAttempt(
+                                attempt,
+                                SystemClock.elapsedRealtime() - startedAt,
+                            )
+                        }
+                    }
                     parsed.events.forEach { (event, eventSupervisorAttempt) ->
                         diagnosticSnapshot = applyDiagnosticEvent(
                             diagnosticSnapshot,
@@ -389,7 +410,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                             eventSupervisorAttempt,
                         )
                     }
-                    checkpointPreparation(prepDelta)
+                    if (!externalObserverMode) checkpointPreparation(prepDelta)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
                 }
@@ -400,7 +421,13 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
                     app.getString(R.string.error_exploit_timeout)
                 }
-                delay(if (shizuku) SHIZUKU_LOG_POLL_INTERVAL else LOG_POLL_INTERVAL)
+                delay(
+                    if (shizuku || externalObserverMode) {
+                        SHIZUKU_LOG_POLL_INTERVAL
+                    } else {
+                        LOG_POLL_INTERVAL
+                    },
+                )
             }
 
             val exitCode = process.waitFor()
@@ -419,7 +446,16 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 includeTrailingLine = true,
             )
             consumedDiagnosticCharacters = parsed.consumedCharacters
+            val previousSupervisorAttempt = supervisorAttempt
             supervisorAttempt = parsed.supervisorAttempt
+            supervisorAttempt?.let { attempt ->
+                if (diagnosticSnapshot == null && attempt != previousSupervisorAttempt) {
+                    checkpointSupervisorAttempt(
+                        attempt,
+                        SystemClock.elapsedRealtime() - startedAt,
+                    )
+                }
+            }
             parsed.events.forEach { (event, eventSupervisorAttempt) ->
                 diagnosticSnapshot = applyDiagnosticEvent(
                     diagnosticSnapshot,
@@ -429,14 +465,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             checkpointPreparation(prepDelta)
-            // Both transports drain into `captured` during the poll loop, so
-            // this never blocks on a child still holding the pipe open.
-            val earlyOutput = captured.toString().trim()
-            if (exitCode != 0 && diagnosticSnapshot == null) {
-                error(app.getString(R.string.error_payload_exit, exitCode, earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: ""))
-            }
-            validateTerminalExploit(diagnosticSnapshot, exitCode)
+            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                profile.profileId == CZG3_PROFILE_ID,
+            )
         } finally {
+            incrementalLog?.close()
             if (process.isAlive) {
                 process.destroy()
                 delay(500.milliseconds)
@@ -480,6 +516,28 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         )
         checkpointDiagnostic(updated)
         return updated
+    }
+
+    private fun checkpointSupervisorAttempt(attempt: Int, elapsedMillis: Long) {
+        mutableState.value = mutableState.value.copy(
+            exploitStage = ExploitStage.AttemptingRace,
+            exploitAttempt = attempt,
+            exploitElapsedMillis = elapsedMillis,
+            message = ExploitStage.AttemptingRace.userLabel(attempt, elapsedMillis),
+        )
+        activeHistoryEntry = activeHistoryEntry?.let { entry ->
+            val timing = StageTiming(ExploitStage.AttemptingRace, elapsedMillis, attempt)
+            entry.copy(
+                stage = ExploitStage.AttemptingRace,
+                attemptCount = maxOf(entry.attemptCount, attempt),
+                exploitElapsedMillis = maxOf(entry.exploitElapsedMillis ?: 0L, elapsedMillis),
+                stageTimings = if (entry.stageTimings.lastOrNull() == timing) {
+                    entry.stageTimings
+                } else {
+                    entry.stageTimings + timing
+                },
+            )
+        }
     }
 
     private fun checkpointPreparation(log: String) {

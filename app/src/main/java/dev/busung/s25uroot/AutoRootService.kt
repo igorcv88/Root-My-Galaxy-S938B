@@ -227,6 +227,7 @@ class AutoRootService : Service() {
                 persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
             }
             persist("[*] Auto Root starting transport=${if (useShizuku) "shizuku" else "standalone"}")
+            val externalObserverMode = payloads.profile.profileId == CZG3_PROFILE_ID
             val runner = AutoRootRunner(
                 context = this,
                 useShizuku = useShizuku,
@@ -241,6 +242,25 @@ class AutoRootService : Service() {
                     updateNotification(getString(message))
                 },
                 onLog = { line -> persist(line) },
+                onSupervisorAttempt = { attempt, elapsedMillis ->
+                    historyEntry?.let { entry ->
+                        val timing = StageTiming(ExploitStage.AttemptingRace, elapsedMillis, attempt)
+                        historyEntry = entry.copy(
+                            stage = ExploitStage.AttemptingRace,
+                            attemptCount = maxOf(entry.attemptCount, attempt),
+                            exploitElapsedMillis = maxOf(entry.exploitElapsedMillis ?: 0L, elapsedMillis),
+                            stageTimings = if (entry.stageTimings.lastOrNull() == timing) {
+                                entry.stageTimings
+                            } else {
+                                entry.stageTimings + timing
+                            },
+                        )
+                        if (!externalObserverMode) {
+                            saveHistory(true)
+                            updateNotification(ExploitStage.AttemptingRace.userLabel(attempt, elapsedMillis))
+                        }
+                    }
+                },
                 onDiagnostic = { diagnostic ->
                     historyEntry?.let { entry ->
                         val timing = StageTiming(diagnostic.stage, diagnostic.elapsedMillis, diagnostic.attempt)
@@ -253,8 +273,10 @@ class AutoRootService : Service() {
                             outcome = diagnostic.outcome,
                             stageTimings = if (entry.stageTimings.lastOrNull() == timing) entry.stageTimings else entry.stageTimings + timing,
                         )
-                        saveHistory(diagnostic.outcome != null)
-                        updateNotification(diagnostic.stage.userLabel(diagnostic.attempt, diagnostic.elapsedMillis))
+                        if (!externalObserverMode) {
+                            saveHistory(diagnostic.outcome != null)
+                            updateNotification(diagnostic.stage.userLabel(diagnostic.attempt, diagnostic.elapsedMillis))
+                        }
                     }
                 },
             )

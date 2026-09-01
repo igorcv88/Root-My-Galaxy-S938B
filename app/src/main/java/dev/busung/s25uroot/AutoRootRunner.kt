@@ -24,6 +24,7 @@ internal class AutoRootRunner(
     private val onStage: (AutoRootStage) -> Unit,
     private val onLog: (String) -> Unit = {},
     private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
+    private val onSupervisorAttempt: (Int, Long) -> Unit = { _, _ -> },
 ) {
     suspend fun run(payloads: VerifiedPayloads, bootToken: String, runId: String) {
         val runnerInvokedAt = SystemClock.elapsedRealtime()
@@ -100,7 +101,8 @@ internal class AutoRootRunner(
             payload
         }
         val transport = if (useShizuku) "shizuku" else "standalone"
-        val observer = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
+        val externalObserverMode = payloads.profile.profileId == CZG3_PROFILE_ID
+        val observer = if (externalObserverMode) {
             ExploitObserverSession.start(
                 context = context,
                 runId = runId,
@@ -179,18 +181,23 @@ internal class AutoRootRunner(
         }
 
         val output = ProcessOutputCollector(process)
+        val incrementalLog = if (externalObserverMode && !useShizuku) {
+            IncrementalFileLogReader(logFile)
+        } else {
+            null
+        }
         val readLog: () -> String = if (useShizuku) {
             { output.snapshot() + readShizukuLog() }
         } else {
-            { output.snapshot(); logFile.readTextIfPresent() }
+            { output.snapshot(); incrementalLog?.snapshot() ?: logFile.readTextIfPresent() }
         }
         var publishedLog = ""
         var consumedDiagnosticCharacters = 0
         var supervisorAttempt: Int? = null
         var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
-        fun publishNewLog(rawLog: String) {
+        fun publishNewLog(rawLog: String, terminal: Boolean = false) {
             val clean = stripAnsi(rawLog).trim()
-            if (clean.isNotBlank() && clean != publishedLog) {
+            if ((!externalObserverMode || terminal) && clean.isNotBlank() && clean != publishedLog) {
                 val addition = if (clean.startsWith(publishedLog)) {
                     clean.substring(publishedLog.length).trim()
                 } else {
@@ -213,7 +220,16 @@ internal class AutoRootRunner(
                 includeTrailingLine = !process.isAlive,
             )
             consumedDiagnosticCharacters = parsed.consumedCharacters
+            val previousSupervisorAttempt = supervisorAttempt
             supervisorAttempt = parsed.supervisorAttempt
+            supervisorAttempt?.let { attempt ->
+                if (attempt != previousSupervisorAttempt) {
+                    onSupervisorAttempt(
+                        attempt,
+                        SystemClock.elapsedRealtime() - spawnUptimeMillis,
+                    )
+                }
+            }
             parsed.events.forEach { (event, eventSupervisorAttempt) ->
                 val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
                     .withSupervisorAttempt(eventSupervisorAttempt)
@@ -229,7 +245,7 @@ internal class AutoRootRunner(
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
-                    cacheP0Offset(bootToken, rawLog)
+                    if (!externalObserverMode) cacheP0Offset(bootToken, rawLog)
                     publishNewLog(rawLog)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
@@ -241,21 +257,29 @@ internal class AutoRootRunner(
                 require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
                     context.getString(R.string.error_exploit_timeout)
                 }
-                delay(if (useShizuku) SHIZUKU_LOG_POLL_INTERVAL else LOG_POLL_INTERVAL)
+                delay(
+                    if (useShizuku || externalObserverMode) {
+                        SHIZUKU_LOG_POLL_INTERVAL
+                    } else {
+                        LOG_POLL_INTERVAL
+                    },
+                )
             }
 
             val exitCode = process.waitFor()
             output.awaitCompletion()
             val rawLog = readLog()
             cacheP0Offset(bootToken, rawLog)
-            publishNewLog(rawLog)
-            val earlyOutput = output.snapshot().trim()
+            publishNewLog(rawLog, terminal = true)
             onLog("[*] stage=RunningExploit exit_code=$exitCode elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
-            if (exitCode != 0 && diagnosticSnapshot == null) {
-                error(context.getString(R.string.error_payload_exit, exitCode, earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: ""))
-            }
-            validateTerminalExploit(diagnosticSnapshot, exitCode)
+            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                payloads.profile.profileId == CZG3_PROFILE_ID,
+            )
         } finally {
+            incrementalLog?.close()
             if (process.isAlive) {
                 process.destroy()
                 delay(500.milliseconds)

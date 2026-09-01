@@ -22,10 +22,13 @@
 #define OBS_BUFFER_CAPACITY (4U * 1024U * 1024U)
 #define OBS_MAX_PIDS 32
 #define OBS_MAX_SEEN_PIDS 96
-#define OBS_FAST_INTERVAL_MS 25ULL
-#define OBS_SYSTEM_INTERVAL_ACTIVE_MS 200ULL
+#define OBS_POLL_INTERVAL_MS 25ULL
+#define OBS_PROCESS_INTERVAL_BURST_MS 25ULL
+#define OBS_PROCESS_INTERVAL_IDLE_MS 250ULL
+#define OBS_SYSTEM_INTERVAL_BURST_MS 200ULL
 #define OBS_SYSTEM_INTERVAL_IDLE_MS 500ULL
 #define OBS_SLOW_INTERVAL_MS 1000ULL
+#define OBS_BURST_WINDOW_MS 2000ULL
 
 static pthread_t observer_thread;
 static atomic_int observer_running;
@@ -40,6 +43,7 @@ static char observer_log_partial[1024];
 static size_t observer_log_partial_length;
 static pid_t observer_seen_pids[OBS_MAX_SEEN_PIDS];
 static size_t observer_seen_pid_count;
+static uint64_t observer_burst_until_ms;
 
 static uint64_t boottime_ms(void) {
   struct timespec ts = {0};
@@ -311,6 +315,10 @@ static void sample_process_tree(pid_t root, uint64_t now_ms) {
   observer_append("RMG_OBSERVER_V2|event=tree|t_ms=%llu|root=%d|count=%zu\n",
                   (unsigned long long)now_ms, root, count);
   for (size_t i = 0; i < count; ++i) {
+    if (i == 0) {
+      if (!pid_seen(pids[i])) sample_process_metadata(pids[i], now_ms);
+      continue;
+    }
     struct proc_sample sample;
     memset(&sample, 0, sizeof(sample));
     sample.processor = -1;
@@ -465,6 +473,8 @@ static const char *classify_marker(const char *line) {
 static void record_log_line(const char *line, uint64_t now_ms) {
   const char *marker = classify_marker(line);
   if (!marker) return;
+  uint64_t burst_until = now_ms + OBS_BURST_WINDOW_MS;
+  if (burst_until > observer_burst_until_ms) observer_burst_until_ms = burst_until;
   char copy[256];
   size_t len = strlen(line);
   if (len >= sizeof(copy)) len = sizeof(copy) - 1;
@@ -507,6 +517,10 @@ static void tail_payload_log(uint64_t now_ms) {
 
 static void observer_pin_away_from_exploit(void) {
   (void)setpriority(PRIO_PROCESS, 0, 10);
+#ifdef SCHED_IDLE
+  struct sched_param idle = {.sched_priority = 0};
+  (void)sched_setscheduler(0, SCHED_IDLE, &idle);
+#endif
   long cpus = sysconf(_SC_NPROCESSORS_ONLN);
   if (cpus <= 2) return;
   cpu_set_t set;
@@ -520,6 +534,11 @@ static void observer_pin_away_from_exploit(void) {
 static void *observer_main(void *unused) {
   (void)unused;
   observer_pin_away_from_exploit();
+  observer_append(
+      "RMG_OBSERVER_V2|event=observer_sched|t_ms=%llu|policy=%d|nice=%d|cpu=%d\n",
+      (unsigned long long)boottime_ms(), sched_getscheduler(0),
+      getpriority(PRIO_PROCESS, 0), sched_getcpu());
+  uint64_t last_process = 0;
   uint64_t last_system = 0;
   uint64_t last_slow = 0;
   int last_target = -1;
@@ -534,10 +553,17 @@ static void *observer_main(void *unused) {
     }
 
     tail_payload_log(now_ms);
-    if (target > 0) sample_process_tree((pid_t)target, now_ms);
+    int burst = observer_log_fd >= 0 && now_ms <= observer_burst_until_ms;
+    uint64_t process_interval = burst ? OBS_PROCESS_INTERVAL_BURST_MS
+                                      : OBS_PROCESS_INTERVAL_IDLE_MS;
+    if (target > 0 &&
+        (last_process == 0 || now_ms - last_process >= process_interval)) {
+      sample_process_tree((pid_t)target, now_ms);
+      last_process = now_ms;
+    }
 
-    uint64_t system_interval = target > 0 ? OBS_SYSTEM_INTERVAL_ACTIVE_MS
-                                          : OBS_SYSTEM_INTERVAL_IDLE_MS;
+    uint64_t system_interval = burst ? OBS_SYSTEM_INTERVAL_BURST_MS
+                                     : OBS_SYSTEM_INTERVAL_IDLE_MS;
     if (last_system == 0 || now_ms - last_system >= system_interval) {
       sample_system(now_ms);
       last_system = now_ms;
@@ -549,7 +575,7 @@ static void *observer_main(void *unused) {
 
     struct timespec sleep_for = {
         .tv_sec = 0,
-        .tv_nsec = (long)(target > 0 ? OBS_FAST_INTERVAL_MS : 100ULL) * 1000000L,
+        .tv_nsec = (long)OBS_POLL_INTERVAL_MS * 1000000L,
     };
     while (nanosleep(&sleep_for, &sleep_for) < 0 && errno == EINTR) {
     }
@@ -571,6 +597,7 @@ static void observer_reset(void) {
   observer_log_offset = 0;
   observer_log_partial_length = 0;
   observer_seen_pid_count = 0;
+  observer_burst_until_ms = 0;
   atomic_store(&observer_target_pid, 0);
 }
 
@@ -594,11 +621,16 @@ Java_dev_busung_s25uroot_NativeProbe_observerStart(JNIEnv *env, jobject thiz,
   }
 
   observer_append(
-      "RMG_OBSERVER_V2|event=start|t_ms=%llu|observer_pid=%d|fast_ms=%llu|system_ms=%llu|slow_ms=%llu|"
+      "RMG_OBSERVER_V2|event=start|t_ms=%llu|observer_pid=%d|poll_ms=%llu|proc_idle_ms=%llu|"
+      "proc_burst_ms=%llu|system_idle_ms=%llu|system_burst_ms=%llu|burst_window_ms=%llu|slow_ms=%llu|"
       "log_tail=%d|buffer_bytes=%u\n",
       (unsigned long long)boottime_ms(), getpid(),
-      (unsigned long long)OBS_FAST_INTERVAL_MS,
-      (unsigned long long)OBS_SYSTEM_INTERVAL_ACTIVE_MS,
+      (unsigned long long)OBS_POLL_INTERVAL_MS,
+      (unsigned long long)OBS_PROCESS_INTERVAL_IDLE_MS,
+      (unsigned long long)OBS_PROCESS_INTERVAL_BURST_MS,
+      (unsigned long long)OBS_SYSTEM_INTERVAL_IDLE_MS,
+      (unsigned long long)OBS_SYSTEM_INTERVAL_BURST_MS,
+      (unsigned long long)OBS_BURST_WINDOW_MS,
       (unsigned long long)OBS_SLOW_INTERVAL_MS,
       observer_log_fd >= 0, OBS_BUFFER_CAPACITY);
   atomic_store(&observer_running, 1);
