@@ -1721,20 +1721,7 @@ private fun SettingsPage(
                 )
             }
         }
-        item { SectionLabel(stringResource(R.string.advanced)) }
-        item {
-            SettingsSwitchCard(
-                icon = Icons.Rounded.Memory,
-                title = stringResource(R.string.advanced_mode),
-                description = stringResource(R.string.advanced_mode_description),
-                checked = advancedMode,
-                onCheckedChange = {
-                    clickHaptic(view)
-                    onAdvancedModeChanged(it)
-                },
-            )
-        }
-        if (advancedMode && showCzg3Diagnostics) {
+        if (showCzg3Diagnostics) {
             item {
                 SettingsCard(
                     modifier = Modifier.onGloballyPositioned { coordinates ->
@@ -1754,6 +1741,19 @@ private fun SettingsPage(
                     },
                 )
             }
+        }
+        item { SectionLabel(stringResource(R.string.advanced)) }
+        item {
+            SettingsSwitchCard(
+                icon = Icons.Rounded.Memory,
+                title = stringResource(R.string.advanced_mode),
+                description = stringResource(R.string.advanced_mode_description),
+                checked = advancedMode,
+                onCheckedChange = {
+                    clickHaptic(view)
+                    onAdvancedModeChanged(it)
+                },
+            )
         }
         item { SectionLabel(stringResource(R.string.about)) }
         item {
