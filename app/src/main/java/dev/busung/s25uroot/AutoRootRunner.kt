@@ -164,6 +164,7 @@ internal class AutoRootRunner(
         }
         var publishedLog = ""
         var consumedDiagnosticCharacters = 0
+        var supervisorAttempt: Int? = null
         var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
         fun publishNewLog(rawLog: String) {
             val clean = stripAnsi(rawLog).trim()
@@ -183,24 +184,19 @@ internal class AutoRootRunner(
             // therefore consume only the authoritative append-only stdout stream
             // under Shizuku; standalone mode consumes the payload log file.
             val diagnosticLog = if (useShizuku) output.snapshot() else rawLog
-            val parsed = ExploitDiagnosticParser.parseNewEvents(
+            val parsed = SupervisorAttemptParser.parseNewEvents(
                 diagnosticLog,
                 consumedDiagnosticCharacters,
+                supervisorAttempt,
                 includeTrailingLine = !process.isAlive,
             )
-            consumedDiagnosticCharacters = parsed.second
-            val supervisorAttempt = SupervisorAttemptParser.maxAttempt(diagnosticLog)
-            parsed.first.forEach { event ->
+            consumedDiagnosticCharacters = parsed.consumedCharacters
+            supervisorAttempt = parsed.supervisorAttempt
+            parsed.events.forEach { (event, eventSupervisorAttempt) ->
                 val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
-                    .withSupervisorAttempt(supervisorAttempt)
+                    .withSupervisorAttempt(eventSupervisorAttempt)
                 diagnosticSnapshot = updated
                 onDiagnostic(updated)
-            }
-            diagnosticSnapshot?.withSupervisorAttempt(supervisorAttempt)?.let { reconciled ->
-                if (reconciled != diagnosticSnapshot) {
-                    diagnosticSnapshot = reconciled
-                    onDiagnostic(reconciled)
-                }
             }
         }
 

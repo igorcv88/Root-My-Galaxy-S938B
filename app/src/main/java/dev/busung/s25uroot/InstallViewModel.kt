@@ -340,6 +340,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             var lastProgressAt = startedAt
             var lastRawLog = ""
             var consumedDiagnosticCharacters = 0
+            var supervisorAttempt: Int? = null
             var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
             while (process.isAlive) {
                 val rawLog = readLog()
@@ -351,16 +352,20 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     }
                     cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(logPrefix, rawLog)
-                    val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters)
-                    consumedDiagnosticCharacters = parsed.second
-                    val supervisorAttempt = SupervisorAttemptParser.maxAttempt(rawLog)
-                    parsed.first.forEach { event ->
-                        diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId, supervisorAttempt)
-                    }
-                    diagnosticSnapshot?.withSupervisorAttempt(supervisorAttempt)?.let { reconciled ->
-                        if (reconciled != diagnosticSnapshot) {
-                            diagnosticSnapshot = checkpointDiagnosticSnapshot(reconciled)
-                        }
+                    val parsed = SupervisorAttemptParser.parseNewEvents(
+                        rawLog,
+                        consumedDiagnosticCharacters,
+                        supervisorAttempt,
+                    )
+                    consumedDiagnosticCharacters = parsed.consumedCharacters
+                    supervisorAttempt = parsed.supervisorAttempt
+                    parsed.events.forEach { (event, eventSupervisorAttempt) ->
+                        diagnosticSnapshot = applyDiagnosticEvent(
+                            diagnosticSnapshot,
+                            event,
+                            runId,
+                            eventSupervisorAttempt,
+                        )
                     }
                     checkpointPreparation(prepDelta)
                     lastRawLog = rawLog
@@ -385,13 +390,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             }
             cacheP0Offset(bootToken, rawLog)
             publishExploitLog(logPrefix, rawLog)
-            val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = true)
-            val supervisorAttempt = SupervisorAttemptParser.maxAttempt(rawLog)
-            parsed.first.forEach { event ->
-                diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId, supervisorAttempt)
-            }
-            diagnosticSnapshot?.withSupervisorAttempt(supervisorAttempt)?.let { reconciled ->
-                if (reconciled != diagnosticSnapshot) diagnosticSnapshot = checkpointDiagnosticSnapshot(reconciled)
+            val parsed = SupervisorAttemptParser.parseNewEvents(
+                rawLog,
+                consumedDiagnosticCharacters,
+                supervisorAttempt,
+                includeTrailingLine = true,
+            )
+            consumedDiagnosticCharacters = parsed.consumedCharacters
+            supervisorAttempt = parsed.supervisorAttempt
+            parsed.events.forEach { (event, eventSupervisorAttempt) ->
+                diagnosticSnapshot = applyDiagnosticEvent(
+                    diagnosticSnapshot,
+                    event,
+                    runId,
+                    eventSupervisorAttempt,
+                )
             }
             checkpointPreparation(prepDelta)
             // Both transports drain into `captured` during the poll loop, so
