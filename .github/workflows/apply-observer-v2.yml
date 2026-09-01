@@ -35,9 +35,7 @@ jobs:
           set -euo pipefail
           git config user.name "Root My Galaxy"
           git config user.email "root-my-galaxy@users.noreply.github.com"
-          rm .github/workflows/apply-observer-v2.yml
-          rm .github/scripts/apply_observer_v2.py
-          git add app/src/main .github/workflows/apply-observer-v2.yml .github/scripts/apply_observer_v2.py
-          git diff --check
+          git add app/src/main
+          git diff --cached --check
           git commit -m "Integrate CZG3 external observer v2"
           git push origin HEAD:feat/czg3-external-observer-v2
