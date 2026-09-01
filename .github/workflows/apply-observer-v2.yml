@@ -28,28 +28,21 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(path, old, new):
+          def sub(path, pattern, replacement):
               p = Path(path)
               text = p.read_text()
-              if text.count(old) != 1:
-                  raise SystemExit(f"{path}: expected one match, got {text.count(old)} for {old[:80]!r}")
-              p.write_text(text.replace(old, new, 1))
+              text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"{path}: pattern did not match exactly once: {pattern[:100]}")
+              p.write_text(text)
 
           manual = 'app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt'
-          replace_once(manual,
-          '''        val stagedPayload = if (shizuku) {
-              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-          } else {
-              payload
-          }
-          val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {''',
-          '''        val stagedPayload = if (shizuku) {
-              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-          } else {
-              payload
-          }
-          val transport = if (shizuku) "shizuku" else "standalone"
+          sub(
+              manual,
+              r'(        val stagedPayload = if \(shizuku\) \{.*?        \}\n)(        val minimumUptimeSeconds = if \(profile\.profileId == CZG3_PROFILE_ID\) \{)',
+              r'''\1        val transport = if (shizuku) "shizuku" else "standalone"
           val observer = if (profile.profileId == CZG3_PROFILE_ID) {
               ExploitObserverSession.start(
                   context = app,
@@ -67,26 +60,24 @@ jobs:
                       "transport=$transport",
               )
           }
-          val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {''')
-
-          replace_once(manual,
-          '''        val transport = if (shizuku) "shizuku" else "standalone"
-          appendLog(
-              ExploitRunControl.contextRecord(''',
-          '''        appendLog(
-              ExploitRunControl.contextRecord(''')
-
-          replace_once(manual,
-          '''        val process = ExploitRunControl.start(
+\2''',
+          )
+          sub(
+              manual,
+              r'        val transport = if \(shizuku\) "shizuku" else "standalone"\n        appendLog\(\n            ExploitRunControl\.contextRecord\(',
+              '        appendLog(\n            ExploitRunControl.contextRecord(',
+          )
+          sub(
+              manual,
+              r'''        val process = ExploitRunControl\.start\(
               useShizuku = shizuku,
               helper = helper,
               payload = payload,
               logFile = logFile,
               environmentVariables = environment,
-              shizukuPayloadPath = stagedPayload.absolutePath,
-          )
-          val logPrefix = mutableState.value.log''',
-          '''        val process = try {
+              shizukuPayloadPath = stagedPayload\.absolutePath,
+          \)''',
+              '''        val process = try {
               ExploitRunControl.start(
                   useShizuku = shizuku,
                   helper = helper,
@@ -99,19 +90,19 @@ jobs:
               observer?.stopAndCollect()
               throw error
           }
-          observer?.attach(process)
-          val logPrefix = mutableState.value.log''')
-
-          replace_once(manual,
-          '''        } finally {
-              if (process.isAlive) {
-                  process.destroy()
-                  delay(500.milliseconds)
-                  if (process.isAlive) process.destroyForcibly()
-              }
-          }
-          appendLog(app.getString(R.string.log_bootstrap_root))''',
-          '''        } finally {
+          observer?.attach(process)''',
+          )
+          sub(
+              manual,
+              r'''        \} finally \{
+              if \(process\.isAlive\) \{
+                  process\.destroy\(\)
+                  delay\(500\.milliseconds\)
+                  if \(process\.isAlive\) process\.destroyForcibly\(\)
+              \}
+          \}
+          appendLog\(app\.getString\(R\.string\.log_bootstrap_root\)\)''',
+              '''        } finally {
               if (process.isAlive) {
                   process.destroy()
                   delay(500.milliseconds)
@@ -132,22 +123,14 @@ jobs:
                   )
               }
           }
-          appendLog(app.getString(R.string.log_bootstrap_root))''')
+          appendLog(app.getString(R.string.log_bootstrap_root))''',
+          )
 
           auto = 'app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt'
-          replace_once(auto,
-          '''        val stagedPayload = if (useShizuku) {
-              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-          } else {
-              payload
-          }
-          val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {''',
-          '''        val stagedPayload = if (useShizuku) {
-              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-          } else {
-              payload
-          }
-          val transport = if (useShizuku) "shizuku" else "standalone"
+          sub(
+              auto,
+              r'(        val stagedPayload = if \(useShizuku\) \{.*?        \}\n)(        val minimumUptimeSeconds = if \(payloads\.profile\.profileId == CZG3_PROFILE_ID\) \{)',
+              r'''\1        val transport = if (useShizuku) "shizuku" else "standalone"
           val observer = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
               ExploitObserverSession.start(
                   context = context,
@@ -165,27 +148,24 @@ jobs:
                       "transport=$transport",
               )
           }
-          val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {''')
-
-          replace_once(auto,
-          '''        val transport = if (useShizuku) "shizuku" else "standalone"
-          onLog(
-              ExploitRunControl.contextRecord(''',
-          '''        onLog(
-              ExploitRunControl.contextRecord(''')
-
-          replace_once(auto,
-          '''        val process = ExploitRunControl.start(
+\2''',
+          )
+          sub(
+              auto,
+              r'        val transport = if \(useShizuku\) "shizuku" else "standalone"\n        onLog\(\n            ExploitRunControl\.contextRecord\(',
+              '        onLog(\n            ExploitRunControl.contextRecord(',
+          )
+          sub(
+              auto,
+              r'''        val process = ExploitRunControl\.start\(
               useShizuku = useShizuku,
               helper = helper,
               payload = payload,
               logFile = logFile,
               environmentVariables = environment,
-              shizukuPayloadPath = stagedPayload.absolutePath,
-          )
-
-          val output = ProcessOutputCollector(process)''',
-          '''        val process = try {
+              shizukuPayloadPath = stagedPayload\.absolutePath,
+          \)''',
+              '''        val process = try {
               ExploitRunControl.start(
                   useShizuku = useShizuku,
                   helper = helper,
@@ -198,21 +178,20 @@ jobs:
               observer?.stopAndCollect()
               throw error
           }
-          observer?.attach(process)
-
-          val output = ProcessOutputCollector(process)''')
-
-          replace_once(auto,
-          '''        } finally {
-              if (process.isAlive) {
-                  process.destroy()
-                  delay(500.milliseconds)
-                  if (process.isAlive) process.destroyForcibly()
-              }
-              output.awaitCompletion()
-          }
-          onLog(context.getString(R.string.log_bootstrap_root))''',
-          '''        } finally {
+          observer?.attach(process)''',
+          )
+          sub(
+              auto,
+              r'''        \} finally \{
+              if \(process\.isAlive\) \{
+                  process\.destroy\(\)
+                  delay\(500\.milliseconds\)
+                  if \(process\.isAlive\) process\.destroyForcibly\(\)
+              \}
+              output\.awaitCompletion\(\)
+          \}
+          onLog\(context\.getString\(R\.string\.log_bootstrap_root\)\)''',
+              '''        } finally {
               if (process.isAlive) {
                   process.destroy()
                   delay(500.milliseconds)
@@ -234,7 +213,8 @@ jobs:
                   )
               }
           }
-          onLog(context.getString(R.string.log_bootstrap_root))''')
+          onLog(context.getString(R.string.log_bootstrap_root))''',
+          )
           PY
 
       - name: Validate app
