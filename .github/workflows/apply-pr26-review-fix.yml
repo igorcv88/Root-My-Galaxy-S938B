@@ -48,3 +48,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Map supervisor attempts to diagnostics in log order"
           git push origin HEAD:fix/czg3-autoroot-diagnostics
+
+# transient workflow; removed after successful validation
