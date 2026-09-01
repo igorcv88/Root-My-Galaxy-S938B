@@ -100,9 +100,21 @@ replace_once(
 )
 replace_once(
     manual,
-    '''        } finally {
+    '''            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                profile.profileId == CZG3_PROFILE_ID,
+            )
+        } finally {
             if (process.isAlive) {''',
-    '''        } finally {
+    '''            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                profile.profileId == CZG3_PROFILE_ID,
+            )
+        } finally {
             incrementalLog?.close()
             if (process.isAlive) {''',
 )
@@ -143,9 +155,21 @@ replace_once(
 )
 replace_once(
     auto,
-    '''        } finally {
+    '''            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                payloads.profile.profileId == CZG3_PROFILE_ID,
+            )
+        } finally {
             if (process.isAlive) {''',
-    '''        } finally {
+    '''            validateTerminalExploit(
+                diagnosticSnapshot,
+                exitCode,
+                rawLog,
+                payloads.profile.profileId == CZG3_PROFILE_ID,
+            )
+        } finally {
             incrementalLog?.close()
             if (process.isAlive) {''',
 )
