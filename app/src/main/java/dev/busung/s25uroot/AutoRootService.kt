@@ -203,7 +203,7 @@ class AutoRootService : Service() {
                 selectedMinUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
                     AppPreferences.czg3BootMinUptimeSeconds(this)
                 } else {
-                    DiagnosticUptime.DEFAULT_SECONDS
+                    null
                 },
             ).also(historyStore::save)
             persist(
