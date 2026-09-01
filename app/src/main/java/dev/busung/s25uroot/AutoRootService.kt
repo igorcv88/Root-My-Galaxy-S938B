@@ -111,9 +111,16 @@ class AutoRootService : Service() {
             Log.i(TAG, line)
             val entry = historyEntry ?: return
             val timestamped = "${Instant.now()} $line"
-            val updated = entry.copy(log = (entry.log + "\n" + timestamped).trim())
+            val checkpoint = PreparationTelemetryParser.lastCheckpoint(line)
+            val updated = entry.copy(
+                log = (entry.log + "\n" + timestamped).trim(),
+                lastPrepCheckpoint = checkpoint?.let { "${it.scope}/${it.event}" }
+                    ?: entry.lastPrepCheckpoint,
+                lastPrepCheckpointUptimeMillis = checkpoint?.uptimeMillis
+                    ?: entry.lastPrepCheckpointUptimeMillis,
+            )
             historyEntry = updated
-            saveHistory(force)
+            saveHistory(force || checkpoint != null)
         }
         fun finishHistory(result: InstallRunResult, keepOpenForPostRootDiagnostics: Boolean = false) {
             val entry = historyEntry ?: return
@@ -192,6 +199,12 @@ class AutoRootService : Service() {
                 usedShizuku = useShizuku,
                 payloadSha256 = payloads.profile.exploit.sha256,
                 payloadSize = payloads.profile.exploit.size,
+                invocationMode = InvocationMode.AutoRoot.wireValue,
+                selectedMinUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
+                    AppPreferences.czg3BootMinUptimeSeconds(this)
+                } else {
+                    DiagnosticUptime.DEFAULT_SECONDS
+                },
             ).also(historyStore::save)
             persist(
                 serviceStartedContext
@@ -239,7 +252,7 @@ class AutoRootService : Service() {
                     }
                 },
             )
-            persist(AndroidRunContext.snapshot(this, "exploit_launch"), force = true)
+            persist(AndroidRunContext.snapshot(this, "autoroot_runner_dispatch"), force = true)
             runner.run(payloads, bootToken, requireNotNull(historyEntry).id)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
@@ -405,5 +418,6 @@ class AutoRootService : Service() {
         private const val AUTO_ROOT_SERVICE_WATCHDOG_MILLIS = 25 * 60 * 1_000L
         private const val MAX_WAKELOCK_MILLIS = AUTO_ROOT_SERVICE_WATCHDOG_MILLIS
         private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
+        private const val CZG3_PROFILE_ID = "pa3q-S938BXXSBCZG3"
     }
 }

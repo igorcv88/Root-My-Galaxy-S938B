@@ -169,6 +169,10 @@
     <string name="history_unexpected_reboot" translatable="false">Unexpected reboot during run</string>
     <string name="copy_diagnostic" translatable="false">Copy diagnostic report</string>
     <string name="diagnostic_copied" translatable="false">Diagnostic report copied</string>
+    <string name="diagnostic_boot_uptime_title" translatable="false">CZG3 diagnostic launch uptime</string>
+    <string name="diagnostic_boot_uptime_description" translatable="false">Developer experiment control for pa3q CZG3. The app waits before starting the payload process.</string>
+    <string name="diagnostic_uptime_default" translatable="false">Default (120 s)</string>
+    <string name="diagnostic_uptime_seconds" translatable="false">%1$d s</string>
     <string name="diagnostic_statistics" translatable="false">Recent reliability</string>
     <string name="diagnostic_success_rate" translatable="false">Success: %1$d/%2$d (%3$.1f%%)</string>
     <string name="diagnostic_latency" translatable="false">Acquisition time: median %1$.1fs, P90 %2$.1fs</string>

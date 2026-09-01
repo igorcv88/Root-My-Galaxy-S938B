@@ -54,8 +54,9 @@ class RaceTelemetryTest {
         assertEquals(2L, result.schedulerDeltas["parent"])
     }
 
-    @Test fun historyLogBoundIsExplicit() {
-        assertTrue(InstallHistoryStore.MAX_LOG_CHARS >= 1_000_000)
+    @Test fun historyLogIsNotTruncated() {
+        val log = "x".repeat(1_000_001)
+        assertEquals(log, historyLogForStorage(log))
         assertFalse(raceAnalysisReport("none").length > 4_096)
     }
 

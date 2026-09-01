@@ -37,6 +37,10 @@ data class InstallHistoryEntry(
     val unexpectedReboot: Boolean = false,
     val crashRecordStatus: KernelCrashRecordStatus? = null,
     val crashRecord: String? = null,
+    val invocationMode: String? = null,
+    val selectedMinUptimeSeconds: Int? = null,
+    val lastPrepCheckpoint: String? = null,
+    val lastPrepCheckpointUptimeMillis: Long? = null,
 )
 
 data class DiagnosticAggregate(
@@ -97,6 +101,8 @@ internal fun historyIdsToPrune(entries: List<InstallHistoryEntry>, maximum: Int)
     return entries.sortedByDescending(InstallHistoryEntry::startedAtMillis).drop(maximum).mapTo(mutableSetOf()) { it.id }
 }
 
+internal fun historyLogForStorage(log: String): String = log
+
 class InstallHistoryStore(private val context: Context) {
     private val directory = File(context.filesDir, "install-history").apply { mkdirs() }
 
@@ -134,7 +140,7 @@ class InstallHistoryStore(private val context: Context) {
 
     private fun encode(entry: InstallHistoryEntry) = JSONObject()
         .put("id", entry.id).put("startedAtMillis", entry.startedAtMillis).put("completedAtMillis", entry.completedAtMillis ?: JSONObject.NULL)
-        .put("result", entry.result.name).put("log", entry.log.take(MAX_LOG_CHARS)).put("profileId", entry.profileId ?: JSONObject.NULL)
+        .put("result", entry.result.name).put("log", historyLogForStorage(entry.log)).put("profileId", entry.profileId ?: JSONObject.NULL)
         .put("usedShizuku", entry.usedShizuku).put("bootId", entry.bootId ?: JSONObject.NULL)
         .put("startedAtUptimeMillis", entry.startedAtUptimeMillis ?: JSONObject.NULL).put("deviceIdentity", entry.deviceIdentity ?: JSONObject.NULL)
         .put("appVersion", entry.appVersion ?: JSONObject.NULL).put("payloadSha256", entry.payloadSha256 ?: JSONObject.NULL)
@@ -143,6 +149,10 @@ class InstallHistoryStore(private val context: Context) {
         .put("failureClass", entry.failureClass?.name ?: JSONObject.NULL).put("safety", entry.safety?.name ?: JSONObject.NULL)
         .put("outcome", entry.outcome?.name ?: JSONObject.NULL).put("unexpectedReboot", entry.unexpectedReboot)
         .put("crashRecordStatus", entry.crashRecordStatus?.name ?: JSONObject.NULL).put("crashRecord", entry.crashRecord ?: JSONObject.NULL)
+        .put("invocationMode", entry.invocationMode ?: JSONObject.NULL)
+        .put("selectedMinUptimeSeconds", entry.selectedMinUptimeSeconds ?: JSONObject.NULL)
+        .put("lastPrepCheckpoint", entry.lastPrepCheckpoint ?: JSONObject.NULL)
+        .put("lastPrepCheckpointUptimeMillis", entry.lastPrepCheckpointUptimeMillis ?: JSONObject.NULL)
         .put("stageTimings", JSONArray().apply { entry.stageTimings.takeLast(MAX_STAGE_TIMINGS).forEach { timing -> put(JSONObject().put("stage", timing.stage.name).put("elapsedMillis", timing.elapsedMillis).put("attempt", timing.attempt ?: JSONObject.NULL)) } })
 
     private fun decodeOrQuarantine(file: File): InstallHistoryEntry? = try { decode(AtomicFile(file).openRead().use { it.readBytes() }) } catch (_: Throwable) {
@@ -162,10 +172,17 @@ class InstallHistoryStore(private val context: Context) {
             stageTimings = buildList { if (timings != null) for (index in 0 until timings.length()) timings.getJSONObject(index).let { add(StageTiming(ExploitStage.valueOf(it.getString("stage")), it.getLong("elapsedMillis"), it.optionalInt("attempt"))) } },
             unexpectedReboot = value.optBoolean("unexpectedReboot", false), crashRecordStatus = value.optionalString("crashRecordStatus")?.let(KernelCrashRecordStatus::valueOf),
             crashRecord = value.optionalString("crashRecord"),
+            invocationMode = value.optionalString("invocationMode"),
+            selectedMinUptimeSeconds = value.optionalInt("selectedMinUptimeSeconds"),
+            lastPrepCheckpoint = value.optionalString("lastPrepCheckpoint"),
+            lastPrepCheckpointUptimeMillis = value.optionalLong("lastPrepCheckpointUptimeMillis"),
         )
     }
 
-    companion object { internal const val MAX_HISTORY_ENTRIES = 50; internal const val MAX_LOG_CHARS = 1_000_000; private const val MAX_STAGE_TIMINGS = 128 }
+    companion object {
+        internal const val MAX_HISTORY_ENTRIES = 50
+        private const val MAX_STAGE_TIMINGS = 128
+    }
 }
 
 private fun DeviceSnapshot.diagnosticIdentity(): String = listOf(manufacturer, model, device, buildId, fingerprint, kernelRelease, kernelVersionInfo, machine, sdk.toString(), abi, pageSize.toString()).joinToString("|")

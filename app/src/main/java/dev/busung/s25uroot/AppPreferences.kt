@@ -37,6 +37,7 @@ object AppPreferences {
     private const val AUTO_ROOT_ENABLED = "auto_root_enabled"
     private const val SOFT_REBOOT_AFTER_ROOT = "soft_reboot_after_root"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
+    private const val CZG3_BOOT_MIN_UPTIME_SEC = "czg3_boot_min_uptime_sec"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
         prefs(context).getString(ACCENT_COLOR, null),
@@ -91,6 +92,16 @@ object AppPreferences {
     fun setSoftRebootAfterRoot(context: Context, enabled: Boolean) {
         prefs(context).edit()
             .putBoolean(SOFT_REBOOT_AFTER_ROOT, enabled)
+            .apply()
+    }
+
+    fun czg3BootMinUptimeSeconds(context: Context): Int = DiagnosticUptime.normalize(
+        prefs(context).getInt(CZG3_BOOT_MIN_UPTIME_SEC, DiagnosticUptime.DEFAULT_SECONDS),
+    )
+
+    fun setCzg3BootMinUptimeSeconds(context: Context, seconds: Int) {
+        prefs(context).edit()
+            .putInt(CZG3_BOOT_MIN_UPTIME_SEC, DiagnosticUptime.normalize(seconds))
             .apply()
     }
 

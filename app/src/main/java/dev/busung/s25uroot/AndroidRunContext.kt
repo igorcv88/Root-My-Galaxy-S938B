@@ -1,5 +1,6 @@
 package dev.busung.s25uroot
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -19,6 +20,7 @@ internal object AndroidRunContext {
 
     fun snapshot(context: Context, event: String, observedUptimeMillis: Long = SystemClock.elapsedRealtime()): String {
         val power = context.getSystemService(PowerManager::class.java)
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
         val user = context.getSystemService(UserManager::class.java)
         val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         fun batteryInt(name: String) = battery?.getIntExtra(name, -1) ?: -1
@@ -26,7 +28,8 @@ internal object AndroidRunContext {
             .getLong(BOOT_RECEIVER_UPTIME, -1)
         return "RMG_ANDROID_V1|event=$event|uptime_ms=$observedUptimeMillis" +
             "|boot_receiver_uptime_ms=$bootObserved|user_unlocked=${user.isUserUnlocked}" +
-            "|interactive=${power.isInteractive}|thermal_status=${power.currentThermalStatus}" +
+            "|interactive=${power.isInteractive}|keyguard_locked=${keyguard.isKeyguardLocked}" +
+            "|thermal_status=${power.currentThermalStatus}" +
             "|battery_level=${batteryInt(BatteryManager.EXTRA_LEVEL)}" +
             "|battery_scale=${batteryInt(BatteryManager.EXTRA_SCALE)}" +
             "|battery_status=${batteryInt(BatteryManager.EXTRA_STATUS)}" +

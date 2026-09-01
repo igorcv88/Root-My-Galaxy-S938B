@@ -89,6 +89,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private var installJob: Job? = null
     private var activeHistoryEntry: InstallHistoryEntry? = null
     private var lastHistoryCheckpointAt = 0L
+    private var rootRequestedAtUptimeMillis = -1L
+    private var rootRequestContext = ""
+    private var rootRequestShizukuRunning = false
+    private var rootRequestShizukuGranted = false
 
     @Volatile
     private var activeRunShizuku: Boolean? = null
@@ -164,6 +168,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun install(profileId: String? = null) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
         discoveryJob?.cancel()
+        rootRequestedAtUptimeMillis = SystemClock.elapsedRealtime()
+        rootRequestContext = AndroidRunContext.snapshot(
+            app,
+            "root_request",
+            rootRequestedAtUptimeMillis,
+        )
+        rootRequestShizukuRunning = ShizukuController.isRunning()
+        rootRequestShizukuGranted = ShizukuController.isGranted()
         installJob = viewModelScope.launch(Dispatchers.IO) {
             mutableState.value = InstallUiState(
                 phase = InstallPhase.Checking,
@@ -200,7 +212,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 updateHistory { it.copy(payloadSha256 = profile.exploit.sha256, payloadSize = profile.exploit.size) }
 
                 setPhase(InstallPhase.Exploiting, app.getString(R.string.status_exploit_running))
-                executeExploit(payloads.exploit)
+                val invocationMode = when (payloads.source) {
+                    PayloadSource.ManualOnline -> InvocationMode.ManualOnline
+                    PayloadSource.ManualOffline -> InvocationMode.ManualOffline
+                }
+                updateHistory {
+                    it.copy(
+                        invocationMode = invocationMode.wireValue,
+                        selectedMinUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
+                            AppPreferences.czg3BootMinUptimeSeconds(app)
+                        } else {
+                            DiagnosticUptime.DEFAULT_SECONDS
+                        },
+                    )
+                }
+                executeExploit(payloads.exploit, profile, invocationMode)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
                 checkpointAppStage(ExploitStage.StagingKernelSu)
@@ -222,7 +248,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun executeExploit(payload: File) {
+    private suspend fun executeExploit(
+        payload: File,
+        profile: TargetProfile,
+        invocationMode: InvocationMode,
+    ) {
         val shizuku = shizukuEnabled()
         val logFile = if (shizuku) File(SHIZUKU_LOG_PATH) else File(app.filesDir, "exploit.log")
         if (shizuku) {
@@ -234,32 +264,67 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (!shizuku) {
             require(helper.canExecute()) { app.getString(R.string.error_helper_unavailable) }
         }
-        val logPrefix = mutableState.value.log
         val bootToken = currentBootToken()
         val runId = activeHistoryEntry?.id ?: error("Missing exploit run ID")
-        val process = if (shizuku) {
-            val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-            ShizukuController.exec(
-                arrayOf("/system/bin/sh", "-c", "true"),
-                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath, runId),
-            )
+        val stagedPayload = if (shizuku) {
+            shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
         } else {
-            val processBuilder = ProcessBuilder(
-                helper.absolutePath,
-                "--run-payload",
-                payload.absolutePath,
-                helper.absolutePath,
-                logFile.absolutePath,
-            ).redirectErrorStream(true)
-            processBuilder.environment().apply {
-                put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
-                put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
-                put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
-                put(RUN_ID_ENV, runId)
-                cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
-            }
-            processBuilder.start()
+            payload
         }
+        val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
+            AppPreferences.czg3BootMinUptimeSeconds(app)
+        } else {
+            DiagnosticUptime.DEFAULT_SECONDS
+        }
+        val launchWindow = ExploitRunControl.waitForLaunchWindow(
+            requestedAtUptimeMillis = rootRequestedAtUptimeMillis,
+            minimumUptimeSeconds = minimumUptimeSeconds,
+        )
+        val transport = if (shizuku) "shizuku" else "standalone"
+        appendLog(
+            ExploitRunControl.contextRecord(
+                rootRequestContext,
+                invocationMode,
+                minimumUptimeSeconds,
+                launchWindow.waited,
+                launchWindow.actualWaitMillis,
+                rootRequestShizukuRunning,
+                rootRequestShizukuGranted,
+                transport,
+            ),
+        )
+        val spawnUptimeMillis = SystemClock.elapsedRealtime()
+        appendLog(
+            ExploitRunControl.contextRecord(
+                AndroidRunContext.snapshot(app, "payload_launch", spawnUptimeMillis),
+                invocationMode,
+                minimumUptimeSeconds,
+                launchWindow.waited,
+                launchWindow.actualWaitMillis,
+                ShizukuController.isRunning(),
+                ShizukuController.isGranted(),
+                transport,
+            ),
+        )
+        val environment = ExploitRunControl.environment(
+            ExploitEnvironmentRequest(
+                invocationMode,
+                minimumUptimeSeconds,
+                launchWindow,
+                spawnUptimeMillis,
+                runId,
+                cachedP0Offset(bootToken),
+            ),
+        )
+        val process = ExploitRunControl.start(
+            useShizuku = shizuku,
+            helper = helper,
+            payload = payload,
+            logFile = logFile,
+            environmentVariables = environment,
+            shizukuPayloadPath = stagedPayload.absolutePath,
+        )
+        val logPrefix = mutableState.value.log
         val captured = StringBuilder()
         val readLog: () -> String = if (shizuku) {
             { drainProcessOutput(process, captured) }
@@ -286,6 +351,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     parsed.first.forEach { event ->
                         diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId)
                     }
+                    checkpointPreparation(rawLog)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
                 }
@@ -305,6 +371,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             publishExploitLog(logPrefix, rawLog)
             val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = true)
             parsed.first.forEach { event -> diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId) }
+            checkpointPreparation(rawLog)
             // Both transports drain into `captured` during the poll loop, so
             // this never blocks on a child still holding the pipe open.
             val earlyOutput = captured.toString().trim()
@@ -336,6 +403,20 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         )
         checkpointDiagnostic(updated)
         return updated
+    }
+
+    private fun checkpointPreparation(log: String) {
+        val checkpoint = PreparationTelemetryParser.lastCheckpoint(log) ?: return
+        val value = "${checkpoint.scope}/${checkpoint.event}"
+        if (activeHistoryEntry?.lastPrepCheckpoint == value &&
+            activeHistoryEntry?.lastPrepCheckpointUptimeMillis == checkpoint.uptimeMillis
+        ) return
+        checkpointHistory(force = true) { entry ->
+            entry.copy(
+                lastPrepCheckpoint = value,
+                lastPrepCheckpointUptimeMillis = checkpoint.uptimeMillis,
+            )
+        }
     }
 
     private fun drainProcessOutput(process: Process, buffer: StringBuilder): String {
@@ -472,21 +553,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         return staged
     }
 
-    private fun shizukuEnvironment(
-        bootToken: String?,
-        payloadPath: String,
-        helperPath: String,
-        runId: String,
-    ): Array<String> = buildList {
-        add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
-        add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
-        add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
-        add("CVE43499_ROOT_HELPER=$helperPath")
-        add("LD_PRELOAD=$payloadPath")
-        add("$RUN_ID_ENV=$runId")
-        cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
-    }.toTypedArray()
-
     /**
      * Runs the bootstrap helper for a short management command. Unlike the
      * exploit run there is no log file to poll, so output is drained inline
@@ -619,13 +685,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
 
     companion object {
-        private const val EXPLOIT_ATTEMPTS = "24"
-        private const val P0_ATTEMPT_TIMEOUT_SEC = "45"
-        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
         private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
-        private const val RUN_ID_ENV = "RMG_RUN_ID"
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
         private const val INSTALL_RECEIPT = "install_receipt"
         private const val RECEIPT_BOOT_TOKEN = "kernel_boot_id"
@@ -633,7 +695,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         private const val P0_CACHE = "p0_cache"
         private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"
         private const val P0_CACHE_OFFSET = "offset"
-        private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
+        private const val CZG3_PROFILE_ID = "pa3q-S938BXXSBCZG3"
         private const val P0_OFFSET_MAX = 0x1f0000L
         private const val P0_OFFSET_MASK = 0xffffL
         private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"

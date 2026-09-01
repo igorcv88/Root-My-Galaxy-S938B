@@ -15,7 +15,10 @@ data class VerifiedPayloads(
     val profile: TargetProfile,
     val exploit: File,
     val kernelSu: File,
+    val source: PayloadSource = PayloadSource.ManualOnline,
 )
+
+enum class PayloadSource { ManualOnline, ManualOffline }
 
 private class PayloadNetworkException(
     message: String,
@@ -80,7 +83,7 @@ class PayloadRepository(private val context: Context) {
             require(cached.profile.profileId == profile.profileId) {
                 context.getString(R.string.repo_profile_missing, profile.profileId)
             }
-            cached
+            cached.copy(source = PayloadSource.ManualOffline)
         }
     }
 
