@@ -26,6 +26,14 @@ internal class AutoRootRunner(
     private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
 ) {
     suspend fun run(payloads: VerifiedPayloads, bootToken: String, runId: String) {
+        val runnerInvokedAt = SystemClock.elapsedRealtime()
+        val runnerInvocationContext = AndroidRunContext.snapshot(
+            context,
+            "autoroot_runner_invocation",
+            runnerInvokedAt,
+        )
+        val requestShizukuRunning = ShizukuController.isRunning()
+        val requestShizukuGranted = ShizukuController.isGranted()
         if (useShizuku) {
             require(ShizukuController.isRunning() && ShizukuController.isGranted()) {
                 context.getString(R.string.error_shizuku_unavailable)
@@ -37,9 +45,18 @@ internal class AutoRootRunner(
         onLog("[*] boot_id=$bootToken")
         onLog("[*] exploit_sha256=${payloads.exploit.sha256()}")
         onLog("[*] helper_sha256=${nativeHelperFile().sha256()}")
+        onLog(runnerInvocationContext)
 
         onStage(AutoRootStage.RunningExploit)
-        executeExploit(payloads.exploit, bootToken, runId)
+        executeExploit(
+            payloads,
+            bootToken,
+            runId,
+            runnerInvokedAt,
+            runnerInvocationContext,
+            requestShizukuRunning,
+            requestShizukuGranted,
+        )
 
         onStage(AutoRootStage.LoadingKernelSu)
         stageKernelSu(payloads)
@@ -55,7 +72,16 @@ internal class AutoRootRunner(
         onLog(context.getString(R.string.log_ksu_control_verified))
     }
 
-    private suspend fun executeExploit(payload: File, bootToken: String, runId: String) {
+    private suspend fun executeExploit(
+        payloads: VerifiedPayloads,
+        bootToken: String,
+        runId: String,
+        requestedAtUptimeMillis: Long,
+        requestContext: String,
+        requestShizukuRunning: Boolean,
+        requestShizukuGranted: Boolean,
+    ) {
+        val payload = payloads.exploit
         val logFile = if (useShizuku) File(SHIZUKU_LOG_PATH) else File(context.filesDir, "autoroot-exploit.log")
         if (useShizuku) {
             ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
@@ -68,29 +94,67 @@ internal class AutoRootRunner(
             require(helper.canExecute()) { context.getString(R.string.error_helper_unavailable) }
         }
 
-        val process = if (useShizuku) {
-            val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-            ShizukuController.exec(
-                arrayOf("/system/bin/sh", "-c", "true"),
-                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath, runId),
-            )
+        val stagedPayload = if (useShizuku) {
+            shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
         } else {
-            val processBuilder = ProcessBuilder(
-                helper.absolutePath,
-                "--run-payload",
-                payload.absolutePath,
-                helper.absolutePath,
-                logFile.absolutePath,
-            ).redirectErrorStream(true)
-            processBuilder.environment().apply {
-                put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
-                put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
-                put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
-                put(RUN_ID_ENV, runId)
-                cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
-            }
-            processBuilder.start()
+            payload
         }
+        val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
+            AppPreferences.czg3BootMinUptimeSeconds(context)
+        } else {
+            null
+        }
+        val launchWindow = ExploitRunControl.waitForLaunchWindow(
+            requestedAtUptimeMillis,
+            minimumUptimeSeconds,
+        )
+        val transport = if (useShizuku) "shizuku" else "standalone"
+        onLog(
+            ExploitRunControl.contextRecord(
+                requestContext.replace(
+                    "event=autoroot_runner_invocation",
+                    "event=autoroot_root_request",
+                ),
+                InvocationMode.AutoRoot,
+                minimumUptimeSeconds,
+                launchWindow.waited,
+                launchWindow.actualWaitMillis,
+                requestShizukuRunning,
+                requestShizukuGranted,
+                transport,
+            ),
+        )
+        val spawnUptimeMillis = SystemClock.elapsedRealtime()
+        onLog(
+            ExploitRunControl.contextRecord(
+                AndroidRunContext.snapshot(context, "payload_launch", spawnUptimeMillis),
+                InvocationMode.AutoRoot,
+                minimumUptimeSeconds,
+                launchWindow.waited,
+                launchWindow.actualWaitMillis,
+                ShizukuController.isRunning(),
+                ShizukuController.isGranted(),
+                transport,
+            ),
+        )
+        val environment = ExploitRunControl.environment(
+            ExploitEnvironmentRequest(
+                InvocationMode.AutoRoot,
+                minimumUptimeSeconds,
+                launchWindow,
+                spawnUptimeMillis,
+                runId,
+                cachedP0Offset(bootToken),
+            ),
+        )
+        val process = ExploitRunControl.start(
+            useShizuku = useShizuku,
+            helper = helper,
+            payload = payload,
+            logFile = logFile,
+            environmentVariables = environment,
+            shizukuPayloadPath = stagedPayload.absolutePath,
+        )
 
         val output = ProcessOutputCollector(process)
         val readLog: () -> String = if (useShizuku) {
@@ -219,21 +283,6 @@ internal class AutoRootRunner(
         return staged
     }
 
-    private fun shizukuEnvironment(
-        bootToken: String,
-        payloadPath: String,
-        helperPath: String,
-        runId: String,
-    ): Array<String> = buildList {
-        add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
-        add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
-        add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
-        add("CVE43499_ROOT_HELPER=$helperPath")
-        add("LD_PRELOAD=$payloadPath")
-        add("$RUN_ID_ENV=$runId")
-        cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
-    }.toTypedArray()
-
     private suspend fun runHelper(vararg arguments: String): AutoRootCommandResult {
         val helper = helperFile()
         val process = if (useShizuku) {
@@ -352,17 +401,13 @@ internal class AutoRootRunner(
     }
 
     companion object {
-        private const val EXPLOIT_ATTEMPTS = "24"
-        private const val P0_ATTEMPT_TIMEOUT_SEC = "45"
-        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
-        private const val RUN_ID_ENV = "RMG_RUN_ID"
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
         private const val P0_CACHE = "p0_cache"
         private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"
         private const val P0_CACHE_OFFSET = "offset"
-        private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
+        private const val CZG3_PROFILE_ID = "pa3q-S938BXXSBCZG3"
         private const val P0_OFFSET_MAX = 0x1f0000L
         private const val P0_OFFSET_MASK = 0xffffL
         private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"

@@ -120,6 +120,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -168,6 +169,7 @@ class MainActivity : ComponentActivity() {
     private var themeMode by mutableStateOf(AppThemeMode.System)
     private var advancedMode by mutableStateOf(false)
     private var shizukuMode by mutableStateOf(false)
+    private var czg3BootMinUptimeSeconds by mutableIntStateOf(DiagnosticUptime.DEFAULT_SECONDS)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -177,6 +179,7 @@ class MainActivity : ComponentActivity() {
         themeMode = AppPreferences.themeMode(this)
         advancedMode = AppPreferences.advancedMode(this)
         shizukuMode = AppPreferences.shizukuMode(this)
+        czg3BootMinUptimeSeconds = AppPreferences.czg3BootMinUptimeSeconds(this)
         setContent {
             RootMyGalaxyTheme(accentColor = accentColor, themeMode = themeMode) {
                 RootApp(
@@ -185,6 +188,7 @@ class MainActivity : ComponentActivity() {
                     themeMode = themeMode,
                     advancedMode = advancedMode,
                     shizukuMode = shizukuMode,
+                    czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
                     onAccentColorChanged = { color ->
                         AppPreferences.setAccentColor(this, color)
                         accentColor = color
@@ -200,6 +204,10 @@ class MainActivity : ComponentActivity() {
                     onShizukuModeChanged = { enabled ->
                         AppPreferences.setShizukuMode(this, enabled)
                         shizukuMode = enabled
+                    },
+                    onCzg3BootMinUptimeChanged = { seconds ->
+                        AppPreferences.setCzg3BootMinUptimeSeconds(this, seconds)
+                        czg3BootMinUptimeSeconds = DiagnosticUptime.normalize(seconds)
                     },
                     openInstaller = { profileId ->
                         val installer = Intent(this, InstallActivity::class.java)
@@ -282,10 +290,12 @@ private fun RootApp(
     themeMode: AppThemeMode,
     advancedMode: Boolean,
     shizukuMode: Boolean,
+    czg3BootMinUptimeSeconds: Int,
     onAccentColorChanged: (AccentColor) -> Unit,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onShizukuModeChanged: (Boolean) -> Unit,
+    onCzg3BootMinUptimeChanged: (Int) -> Unit,
     openInstaller: (String?) -> Unit,
 ) {
     val installState by installViewModel.state.collectAsStateWithLifecycle()
@@ -505,6 +515,12 @@ private fun RootApp(
                     themeMode = themeMode,
                     advancedMode = advancedMode,
                     shizukuMode = shizukuMode,
+                    showCzg3Diagnostics = device.model == "SM-S938B" &&
+                        device.device == "pa3q" &&
+                        device.buildId == "BP4A.251205.006.S938BXXSBCZG3" &&
+                        device.kernelRelease ==
+                        "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
+                    czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
                     updateStatus = updateStatus,
                     onCheckForUpdate = checkForUpdate,
                     onStartDownload = startDownload,
@@ -512,6 +528,7 @@ private fun RootApp(
                     onThemeModeChanged = onThemeModeChanged,
                     onAdvancedModeChanged = onAdvancedModeChanged,
                     onShizukuModeChanged = onShizukuModeChanged,
+                    onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
                 )
             }
         }
@@ -1496,6 +1513,10 @@ private fun diagnosticReport(entry: InstallHistoryEntry): String = buildString {
     appendLine("payload_sha256=${entry.payloadSha256.orEmpty()}")
     appendLine("payload_size=${entry.payloadSize ?: "unknown"}")
     appendLine("transport=${if (entry.usedShizuku) "shizuku" else "standalone"}")
+    appendLine("invocation_mode=${entry.invocationMode ?: "unknown"}")
+    appendLine("selected_min_uptime_sec=${entry.selectedMinUptimeSeconds ?: "unknown"}")
+    appendLine("last_prep_checkpoint=${entry.lastPrepCheckpoint ?: "none"}")
+    appendLine("last_prep_checkpoint_uptime_ms=${entry.lastPrepCheckpointUptimeMillis ?: "unknown"}")
     appendLine("attempts=${entry.attemptCount}")
     appendLine("exploit_elapsed_ms=${entry.exploitElapsedMillis ?: "unknown"}")
     appendLine("failure_class=${entry.failureClass ?: "none"}")
@@ -1507,6 +1528,7 @@ private fun diagnosticReport(entry: InstallHistoryEntry): String = buildString {
     entry.stageTimings.forEach { appendLine("  ${it.elapsedMillis}ms stage=${it.stage} attempt=${it.attempt ?: "-"}") }
     entry.crashRecord?.let { appendLine("crash_record:\n$it") }
     append(raceAnalysisReport(entry.log))
+    append(preparationAnalysisReport(entry.log))
     appendLine("log:")
     append(entry.log)
 }
@@ -1518,6 +1540,8 @@ private fun SettingsPage(
     themeMode: AppThemeMode,
     advancedMode: Boolean,
     shizukuMode: Boolean,
+    showCzg3Diagnostics: Boolean,
+    czg3BootMinUptimeSeconds: Int,
     updateStatus: UpdateStatus,
     onCheckForUpdate: () -> Unit,
     onStartDownload: (UpdateInfo) -> Unit,
@@ -1525,6 +1549,7 @@ private fun SettingsPage(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onShizukuModeChanged: (Boolean) -> Unit,
+    onCzg3BootMinUptimeChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -1535,6 +1560,8 @@ private fun SettingsPage(
     var showShizukuMissingDialog by remember { mutableStateOf(false) }
     var languageMenuTop by remember { mutableStateOf(32.dp) }
     var colorMenuTop by remember { mutableStateOf(32.dp) }
+    var showUptimeDialog by remember { mutableStateOf(false) }
+    var uptimeMenuTop by remember { mutableStateOf(32.dp) }
     val density = LocalDensity.current
     val currentLanguageTag = AppPreferences.languageTag(context)
 
@@ -1592,6 +1619,26 @@ private fun SettingsPage(
                 onAccentColorChanged(colors[index])
             },
             onDismiss = { showColorDialog = false },
+        )
+    }
+
+    if (showUptimeDialog) {
+        SideChoiceMenu(
+            choices = DiagnosticUptime.allowedSeconds.map { seconds ->
+                if (seconds == DiagnosticUptime.DEFAULT_SECONDS) {
+                    context.getString(R.string.diagnostic_uptime_default)
+                } else {
+                    context.getString(R.string.diagnostic_uptime_seconds, seconds)
+                }
+            },
+            selectedIndex = DiagnosticUptime.allowedSeconds.indexOf(czg3BootMinUptimeSeconds)
+                .coerceAtLeast(0),
+            topOffset = uptimeMenuTop,
+            onSelected = { index ->
+                showUptimeDialog = false
+                onCzg3BootMinUptimeChanged(DiagnosticUptime.allowedSeconds[index])
+            },
+            onDismiss = { showUptimeDialog = false },
         )
     }
 
@@ -1686,6 +1733,27 @@ private fun SettingsPage(
                     onAdvancedModeChanged(it)
                 },
             )
+        }
+        if (advancedMode && showCzg3Diagnostics) {
+            item {
+                SettingsCard(
+                    modifier = Modifier.onGloballyPositioned { coordinates ->
+                        uptimeMenuTop = with(density) { coordinates.positionInWindow().y.toDp() }
+                    },
+                    icon = Icons.Rounded.Schedule,
+                    title = stringResource(R.string.diagnostic_boot_uptime_title),
+                    description = stringResource(R.string.diagnostic_boot_uptime_description),
+                    value = if (czg3BootMinUptimeSeconds == DiagnosticUptime.DEFAULT_SECONDS) {
+                        stringResource(R.string.diagnostic_uptime_default)
+                    } else {
+                        stringResource(R.string.diagnostic_uptime_seconds, czg3BootMinUptimeSeconds)
+                    },
+                    onClick = {
+                        clickHaptic(view)
+                        showUptimeDialog = true
+                    },
+                )
+            }
         }
         item { SectionLabel(stringResource(R.string.about)) }
         item {
