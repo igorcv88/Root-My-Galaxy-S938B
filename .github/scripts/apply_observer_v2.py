@@ -63,8 +63,7 @@ sub(
         } catch (error: Throwable) {
             observer?.stopAndCollect()
             throw error
-        }
-        observer?.attach(process)''',
+        }''',
 )
 sub(
     manual,
@@ -151,8 +150,7 @@ sub(
         } catch (error: Throwable) {
             observer?.stopAndCollect()
             throw error
-        }
-        observer?.attach(process)''',
+        }''',
 )
 sub(
     auto,
