@@ -8,4 +8,13 @@ object NativeProbe {
     external fun run(): String
 
     external fun isKernelSuActive(): Boolean
+
+    /** Starts the native sampler in the dedicated :observer app process. */
+    external fun observerStart(logPath: String?): Boolean
+
+    /** Attaches the sampler to the launcher/helper PID after the exploit is spawned. */
+    external fun observerAttachPid(pid: Long): Boolean
+
+    /** Stops sampling and flushes the preallocated trace buffer after the exploit exits. */
+    external fun observerStop(outputPath: String): Boolean
 }
