@@ -4,13 +4,16 @@ import android.app.Application
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
@@ -273,23 +276,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
         val transport = if (shizuku) "shizuku" else "standalone"
         val externalObserverMode = profile.profileId == CZG3_PROFILE_ID
-        val observer = if (externalObserverMode) {
-            ExploitObserverSession.start(
-                context = app,
-                runId = runId,
-                invocationMode = invocationMode,
-                transport = transport,
-                payloadLog = if (shizuku) null else logFile,
-            )
-        } else {
-            null
-        }
-        observer?.let {
-            appendLog(
-                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                    "transport=$transport",
-            )
-        }
         val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
             AppPreferences.czg3BootMinUptimeSeconds(app)
         } else {
@@ -334,6 +320,24 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 cachedP0Offset(bootToken),
             ),
         )
+        val observer = if (externalObserverMode) {
+            ExploitObserverSession.start(
+                context = app,
+                runId = runId,
+                invocationMode = invocationMode,
+                transport = transport,
+                payloadLog = if (shizuku) null else logFile,
+                attachController = !shizuku,
+            )
+        } else {
+            null
+        }
+        observer?.let {
+            appendLog(
+                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                    "transport=$transport|scope=${if (shizuku) "system_remote_markers" else "process_tree_system"}",
+            )
+        }
         val process = try {
             ExploitRunControl.start(
                 useShizuku = shizuku,
@@ -344,7 +348,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 shizukuPayloadPath = stagedPayload.absolutePath,
             )
         } catch (error: Throwable) {
-            observer?.stopAndCollect()
+            stopObserver(observer)
             throw error
         }
         val logPrefix = mutableState.value.log
@@ -372,6 +376,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             var lastProgressAt = startedAt
             var lastRawLog = ""
             var consumedDiagnosticCharacters = 0
+            var consumedObserverCharacters = 0
             var supervisorAttempt: Int? = null
             var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
             while (process.isAlive) {
@@ -385,6 +390,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     if (!externalObserverMode) {
                         cacheP0Offset(bootToken, rawLog)
                         publishExploitLog(logPrefix, rawLog)
+                    }
+                    if (externalObserverMode && shizuku) {
+                        val markerBatch = ExploitObserverMarkerParser.parseNewLines(
+                            rawLog,
+                            consumedObserverCharacters,
+                        )
+                        consumedObserverCharacters = markerBatch.consumedCharacters
+                        markerBatch.lines.forEach { observer?.signalMarker(it) }
                     }
                     val parsed = SupervisorAttemptParser.parseNewEvents(
                         rawLog,
@@ -439,6 +452,15 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             }
             cacheP0Offset(bootToken, rawLog)
             publishExploitLog(logPrefix, rawLog)
+            if (externalObserverMode && shizuku) {
+                val markerBatch = ExploitObserverMarkerParser.parseNewLines(
+                    rawLog,
+                    consumedObserverCharacters,
+                    includeTrailingLine = true,
+                )
+                consumedObserverCharacters = markerBatch.consumedCharacters
+                markerBatch.lines.forEach { observer?.signalMarker(it) }
+            }
             val parsed = SupervisorAttemptParser.parseNewEvents(
                 rawLog,
                 consumedDiagnosticCharacters,
@@ -478,22 +500,28 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 delay(500.milliseconds)
                 if (process.isAlive) process.destroyForcibly()
             }
-            try {
-                observer?.stopAndCollect()?.let { report ->
-                    appendLog(
-                        "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
-                            "target_pid=${report.targetPid ?: -1}",
-                    )
-                    if (report.text.isNotBlank()) appendLog(report.text.trimEnd())
-                }
-            } catch (observerError: Throwable) {
-                appendLog(
-                    "RMG_OBSERVER_V2|event=controller_error|message=" +
-                        (observerError.message ?: observerError.javaClass.simpleName),
-                )
-            }
+            stopObserver(observer)
         }
         appendLog(app.getString(R.string.log_bootstrap_root))
+    }
+
+    private suspend fun stopObserver(observer: ExploitObserverSession?) {
+        if (observer == null) return
+        val report = try {
+            withContext(NonCancellable) { observer.stopAndCollect() }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            appendLog(
+                "RMG_OBSERVER_V2|event=controller_error|message=" +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+            return
+        }
+        appendLog(
+            "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
+                "target_pid=${report.targetPid ?: -1}",
+        )
+        if (report.text.isNotBlank()) appendLog(report.text.trimEnd())
     }
 
     private fun applyDiagnosticEvent(

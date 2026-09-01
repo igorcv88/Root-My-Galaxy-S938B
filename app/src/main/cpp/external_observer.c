@@ -43,7 +43,7 @@ static char observer_log_partial[1024];
 static size_t observer_log_partial_length;
 static pid_t observer_seen_pids[OBS_MAX_SEEN_PIDS];
 static size_t observer_seen_pid_count;
-static uint64_t observer_burst_until_ms;
+static atomic_ullong observer_burst_until_ms;
 
 static uint64_t boottime_ms(void) {
   struct timespec ts = {0};
@@ -53,9 +53,13 @@ static uint64_t boottime_ms(void) {
   return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
+static pthread_mutex_t observer_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static void observer_append(const char *format, ...) {
+  pthread_mutex_lock(&observer_buffer_mutex);
   if (!observer_buffer || observer_length >= OBS_BUFFER_CAPACITY) {
     observer_dropped++;
+    pthread_mutex_unlock(&observer_buffer_mutex);
     return;
   }
 
@@ -67,15 +71,18 @@ static void observer_append(const char *format, ...) {
   va_end(args);
   if (written < 0) {
     observer_dropped++;
+    pthread_mutex_unlock(&observer_buffer_mutex);
     return;
   }
   size_t count = (size_t)written;
   if (count >= OBS_BUFFER_CAPACITY - observer_length) {
     observer_length = OBS_BUFFER_CAPACITY;
     observer_dropped++;
+    pthread_mutex_unlock(&observer_buffer_mutex);
     return;
   }
   observer_length += count;
+  pthread_mutex_unlock(&observer_buffer_mutex);
 }
 
 static ssize_t read_text(const char *path, char *buffer, size_t capacity) {
@@ -473,8 +480,14 @@ static const char *classify_marker(const char *line) {
 static void record_log_line(const char *line, uint64_t now_ms) {
   const char *marker = classify_marker(line);
   if (!marker) return;
-  uint64_t burst_until = now_ms + OBS_BURST_WINDOW_MS;
-  if (burst_until > observer_burst_until_ms) observer_burst_until_ms = burst_until;
+  unsigned long long burst_until = now_ms + OBS_BURST_WINDOW_MS;
+  unsigned long long current = atomic_load_explicit(
+      &observer_burst_until_ms, memory_order_relaxed);
+  while (burst_until > current &&
+         !atomic_compare_exchange_weak_explicit(
+             &observer_burst_until_ms, &current, burst_until,
+             memory_order_relaxed, memory_order_relaxed)) {
+  }
   char copy[256];
   size_t len = strlen(line);
   if (len >= sizeof(copy)) len = sizeof(copy) - 1;
@@ -553,7 +566,9 @@ static void *observer_main(void *unused) {
     }
 
     tail_payload_log(now_ms);
-    int burst = observer_log_fd >= 0 && now_ms <= observer_burst_until_ms;
+    unsigned long long burst_until = atomic_load_explicit(
+        &observer_burst_until_ms, memory_order_relaxed);
+    int burst = now_ms <= burst_until;
     uint64_t process_interval = burst ? OBS_PROCESS_INTERVAL_BURST_MS
                                       : OBS_PROCESS_INTERVAL_IDLE_MS;
     if (target > 0 &&
@@ -597,7 +612,7 @@ static void observer_reset(void) {
   observer_log_offset = 0;
   observer_log_partial_length = 0;
   observer_seen_pid_count = 0;
-  observer_burst_until_ms = 0;
+  atomic_store(&observer_burst_until_ms, 0);
   atomic_store(&observer_target_pid, 0);
 }
 
@@ -649,6 +664,18 @@ Java_dev_busung_s25uroot_NativeProbe_observerAttachPid(JNIEnv *env, jobject thiz
   (void)thiz;
   if (!atomic_load(&observer_running) || pid <= 0 || pid > INT_MAX) return JNI_FALSE;
   atomic_store_explicit(&observer_target_pid, (int)pid, memory_order_relaxed);
+  return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_busung_s25uroot_NativeProbe_observerMarker(JNIEnv *env, jobject thiz,
+                                                    jstring line) {
+  (void)thiz;
+  if (!atomic_load(&observer_running) || !line) return JNI_FALSE;
+  const char *text = (*env)->GetStringUTFChars(env, line, NULL);
+  if (!text) return JNI_FALSE;
+  record_log_line(text, boottime_ms());
+  (*env)->ReleaseStringUTFChars(env, line, text);
   return JNI_TRUE;
 }
 
