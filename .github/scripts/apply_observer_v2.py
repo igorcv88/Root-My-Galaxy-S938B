@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import re
-
-
-def sub(path: str, pattern: str, replacement: str) -> None:
-    p = Path(path)
-    text = p.read_text()
-    text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
-    if count != 1:
-        raise SystemExit(f"{path}: pattern did not match exactly once: {pattern[:120]}")
-    p.write_text(text)
 
 
 def replace_once(path: str, old: str, new: str) -> None:
@@ -22,58 +12,6 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 
 manual = "app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt"
-sub(
-    manual,
-    r'(        val stagedPayload = if \(shizuku\) \{.*?        \}\n)(        val minimumUptimeSeconds = if \(profile\.profileId == CZG3_PROFILE_ID\) \{)',
-    r'''\1        val transport = if (shizuku) "shizuku" else "standalone"
-        val observer = if (profile.profileId == CZG3_PROFILE_ID) {
-            ExploitObserverSession.start(
-                context = app,
-                runId = runId,
-                invocationMode = invocationMode,
-                transport = transport,
-                payloadLog = if (shizuku) null else logFile,
-            )
-        } else {
-            null
-        }
-        observer?.let {
-            appendLog(
-                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                    "transport=$transport",
-            )
-        }
-\2''',
-)
-sub(
-    manual,
-    r'        val transport = if \(shizuku\) "shizuku" else "standalone"\n        appendLog\(\n            ExploitRunControl\.contextRecord\(',
-    '        appendLog(\n            ExploitRunControl.contextRecord(',
-)
-sub(
-    manual,
-    r'''        val process = ExploitRunControl\.start\(
-            useShizuku = shizuku,
-            helper = helper,
-            payload = payload,
-            logFile = logFile,
-            environmentVariables = environment,
-            shizukuPayloadPath = stagedPayload\.absolutePath,
-        \)''',
-    '''        val process = try {
-            ExploitRunControl.start(
-                useShizuku = shizuku,
-                helper = helper,
-                payload = payload,
-                logFile = logFile,
-                environmentVariables = environment,
-                shizukuPayloadPath = stagedPayload.absolutePath,
-            )
-        } catch (error: Throwable) {
-            observer?.stopAndCollect()
-            throw error
-        }''',
-)
 replace_once(
     manual,
     '''                    consumedDiagnosticCharacters = parsed.consumedCharacters
@@ -112,14 +50,16 @@ replace_once(
 )
 replace_once(
     manual,
-    '''            // Both transports drain into `captured` during the poll loop, so
+    '''            checkpointPreparation(prepDelta)
+            // Both transports drain into `captured` during the poll loop, so
             // this never blocks on a child still holding the pipe open.
             val earlyOutput = captured.toString().trim()
             if (exitCode != 0 && diagnosticSnapshot == null) {
                 error(app.getString(R.string.error_payload_exit, exitCode, earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: ""))
             }
             validateTerminalExploit(diagnosticSnapshot, exitCode)''',
-    '''            validateTerminalExploit(diagnosticSnapshot, exitCode, rawLog)''',
+    '''            checkpointPreparation(prepDelta)
+            validateTerminalExploit(diagnosticSnapshot, exitCode, rawLog)''',
 )
 replace_once(
     manual,
@@ -158,7 +98,7 @@ replace_once(
             entry.copy(
                 stage = ExploitStage.AttemptingRace,
                 attemptCount = maxOf(entry.attemptCount, attempt),
-                exploitElapsedMillis = maxOf(entry.exploitElapsedMillis ?: 0L, elapsedMillis),
+                exploitElapsedMillis = maxOf(entry.exploitElapsedMillis, elapsedMillis),
                 stageTimings = if (entry.stageTimings.lastOrNull() == timing) {
                     entry.stageTimings
                 } else {
@@ -170,93 +110,18 @@ replace_once(
 
     private fun checkpointPreparation(log: String) {''',
 )
-sub(
-    manual,
-    r'''        \} finally \{
-            if \(process\.isAlive\) \{
-                process\.destroy\(\)
-                delay\(500\.milliseconds\)
-                if \(process\.isAlive\) process\.destroyForcibly\(\)
-            \}
-        \}
-        appendLog\(app\.getString\(R\.string\.log_bootstrap_root\)\)''',
-    '''        } finally {
-            if (process.isAlive) {
-                process.destroy()
-                delay(500.milliseconds)
-                if (process.isAlive) process.destroyForcibly()
-            }
-            try {
-                observer?.stopAndCollect()?.let { report ->
-                    appendLog(
-                        "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
-                            "target_pid=${report.targetPid ?: -1}",
-                    )
-                    if (report.text.isNotBlank()) appendLog(report.text.trimEnd())
-                }
-            } catch (observerError: Throwable) {
-                appendLog(
-                    "RMG_OBSERVER_V2|event=controller_error|message=" +
-                        (observerError.message ?: observerError.javaClass.simpleName),
-                )
-            }
-        }
-        appendLog(app.getString(R.string.log_bootstrap_root))''',
-)
 
 
 auto = "app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt"
-sub(
+replace_once(
     auto,
-    r'(        val stagedPayload = if \(useShizuku\) \{.*?        \}\n)(        val minimumUptimeSeconds = if \(payloads\.profile\.profileId == CZG3_PROFILE_ID\) \{)',
-    r'''\1        val transport = if (useShizuku) "shizuku" else "standalone"
-        val observer = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
-            ExploitObserverSession.start(
-                context = context,
-                runId = runId,
-                invocationMode = InvocationMode.AutoRoot,
-                transport = transport,
-                payloadLog = if (useShizuku) null else logFile,
-            )
-        } else {
-            null
-        }
-        observer?.let {
-            onLog(
-                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                    "transport=$transport",
-            )
-        }
-\2''',
-)
-sub(
-    auto,
-    r'        val transport = if \(useShizuku\) "shizuku" else "standalone"\n        onLog\(\n            ExploitRunControl\.contextRecord\(',
-    '        onLog(\n            ExploitRunControl.contextRecord(',
-)
-sub(
-    auto,
-    r'''        val process = ExploitRunControl\.start\(
-            useShizuku = useShizuku,
-            helper = helper,
-            payload = payload,
-            logFile = logFile,
-            environmentVariables = environment,
-            shizukuPayloadPath = stagedPayload\.absolutePath,
-        \)''',
-    '''        val process = try {
-            ExploitRunControl.start(
-                useShizuku = useShizuku,
-                helper = helper,
-                payload = payload,
-                logFile = logFile,
-                environmentVariables = environment,
-                shizukuPayloadPath = stagedPayload.absolutePath,
-            )
-        } catch (error: Throwable) {
-            observer?.stopAndCollect()
-            throw error
-        }''',
+    '''    private val onLog: (String) -> Unit = {},
+    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
+) {''',
+    '''    private val onLog: (String) -> Unit = {},
+    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
+    private val onSupervisorAttempt: (Int, Long) -> Unit = { _, _ -> },
+) {''',
 )
 replace_once(
     auto,
@@ -285,51 +150,6 @@ replace_once(
     '''            onLog("[*] stage=RunningExploit exit_code=$exitCode elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
             validateTerminalExploit(diagnosticSnapshot, exitCode, rawLog)''',
 )
-sub(
-    auto,
-    r'''        \} finally \{
-            if \(process\.isAlive\) \{
-                process\.destroy\(\)
-                delay\(500\.milliseconds\)
-                if \(process\.isAlive\) process\.destroyForcibly\(\)
-            \}
-            output\.awaitCompletion\(\)
-        \}
-        onLog\(context\.getString\(R\.string\.log_bootstrap_root\)\)''',
-    '''        } finally {
-            if (process.isAlive) {
-                process.destroy()
-                delay(500.milliseconds)
-                if (process.isAlive) process.destroyForcibly()
-            }
-            output.awaitCompletion()
-            try {
-                observer?.stopAndCollect()?.let { report ->
-                    onLog(
-                        "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
-                            "target_pid=${report.targetPid ?: -1}",
-                    )
-                    if (report.text.isNotBlank()) onLog(report.text.trimEnd())
-                }
-            } catch (observerError: Throwable) {
-                onLog(
-                    "RMG_OBSERVER_V2|event=controller_error|message=" +
-                        (observerError.message ?: observerError.javaClass.simpleName),
-                )
-            }
-        }
-        onLog(context.getString(R.string.log_bootstrap_root))''',
-)
-replace_once(
-    auto,
-    '''    private val onLog: (String) -> Unit = {},
-    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
-) {''',
-    '''    private val onLog: (String) -> Unit = {},
-    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
-    private val onSupervisorAttempt: (Int, Long) -> Unit = { _, _ -> },
-) {''',
-)
 
 service = "app/src/main/java/dev/busung/s25uroot/AutoRootService.kt"
 replace_once(
@@ -342,7 +162,7 @@ replace_once(
                         historyEntry = entry.copy(
                             stage = ExploitStage.AttemptingRace,
                             attemptCount = maxOf(entry.attemptCount, attempt),
-                            exploitElapsedMillis = maxOf(entry.exploitElapsedMillis ?: 0L, elapsedMillis),
+                            exploitElapsedMillis = maxOf(entry.exploitElapsedMillis, elapsedMillis),
                             stageTimings = if (entry.stageTimings.lastOrNull() == timing) {
                                 entry.stageTimings
                             } else {
@@ -428,9 +248,9 @@ internal fun validateTerminalExploit(
     exitCode: Int,
     supervisorLog: String = "",
 ) {
-    // The external-observer CZG3 payload intentionally emits no in-band
-    // diagnostics. A zero supervisor exit remains the authoritative success
-    // signal; failure classification comes from post-child supervisor output.
+    // External-observer CZG3 intentionally has no in-band diagnostics. The
+    // supervisor exit is authoritative for success; nonzero exits are mapped
+    // from the post-child retry/reboot decision and otherwise fail closed.
     if (exitCode == 0) return
 
     val terminal = if (snapshot == null) {
@@ -525,4 +345,37 @@ replace_once(
         assertEquals(ExploitSafety.DoNotRetry, error.safety)
     }
 ''',
+)
+
+observer = "app/src/main/cpp/external_observer.c"
+replace_once(
+    observer,
+    '''#define OBS_FAST_INTERVAL_MS 25ULL
+#define OBS_SYSTEM_INTERVAL_ACTIVE_MS 200ULL''',
+    '''#define OBS_FAST_INTERVAL_MS 50ULL
+#define OBS_SYSTEM_INTERVAL_ACTIVE_MS 250ULL''',
+)
+replace_once(
+    observer,
+    '''static void observer_pin_away_from_exploit(void) {
+  (void)setpriority(PRIO_PROCESS, 0, 10);
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);''',
+    '''static void observer_pin_away_from_exploit(void) {
+  (void)setpriority(PRIO_PROCESS, 0, 10);
+#ifdef SCHED_IDLE
+  struct sched_param idle = {.sched_priority = 0};
+  (void)sched_setscheduler(0, SCHED_IDLE, &idle);
+#endif
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);''',
+)
+replace_once(
+    observer,
+    '''  observer_pin_away_from_exploit();
+  uint64_t last_system = 0;''',
+    '''  observer_pin_away_from_exploit();
+  observer_append(
+      "RMG_OBSERVER_V2|event=observer_sched|t_ms=%llu|policy=%d|nice=%d|cpu=%d\\n",
+      (unsigned long long)boottime_ms(), sched_getscheduler(0),
+      getpriority(PRIO_PROCESS, 0), sched_getcpu());
+  uint64_t last_system = 0;''',
 )
