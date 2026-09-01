@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 .github/scripts/apply_observer_v2.py
           python3 .github/scripts/fix_observer_v2.py
+          python3 .github/scripts/scope_observer_terminal.py
 
       - name: Validate app
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
