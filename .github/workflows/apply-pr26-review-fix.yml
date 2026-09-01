@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply review correction
-        run: python3 .github/scripts/apply_pr26_review_fix.py
+        run: python3 .github/scripts/apply_pr26_review_fix_v2.py
 
       - uses: actions/setup-java@v6
         with:
@@ -39,7 +39,9 @@ jobs:
       - name: Commit review fix and remove temporary files
         run: |
           set -euo pipefail
-          git rm .github/workflows/apply-pr26-review-fix.yml .github/scripts/apply_pr26_review_fix.py
+          git rm .github/workflows/apply-pr26-review-fix.yml \
+                 .github/scripts/apply_pr26_review_fix.py \
+                 .github/scripts/apply_pr26_review_fix_v2.py
           git add app/src/main/java/dev/busung/s25uroot/ExploitDiagnostics.kt \
                   app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt \
                   app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt \
