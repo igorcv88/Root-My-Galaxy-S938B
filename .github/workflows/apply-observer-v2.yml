@@ -29,6 +29,7 @@ jobs:
           python3 .github/scripts/apply_observer_v2.py
           python3 .github/scripts/fix_observer_v2.py
           python3 .github/scripts/scope_observer_terminal.py
+          python3 .github/scripts/defer_czg3_live_persistence.py
 
       - name: Validate app
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
