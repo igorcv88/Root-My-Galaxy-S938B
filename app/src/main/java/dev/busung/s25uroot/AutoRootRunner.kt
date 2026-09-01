@@ -189,10 +189,18 @@ internal class AutoRootRunner(
                 includeTrailingLine = !process.isAlive,
             )
             consumedDiagnosticCharacters = parsed.second
+            val supervisorAttempt = SupervisorAttemptParser.maxAttempt(diagnosticLog)
             parsed.first.forEach { event ->
                 val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
+                    .withSupervisorAttempt(supervisorAttempt)
                 diagnosticSnapshot = updated
                 onDiagnostic(updated)
+            }
+            diagnosticSnapshot?.withSupervisorAttempt(supervisorAttempt)?.let { reconciled ->
+                if (reconciled != diagnosticSnapshot) {
+                    diagnosticSnapshot = reconciled
+                    onDiagnostic(reconciled)
+                }
             }
         }
 
