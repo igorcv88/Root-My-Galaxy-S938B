@@ -7,7 +7,9 @@ import java.io.InputStream
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -164,13 +166,13 @@ internal class AutoRootRunner(
         } else {
             null
         }
-        observer?.let {
-            onLog(
-                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                    "transport=$transport|scope=${if (useShizuku) "system_remote_markers" else "process_tree_system"}",
-            )
-        }
         val process = try {
+            observer?.let {
+                onLog(
+                    "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                        "transport=$transport|scope=${if (useShizuku) "system_remote_markers" else "process_tree_system"}",
+                )
+            }
             ExploitRunControl.start(
                 useShizuku = useShizuku,
                 helper = helper,
@@ -317,6 +319,7 @@ internal class AutoRootRunner(
             )
             return
         }
+        currentCoroutineContext().ensureActive()
         onLog(
             "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
                 "target_pid=${report.targetPid ?: -1}",

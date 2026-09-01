@@ -8,7 +8,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -332,13 +334,13 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         } else {
             null
         }
-        observer?.let {
-            appendLog(
-                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                    "transport=$transport|scope=${if (shizuku) "system_remote_markers" else "process_tree_system"}",
-            )
-        }
         val process = try {
+            observer?.let {
+                appendLog(
+                    "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                        "transport=$transport|scope=${if (shizuku) "system_remote_markers" else "process_tree_system"}",
+                )
+            }
             ExploitRunControl.start(
                 useShizuku = shizuku,
                 helper = helper,
@@ -517,6 +519,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             )
             return
         }
+        currentCoroutineContext().ensureActive()
         appendLog(
             "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
                 "target_pid=${report.targetPid ?: -1}",
