@@ -10,27 +10,23 @@ def replace_once(path: str, old: str, new: str) -> None:
     file.write_text(text.replace(old, new, 1))
 
 
-replace_once(
+def replace_region(path: str, start_marker: str, end_marker: str, replacement: str) -> None:
+    file = Path(path)
+    text = file.read_text()
+    start = text.find(start_marker)
+    if start < 0:
+        raise SystemExit(f"Start marker not found in {path}: {start_marker}")
+    end = text.find(end_marker, start)
+    if end < 0:
+        raise SystemExit(f"End marker not found in {path}: {end_marker}")
+    file.write_text(text[:start] + replacement + text[end:])
+
+
+replace_region(
     "app/src/main/java/dev/busung/s25uroot/ExploitDiagnostics.kt",
-    '''internal object SupervisorAttemptParser {
-    private val attemptPattern = Regex("\\bexploit attempt=(\\d+)/(\\d+)\\b")
-
-    fun maxAttempt(log: String): Int? = attemptPattern.findAll(log)
-        .mapNotNull { match ->
-            val attempt = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
-            val configured = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
-            attempt.takeIf { it in 1..configured }
-        }
-        .maxOrNull()
-}
-
-internal fun ExploitDiagnosticSnapshot.withSupervisorAttempt(supervisorAttempt: Int?): ExploitDiagnosticSnapshot {
-    val resolved = supervisorAttempt ?: return this
-    if (resolved <= (attempt ?: 0)) return this
-    return copy(attempt = resolved)
-}
-''',
-    '''internal data class SupervisorDiagnosticBatch(
+    "internal object SupervisorAttemptParser {",
+    "class ExploitRunException(",
+    r'''internal data class SupervisorDiagnosticBatch(
     val events: List<Pair<ExploitDiagnosticEvent, Int?>>,
     val consumedCharacters: Int,
     val supervisorAttempt: Int?,
@@ -48,7 +44,7 @@ internal object SupervisorAttemptParser {
         if (consumedCharacters !in 0..log.length) {
             return SupervisorDiagnosticBatch(emptyList(), 0, priorSupervisorAttempt)
         }
-        val lastNewline = log.lastIndexOf('\\n')
+        val lastNewline = log.lastIndexOf('\n')
         val end = if (includeTrailingLine) log.length else lastNewline + 1
         if (end <= consumedCharacters) {
             return SupervisorDiagnosticBatch(emptyList(), consumedCharacters, priorSupervisorAttempt)
@@ -78,6 +74,7 @@ internal fun ExploitDiagnosticSnapshot.withSupervisorAttempt(supervisorAttempt: 
     if (resolved <= (attempt ?: 0)) return this
     return copy(attempt = resolved)
 }
+
 ''',
 )
 
@@ -220,7 +217,7 @@ replace_once(
             RMG_DIAG_V1|run=1111111111111111|ts_ns=1000000000|elapsed_us=10|stage=PREPARATION|attempt=1|failure=SUCCESS|safety=UNSAFE_OR_UNKNOWN
             [+] exploit attempt=7/24 pid=700 delay=35000
             RMG_DIAG_V1|run=7777777777777777|ts_ns=2000000000|elapsed_us=20|stage=PREPARATION|attempt=1|failure=SUCCESS|safety=UNSAFE_OR_UNKNOWN
-        """.trimIndent() + "\\n"
+        """.trimIndent() + "\n"
 
         val parsed = SupervisorAttemptParser.parseNewEvents(log, 0)
         assertEquals(listOf(1, 7), parsed.events.map { it.second })
@@ -230,13 +227,13 @@ replace_once(
 
     @Test
     fun supervisorAttemptCarriesAcrossPollingBatches() {
-        val first = "[+] exploit attempt=3/24 pid=300 delay=25000\\n"
+        val first = "[+] exploit attempt=3/24 pid=300 delay=25000\n"
         val firstParsed = SupervisorAttemptParser.parseNewEvents(first, 0)
         assertEquals(3, firstParsed.supervisorAttempt)
         assertEquals(0, firstParsed.events.size)
 
         val complete = first +
-            "RMG_DIAG_V1|run=3333333333333333|ts_ns=3000000000|elapsed_us=30|stage=PREPARATION|attempt=1|failure=SUCCESS|safety=UNSAFE_OR_UNKNOWN\\n"
+            "RMG_DIAG_V1|run=3333333333333333|ts_ns=3000000000|elapsed_us=30|stage=PREPARATION|attempt=1|failure=SUCCESS|safety=UNSAFE_OR_UNKNOWN\n"
         val secondParsed = SupervisorAttemptParser.parseNewEvents(
             complete,
             firstParsed.consumedCharacters,
