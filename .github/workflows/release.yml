@@ -198,6 +198,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [[ -z "${RELEASE_TAG:-}" ]]; then
+            echo "Nenhuma tag de release foi reservada; nada para remover."
+            exit 0
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "A release já existe; preservando ${RELEASE_TAG}."
             exit 0

@@ -159,10 +159,16 @@ class AutoRootService : Service() {
             }
 
             require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
-            updateNotification(getString(R.string.autoroot_stabilizing_android))
-            if (waitForStabilizationOrRoot(initialBootToken)) {
-                finishWithResult(getString(R.string.autoroot_root_restored))
-                return
+            // CZG3 diagnostic runs use the explicit selected minimum uptime as the
+            // sole timing gate after Android readiness. Keeping the legacy 45 s
+            // stabilization here would make a requested 120 s launch occur at
+            // 120 s on some boots and ~148 s on others depending on BOOT_COMPLETED.
+            if (shouldUseLegacyAutoRootStabilization(DeviceSnapshot.current())) {
+                updateNotification(getString(R.string.autoroot_stabilizing_android))
+                if (waitForStabilizationOrRoot(initialBootToken)) {
+                    finishWithResult(getString(R.string.autoroot_root_restored))
+                    return
+                }
             }
 
             if (!AppPreferences.autoRootEnabled(this)) {

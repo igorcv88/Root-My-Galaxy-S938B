@@ -340,6 +340,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             var lastProgressAt = startedAt
             var lastRawLog = ""
             var consumedDiagnosticCharacters = 0
+            var supervisorAttempt: Int? = null
             var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
             while (process.isAlive) {
                 val rawLog = readLog()
@@ -351,10 +352,20 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     }
                     cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(logPrefix, rawLog)
-                    val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters)
-                    consumedDiagnosticCharacters = parsed.second
-                    parsed.first.forEach { event ->
-                        diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId)
+                    val parsed = SupervisorAttemptParser.parseNewEvents(
+                        rawLog,
+                        consumedDiagnosticCharacters,
+                        supervisorAttempt,
+                    )
+                    consumedDiagnosticCharacters = parsed.consumedCharacters
+                    supervisorAttempt = parsed.supervisorAttempt
+                    parsed.events.forEach { (event, eventSupervisorAttempt) ->
+                        diagnosticSnapshot = applyDiagnosticEvent(
+                            diagnosticSnapshot,
+                            event,
+                            runId,
+                            eventSupervisorAttempt,
+                        )
                     }
                     checkpointPreparation(prepDelta)
                     lastRawLog = rawLog
@@ -379,8 +390,22 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             }
             cacheP0Offset(bootToken, rawLog)
             publishExploitLog(logPrefix, rawLog)
-            val parsed = ExploitDiagnosticParser.parseNewEvents(rawLog, consumedDiagnosticCharacters, includeTrailingLine = true)
-            parsed.first.forEach { event -> diagnosticSnapshot = applyDiagnosticEvent(diagnosticSnapshot, event, runId) }
+            val parsed = SupervisorAttemptParser.parseNewEvents(
+                rawLog,
+                consumedDiagnosticCharacters,
+                supervisorAttempt,
+                includeTrailingLine = true,
+            )
+            consumedDiagnosticCharacters = parsed.consumedCharacters
+            supervisorAttempt = parsed.supervisorAttempt
+            parsed.events.forEach { (event, eventSupervisorAttempt) ->
+                diagnosticSnapshot = applyDiagnosticEvent(
+                    diagnosticSnapshot,
+                    event,
+                    runId,
+                    eventSupervisorAttempt,
+                )
+            }
             checkpointPreparation(prepDelta)
             // Both transports drain into `captured` during the poll loop, so
             // this never blocks on a child still holding the pipe open.
@@ -403,8 +428,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         current: ExploitDiagnosticSnapshot?,
         event: ExploitDiagnosticEvent,
         runId: String,
+        supervisorAttempt: Int?,
     ): ExploitDiagnosticSnapshot {
         val updated = (current ?: ExploitDiagnosticSnapshot(runId)).apply(event)
+            .withSupervisorAttempt(supervisorAttempt)
+        return checkpointDiagnosticSnapshot(updated)
+    }
+
+    private fun checkpointDiagnosticSnapshot(updated: ExploitDiagnosticSnapshot): ExploitDiagnosticSnapshot {
         mutableState.value = mutableState.value.copy(
             exploitStage = updated.stage,
             exploitAttempt = updated.attempt,
