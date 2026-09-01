@@ -1,0 +1,252 @@
+name: Apply external observer v2
+
+on:
+  push:
+    branches:
+      - feat/czg3-external-observer-v2
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.event.head_commit.message != 'Integrate CZG3 external observer v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/czg3-external-observer-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Patch runners
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"{path}: expected one match, got {text.count(old)} for {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          manual = 'app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt'
+          replace_once(manual,
+          '''        val stagedPayload = if (shizuku) {
+              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+          } else {
+              payload
+          }
+          val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {''',
+          '''        val stagedPayload = if (shizuku) {
+              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+          } else {
+              payload
+          }
+          val transport = if (shizuku) "shizuku" else "standalone"
+          val observer = if (profile.profileId == CZG3_PROFILE_ID) {
+              ExploitObserverSession.start(
+                  context = app,
+                  runId = runId,
+                  invocationMode = invocationMode,
+                  transport = transport,
+                  payloadLog = if (shizuku) null else logFile,
+              )
+          } else {
+              null
+          }
+          observer?.let {
+              appendLog(
+                  "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                      "transport=$transport",
+              )
+          }
+          val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {''')
+
+          replace_once(manual,
+          '''        val transport = if (shizuku) "shizuku" else "standalone"
+          appendLog(
+              ExploitRunControl.contextRecord(''',
+          '''        appendLog(
+              ExploitRunControl.contextRecord(''')
+
+          replace_once(manual,
+          '''        val process = ExploitRunControl.start(
+              useShizuku = shizuku,
+              helper = helper,
+              payload = payload,
+              logFile = logFile,
+              environmentVariables = environment,
+              shizukuPayloadPath = stagedPayload.absolutePath,
+          )
+          val logPrefix = mutableState.value.log''',
+          '''        val process = try {
+              ExploitRunControl.start(
+                  useShizuku = shizuku,
+                  helper = helper,
+                  payload = payload,
+                  logFile = logFile,
+                  environmentVariables = environment,
+                  shizukuPayloadPath = stagedPayload.absolutePath,
+              )
+          } catch (error: Throwable) {
+              observer?.stopAndCollect()
+              throw error
+          }
+          observer?.attach(process)
+          val logPrefix = mutableState.value.log''')
+
+          replace_once(manual,
+          '''        } finally {
+              if (process.isAlive) {
+                  process.destroy()
+                  delay(500.milliseconds)
+                  if (process.isAlive) process.destroyForcibly()
+              }
+          }
+          appendLog(app.getString(R.string.log_bootstrap_root))''',
+          '''        } finally {
+              if (process.isAlive) {
+                  process.destroy()
+                  delay(500.milliseconds)
+                  if (process.isAlive) process.destroyForcibly()
+              }
+              try {
+                  observer?.stopAndCollect()?.let { report ->
+                      appendLog(
+                          "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
+                              "target_pid=${report.targetPid ?: -1}",
+                      )
+                      if (report.text.isNotBlank()) appendLog(report.text.trimEnd())
+                  }
+              } catch (observerError: Throwable) {
+                  appendLog(
+                      "RMG_OBSERVER_V2|event=controller_error|message=" +
+                          (observerError.message ?: observerError.javaClass.simpleName),
+                  )
+              }
+          }
+          appendLog(app.getString(R.string.log_bootstrap_root))''')
+
+          auto = 'app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt'
+          replace_once(auto,
+          '''        val stagedPayload = if (useShizuku) {
+              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+          } else {
+              payload
+          }
+          val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {''',
+          '''        val stagedPayload = if (useShizuku) {
+              shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+          } else {
+              payload
+          }
+          val transport = if (useShizuku) "shizuku" else "standalone"
+          val observer = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
+              ExploitObserverSession.start(
+                  context = context,
+                  runId = runId,
+                  invocationMode = InvocationMode.AutoRoot,
+                  transport = transport,
+                  payloadLog = if (useShizuku) null else logFile,
+              )
+          } else {
+              null
+          }
+          observer?.let {
+              onLog(
+                  "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                      "transport=$transport",
+              )
+          }
+          val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {''')
+
+          replace_once(auto,
+          '''        val transport = if (useShizuku) "shizuku" else "standalone"
+          onLog(
+              ExploitRunControl.contextRecord(''',
+          '''        onLog(
+              ExploitRunControl.contextRecord(''')
+
+          replace_once(auto,
+          '''        val process = ExploitRunControl.start(
+              useShizuku = useShizuku,
+              helper = helper,
+              payload = payload,
+              logFile = logFile,
+              environmentVariables = environment,
+              shizukuPayloadPath = stagedPayload.absolutePath,
+          )
+
+          val output = ProcessOutputCollector(process)''',
+          '''        val process = try {
+              ExploitRunControl.start(
+                  useShizuku = useShizuku,
+                  helper = helper,
+                  payload = payload,
+                  logFile = logFile,
+                  environmentVariables = environment,
+                  shizukuPayloadPath = stagedPayload.absolutePath,
+              )
+          } catch (error: Throwable) {
+              observer?.stopAndCollect()
+              throw error
+          }
+          observer?.attach(process)
+
+          val output = ProcessOutputCollector(process)''')
+
+          replace_once(auto,
+          '''        } finally {
+              if (process.isAlive) {
+                  process.destroy()
+                  delay(500.milliseconds)
+                  if (process.isAlive) process.destroyForcibly()
+              }
+              output.awaitCompletion()
+          }
+          onLog(context.getString(R.string.log_bootstrap_root))''',
+          '''        } finally {
+              if (process.isAlive) {
+                  process.destroy()
+                  delay(500.milliseconds)
+                  if (process.isAlive) process.destroyForcibly()
+              }
+              output.awaitCompletion()
+              try {
+                  observer?.stopAndCollect()?.let { report ->
+                      onLog(
+                          "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
+                              "target_pid=${report.targetPid ?: -1}",
+                      )
+                      if (report.text.isNotBlank()) onLog(report.text.trimEnd())
+                  }
+              } catch (observerError: Throwable) {
+                  onLog(
+                      "RMG_OBSERVER_V2|event=controller_error|message=" +
+                          (observerError.message ?: observerError.javaClass.simpleName),
+                  )
+              }
+          }
+          onLog(context.getString(R.string.log_bootstrap_root))''')
+          PY
+
+      - name: Validate app
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+
+      - name: Commit implementation and remove helper workflow
+        run: |
+          set -euo pipefail
+          git config user.name "Root My Galaxy"
+          git config user.email "root-my-galaxy@users.noreply.github.com"
+          rm .github/workflows/apply-observer-v2.yml
+          git add app/src/main .github/workflows/apply-observer-v2.yml
+          git diff --check
+          git commit -m "Integrate CZG3 external observer v2"
+          git push origin HEAD:feat/czg3-external-observer-v2
