@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           git config user.name "Root My Galaxy"
           git config user.email "root-my-galaxy@users.noreply.github.com"
-          git add app/src/main
+          git add app/src/main app/src/test
           git diff --cached --check
           git commit -m "Integrate CZG3 external observer v2"
           git push origin HEAD:feat/czg3-external-observer-v2
