@@ -99,6 +99,24 @@ internal class AutoRootRunner(
         } else {
             payload
         }
+        val transport = if (useShizuku) "shizuku" else "standalone"
+        val observer = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
+            ExploitObserverSession.start(
+                context = context,
+                runId = runId,
+                invocationMode = InvocationMode.AutoRoot,
+                transport = transport,
+                payloadLog = if (useShizuku) null else logFile,
+            )
+        } else {
+            null
+        }
+        observer?.let {
+            onLog(
+                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                    "transport=$transport",
+            )
+        }
         val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
             AppPreferences.czg3BootMinUptimeSeconds(context)
         } else {
@@ -108,7 +126,6 @@ internal class AutoRootRunner(
             requestedAtUptimeMillis,
             minimumUptimeSeconds,
         )
-        val transport = if (useShizuku) "shizuku" else "standalone"
         onLog(
             ExploitRunControl.contextRecord(
                 requestContext.replace(
@@ -147,14 +164,19 @@ internal class AutoRootRunner(
                 cachedP0Offset(bootToken),
             ),
         )
-        val process = ExploitRunControl.start(
-            useShizuku = useShizuku,
-            helper = helper,
-            payload = payload,
-            logFile = logFile,
-            environmentVariables = environment,
-            shizukuPayloadPath = stagedPayload.absolutePath,
-        )
+        val process = try {
+            ExploitRunControl.start(
+                useShizuku = useShizuku,
+                helper = helper,
+                payload = payload,
+                logFile = logFile,
+                environmentVariables = environment,
+                shizukuPayloadPath = stagedPayload.absolutePath,
+            )
+        } catch (error: Throwable) {
+            observer?.stopAndCollect()
+            throw error
+        }
 
         val output = ProcessOutputCollector(process)
         val readLog: () -> String = if (useShizuku) {
@@ -240,6 +262,20 @@ internal class AutoRootRunner(
                 if (process.isAlive) process.destroyForcibly()
             }
             output.awaitCompletion()
+            try {
+                observer?.stopAndCollect()?.let { report ->
+                    onLog(
+                        "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
+                            "target_pid=${report.targetPid ?: -1}",
+                    )
+                    if (report.text.isNotBlank()) onLog(report.text.trimEnd())
+                }
+            } catch (observerError: Throwable) {
+                onLog(
+                    "RMG_OBSERVER_V2|event=controller_error|message=" +
+                        (observerError.message ?: observerError.javaClass.simpleName),
+                )
+            }
         }
         onLog(context.getString(R.string.log_bootstrap_root))
     }

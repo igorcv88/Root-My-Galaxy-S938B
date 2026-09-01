@@ -271,6 +271,24 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         } else {
             payload
         }
+        val transport = if (shizuku) "shizuku" else "standalone"
+        val observer = if (profile.profileId == CZG3_PROFILE_ID) {
+            ExploitObserverSession.start(
+                context = app,
+                runId = runId,
+                invocationMode = invocationMode,
+                transport = transport,
+                payloadLog = if (shizuku) null else logFile,
+            )
+        } else {
+            null
+        }
+        observer?.let {
+            appendLog(
+                "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
+                    "transport=$transport",
+            )
+        }
         val minimumUptimeSeconds = if (profile.profileId == CZG3_PROFILE_ID) {
             AppPreferences.czg3BootMinUptimeSeconds(app)
         } else {
@@ -280,7 +298,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             requestedAtUptimeMillis = rootRequestedAtUptimeMillis,
             minimumUptimeSeconds = minimumUptimeSeconds,
         )
-        val transport = if (shizuku) "shizuku" else "standalone"
         appendLog(
             ExploitRunControl.contextRecord(
                 rootRequestContext,
@@ -316,14 +333,19 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 cachedP0Offset(bootToken),
             ),
         )
-        val process = ExploitRunControl.start(
-            useShizuku = shizuku,
-            helper = helper,
-            payload = payload,
-            logFile = logFile,
-            environmentVariables = environment,
-            shizukuPayloadPath = stagedPayload.absolutePath,
-        )
+        val process = try {
+            ExploitRunControl.start(
+                useShizuku = shizuku,
+                helper = helper,
+                payload = payload,
+                logFile = logFile,
+                environmentVariables = environment,
+                shizukuPayloadPath = stagedPayload.absolutePath,
+            )
+        } catch (error: Throwable) {
+            observer?.stopAndCollect()
+            throw error
+        }
         val logPrefix = mutableState.value.log
         val captured = StringBuilder()
         val readLog: () -> String = if (shizuku) {
@@ -419,6 +441,20 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 process.destroy()
                 delay(500.milliseconds)
                 if (process.isAlive) process.destroyForcibly()
+            }
+            try {
+                observer?.stopAndCollect()?.let { report ->
+                    appendLog(
+                        "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
+                            "target_pid=${report.targetPid ?: -1}",
+                    )
+                    if (report.text.isNotBlank()) appendLog(report.text.trimEnd())
+                }
+            } catch (observerError: Throwable) {
+                appendLog(
+                    "RMG_OBSERVER_V2|event=controller_error|message=" +
+                        (observerError.message ?: observerError.javaClass.simpleName),
+                )
             }
         }
         appendLog(app.getString(R.string.log_bootstrap_root))
