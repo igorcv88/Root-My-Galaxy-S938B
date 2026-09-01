@@ -25,7 +25,9 @@ jobs:
           java-version: '21'
 
       - name: Apply observer integration
-        run: python3 .github/scripts/apply_observer_v2.py
+        run: |
+          python3 .github/scripts/apply_observer_v2.py
+          python3 .github/scripts/fix_observer_v2.py
 
       - name: Validate app
         run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
