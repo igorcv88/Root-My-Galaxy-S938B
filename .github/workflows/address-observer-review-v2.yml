@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           git config user.name "Root My Galaxy"
           git config user.email "root-my-galaxy@users.noreply.github.com"
-          git add app/src/main/cpp/external_observer.c
+          git add app/src/main/java/dev/busung/s25uroot/ExploitObserver.kt
           git add app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt
           git add app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
           git diff --cached --check
