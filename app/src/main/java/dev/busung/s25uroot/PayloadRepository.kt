@@ -9,6 +9,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.IdentityHashMap
 import org.json.JSONObject
 
 data class VerifiedPayloads(
@@ -35,8 +36,7 @@ private class PayloadNetworkException(
 ) : IOException(message, cause)
 
 class PayloadRepository(private val context: Context) {
-    @Volatile
-    private var lastResolutionSource: PayloadSource = PayloadSource.ManualOnline
+    private val resolutionSources = IdentityHashMap<TargetProfile, PayloadSource>()
 
     /**
      * Every online manual-root lookup starts from the current Payloads `main`.
@@ -61,29 +61,25 @@ class PayloadRepository(private val context: Context) {
     fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile = try {
         val profile = loadTargets().firstOrNull { it.matches(snapshot) }
             ?: error(context.getString(R.string.repo_no_profile))
-        lastResolutionSource = PayloadSource.ManualOnline
-        profile
+        rememberResolution(profile, PayloadSource.ManualOnline)
     } catch (error: PayloadNetworkException) {
         val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
         require(cached.profile.matches(snapshot)) {
             context.getString(R.string.repo_no_profile)
         }
-        lastResolutionSource = PayloadSource.ManualOffline
-        cached.profile
+        rememberResolution(cached.profile, PayloadSource.ManualOffline)
     }
 
     fun resolveTarget(profileId: String): TargetProfile = try {
         val profile = loadTargets().firstOrNull { it.profileId == profileId }
             ?: error(context.getString(R.string.repo_profile_missing, profileId))
-        lastResolutionSource = PayloadSource.ManualOnline
-        profile
+        rememberResolution(profile, PayloadSource.ManualOnline)
     } catch (error: PayloadNetworkException) {
         val cached = AutoRootSupport.loadVerifiedLocalPayloads(context)
         require(cached.profile.profileId == profileId) {
             context.getString(R.string.repo_profile_missing, profileId)
         }
-        lastResolutionSource = PayloadSource.ManualOffline
-        cached.profile
+        rememberResolution(cached.profile, PayloadSource.ManualOffline)
     }
 
     /**
@@ -98,7 +94,7 @@ class PayloadRepository(private val context: Context) {
      * snapshot. Manifest/hash/compatibility failures remain hard failures.
      */
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        val resolutionSource = lastResolutionSource
+        val resolutionSource = consumeResolutionSource(profile)
         onProgress("Payload source: Root-My-Galaxy-Payloads-S938B/main")
         onProgress("RMG_PAYLOAD_V1|resolution_source=${resolutionSource.wireValue}")
         if (
@@ -142,6 +138,18 @@ class PayloadRepository(private val context: Context) {
         }
     }
 
+    private fun rememberResolution(profile: TargetProfile, source: PayloadSource): TargetProfile {
+        synchronized(resolutionSources) {
+            resolutionSources[profile] = source
+        }
+        return profile
+    }
+
+    private fun consumeResolutionSource(profile: TargetProfile): PayloadSource =
+        synchronized(resolutionSources) {
+            resolutionSources.remove(profile)
+        } ?: PayloadSource.ManualOnline
+
     private fun verifiedLocalPayloadsIfCurrent(profile: TargetProfile): VerifiedPayloads? {
         val cached = runCatching { AutoRootSupport.loadVerifiedLocalPayloads(context) }
             .getOrNull()
@@ -165,6 +173,9 @@ class PayloadRepository(private val context: Context) {
         profile: TargetProfile,
         onProgress: (String) -> Unit,
     ): VerifiedPayloads {
+        // Downloads remain pending until the normal installer later proves a
+        // successful root on this same boot. A failed manual run cannot replace
+        // the last known-good snapshot used by Auto Root.
         val directory = File(context.filesDir, "payloads/pending/${profile.profileId}").apply {
             deleteRecursively()
             require(mkdirs() || isDirectory) { context.getString(R.string.repo_finalize_failed, name) }
