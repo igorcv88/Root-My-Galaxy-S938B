@@ -8,6 +8,7 @@ import org.junit.Test
 class Czg3ExternalTelemetryTest {
     private val log = """
         RMG_OBSERVER_V2|event=start|t_ms=120086|observer_pid=27157|poll_ms=25
+        RMG_OBSERVER_V2|event=controller_attach|attached=true|target_pid=27197
         RMG_OBSERVER_V2|event=attach|t_ms=120110|pid=27197|stat_access=1
         RMG_OBSERVER_V2|event=target|t_ms=120120|pid=27197
         [+] exploit attempt=1/24 pid=27203 delay=25000 p0_offset=scan
@@ -26,6 +27,7 @@ class Czg3ExternalTelemetryTest {
         [*] slide pselect returned nfds=320 pad=0 ret=0 errno=0 elapsed_usec=100128 ready=1
         [*] app fops stage=trigger-return attempt=1 triggered=0
         [!] writer route outcome is mutation-uncertain; refusing retry on this boot (reboot required)
+        RMG_OBSERVER_V2|event=marker|t_ms=123030|name=p0_page_prepared|line=[*] kernel page prepare mode=1 attempt=1/2 elapsed_ms=2923 base=ffffff8844f38000
         RMG_OBSERVER_V2|event=marker|t_ms=209900|name=p0_success|line=[+] slide-kaslr-ok
         RMG_OBSERVER_V2|event=marker|t_ms=213400|name=fops_page_held|line=[*] durable log checkpoint stage=fops-page-held
         RMG_OBSERVER_V2|event=proc|t_ms=120120|pid=27197|ppid=1|comm=helper|state=S|cpu=3|threads=1|utime=1|stime=1|runtime_ns=100|wait_ns=20|slices=2
@@ -56,6 +58,32 @@ class Czg3ExternalTelemetryTest {
     }
 
     @Test
+    fun controllerQueueSuccessDoesNotOverrideFailedNativeAttach() {
+        val failedAttachLog = """
+            RMG_OBSERVER_V2|event=start|t_ms=100|observer_pid=10
+            RMG_OBSERVER_V2|event=controller_attach|attached=true|target_pid=4242
+            RMG_OBSERVER_V2|event=attach|t_ms=110|pid=4242|stat_access=0
+            RMG_OBSERVER_V2|event=stop|t_ms=200|dropped=0|bytes=100
+        """.trimIndent()
+        val value = Czg3ExternalTelemetryParser.parse(failedAttachLog)
+        assertEquals(4242L, value.observerTargetPid)
+        assertFalse(value.observerAttached)
+        assertTrue(raceAnalysisReport(failedAttachLog).contains("trace_complete=false"))
+    }
+
+    @Test
+    fun missingNativeAttachAcknowledgementIsNotVerified() {
+        val queuedOnlyLog = """
+            RMG_OBSERVER_V2|event=start|t_ms=100|observer_pid=10
+            RMG_OBSERVER_V2|event=controller_attach|attached=true|target_pid=4242
+            RMG_OBSERVER_V2|event=stop|t_ms=200|dropped=0|bytes=100
+        """.trimIndent()
+        val value = Czg3ExternalTelemetryParser.parse(queuedOnlyLog)
+        assertEquals(null, value.observerTargetPid)
+        assertFalse(value.observerAttached)
+    }
+
+    @Test
     fun normalizesHistoryFromRawExternalLog() {
         val entry = InstallHistoryEntry(
             id = "test-run",
@@ -77,7 +105,7 @@ class Czg3ExternalTelemetryTest {
     }
 
     @Test
-    fun externalReportsMarkUnavailableRoleTimingsExplicitly() {
+    fun externalReportsMarkUnavailableRoleTimingsExplicitlyAndIgnoreMarkerCopies() {
         val race = raceAnalysisReport(log)
         val prep = preparationAnalysisReport(log)
         assertTrue(race.contains("source=external_observer_v2"))
@@ -86,5 +114,7 @@ class Czg3ExternalTelemetryTest {
         assertTrue(prep.contains("source=external_observer_v2"))
         assertTrue(prep.contains("object_index=0"))
         assertTrue(prep.contains("result=mutation_uncertain"))
+        assertTrue(prep.contains("preparation_cycles=2"))
+        assertFalse(prep.contains("preparation_cycles=3"))
     }
 }
