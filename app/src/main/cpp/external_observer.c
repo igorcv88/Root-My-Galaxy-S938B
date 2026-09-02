@@ -22,7 +22,7 @@
 
 #define OBS_BUFFER_CAPACITY (4U * 1024U * 1024U)
 #define OBS_MAX_PIDS 96
-#define OBS_MAX_SEEN_PIDS 96
+#define OBS_MAX_SEEN_PIDS 256
 #define OBS_MAX_TRACKED_PIDS 64
 #define OBS_ROLE_CAPACITY 24
 #define OBS_MAX_CPUS 16
@@ -267,6 +267,23 @@ static size_t observer_snapshot_tracked(struct observer_tracked_pid *out,
   return count;
 }
 
+static void observer_forget_tracked_pid(pid_t pid) {
+  if (pid <= 0) return;
+  pthread_mutex_lock(&observer_pid_mutex);
+  for (size_t i = 0; i < observer_tracked_pid_count; ++i) {
+    if (observer_tracked_pids[i].pid != pid) continue;
+    if (i + 1 < observer_tracked_pid_count) {
+      memmove(&observer_tracked_pids[i], &observer_tracked_pids[i + 1],
+              (observer_tracked_pid_count - i - 1) * sizeof(observer_tracked_pids[0]));
+    }
+    observer_tracked_pid_count--;
+    memset(&observer_tracked_pids[observer_tracked_pid_count], 0,
+           sizeof(observer_tracked_pids[0]));
+    break;
+  }
+  pthread_mutex_unlock(&observer_pid_mutex);
+}
+
 static pid_t parse_marker_pid_after(const char *line, const char *token) {
   if (!line || !token) return 0;
   const char *p = strstr(line, token);
@@ -453,6 +470,7 @@ static void sample_process_tree(pid_t root, uint64_t now_ms) {
             (unsigned long long)now_ms, pids[i],
             tracked_role_for_pid(pids[i], root, tracked, tracked_count));
       }
+      if (pids[i] != root) observer_forget_tracked_pid(pids[i]);
       continue;
     }
     if (!pid_seen(pids[i])) sample_process_metadata(pids[i], now_ms);
