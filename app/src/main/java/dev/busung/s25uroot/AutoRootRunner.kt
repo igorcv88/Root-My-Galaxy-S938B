@@ -38,13 +38,9 @@ internal class AutoRootRunner(
             "autoroot_runner_invocation",
             runnerInvokedAt,
         )
-        val requestShizukuRunning = ShizukuController.isRunning()
-        val requestShizukuGranted = ShizukuController.isGranted()
-        if (useShizuku) {
-            require(ShizukuController.isRunning() && ShizukuController.isGranted()) {
-                context.getString(R.string.error_shizuku_unavailable)
-            }
-        }
+        require(!useShizuku) { "Auto Root is standalone-only" }
+        val requestShizukuRunning = false
+        val requestShizukuGranted = false
 
         onStage(AutoRootStage.PreparingExploit)
         onLog("[*] profile=${payloads.profile.profileId} transport=${if (useShizuku) "shizuku" else "standalone"}")
@@ -112,10 +108,14 @@ internal class AutoRootRunner(
         } else {
             null
         }
-        val launchWindow = ExploitRunControl.waitForLaunchWindow(
-            requestedAtUptimeMillis,
-            minimumUptimeSeconds,
-        )
+        val launchWindow = if (externalObserverMode) {
+            ExploitRunControl.releaseImmediatelyForPayloadGate(requestedAtUptimeMillis)
+        } else {
+            ExploitRunControl.waitForLaunchWindow(
+                requestedAtUptimeMillis,
+                minimumUptimeSeconds,
+            )
+        }
         onLog(
             ExploitRunControl.contextRecord(
                 requestContext.replace(
@@ -139,8 +139,8 @@ internal class AutoRootRunner(
                 minimumUptimeSeconds,
                 launchWindow.waited,
                 launchWindow.actualWaitMillis,
-                ShizukuController.isRunning(),
-                ShizukuController.isGranted(),
+                false,
+                false,
                 transport,
             ),
         )

@@ -96,7 +96,7 @@ class AutoRootService : Service() {
 
     private suspend fun runAutoRoot() {
         val historyStore = InstallHistoryStore(this)
-        historyStore.closeInterruptedRuns()
+        historyStore.recoverInterruptedRuns()
         var historyEntry: InstallHistoryEntry? = null
         var lastHistoryWriteAt = 0L
         fun saveHistory(force: Boolean = false) {
@@ -189,18 +189,15 @@ class AutoRootService : Service() {
             updateNotification(getString(R.string.autoroot_checking_firmware))
             val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
 
-            // Upstream #483 avoids Shizuku at boot entirely. Preserve the faster
-            // Shizuku path when it is actually usable, but verify more than Binder
-            // presence before spending the single automatic attempt for this boot.
-            val shizukuCandidate = ShizukuController.isRunning() && ShizukuController.isGranted()
-            val useShizuku = shizukuCandidate && ShizukuController.canRunUnattended()
-            val shizukuHealthCompletedAt = SystemClock.elapsedRealtime()
+            // Auto Root is intentionally standalone-only. Shizuku is a manual
+            // transport and can still be racing its own post-boot initialization.
+            val useShizuku = false
 
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            historyEntry = historyStore.create().copy(
+            historyEntry = historyStore.create(usedShizuku = false).copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = useShizuku,
                 payloadSha256 = payloads.profile.exploit.sha256,
@@ -217,16 +214,13 @@ class AutoRootService : Service() {
                     ?: AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis),
                 force = true,
             )
-            persist(AndroidRunContext.snapshot(this, "shizuku_health_complete", shizukuHealthCompletedAt), force = true)
             persist(
                 "[*] payload_mode=${if (BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) "diagnostic" else "production"} " +
                     "sha256=${payloads.profile.exploit.sha256} size=${payloads.profile.exploit.size}",
                 force = true,
             )
-            if (shizukuCandidate && !useShizuku) {
-                persist("[*] Shizuku available but unattended health probe failed; falling back to standalone")
-            }
-            persist("[*] Auto Root starting transport=${if (useShizuku) "shizuku" else "standalone"}")
+            persist("[*] Auto Root transport policy=standalone")
+            persist("[*] Auto Root starting transport=standalone")
             val externalObserverMode = payloads.profile.profileId == CZG3_PROFILE_ID
             val runner = AutoRootRunner(
                 context = this,

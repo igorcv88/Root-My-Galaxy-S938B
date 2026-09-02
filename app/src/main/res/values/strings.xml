@@ -189,4 +189,5 @@
         <item quantity="one">This %1$d run and its log will be permanently removed.</item>
         <item quantity="other">These %1$d runs and their logs will be permanently removed.</item>
     </plurals>
+    <string name="autoroot_battery_optimization_required" translatable="false">Disable battery optimization for Root My Galaxy to enable Auto Root.</string>
 </resources>

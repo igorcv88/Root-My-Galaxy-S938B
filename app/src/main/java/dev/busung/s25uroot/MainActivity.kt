@@ -18,7 +18,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -473,6 +472,11 @@ private fun RootApp(
                         selected = selectedPage == page,
                         onClick = {
                             clickHaptic(view)
+                            if (page == AppPage.History) {
+                                installViewModel.loadHistory()
+                            } else if (selectedPage == AppPage.History) {
+                                installViewModel.cancelHistoryLoad()
+                            }
                             selectedPage = page
                         },
                         modifier = Modifier.padding(top = 4.dp),
@@ -484,8 +488,7 @@ private fun RootApp(
         },
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
     ) { padding ->
-        AnimatedContent(targetState = selectedPage, label = "page") { page ->
-            when (page) {
+        when (selectedPage) {
                 AppPage.Overview -> OverviewPage(
                     padding = padding,
                     device = device,
@@ -531,7 +534,6 @@ private fun RootApp(
                     onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
                 )
             }
-        }
     }
 }
 
@@ -977,12 +979,7 @@ private fun HistoryPage(
         )
     }
 
-    AnimatedContent(
-        targetState = selectedEntry,
-        contentKey = { it?.id ?: "history-list" },
-        label = "history-detail",
-    ) { entry ->
-        if (entry == null) {
+    if (selectedEntry == null) {
             HistoryList(
                 padding = padding,
                 history = history,
@@ -1006,13 +1003,12 @@ private fun HistoryPage(
                 onEntryClick = { selectedHistoryId = it.id },
                 onDeleteSelected = { pendingDeleteIds = selectionIds },
             )
-        } else {
-            HistoryDetail(
-                padding = padding,
-                entry = entry,
-                onBack = { selectedHistoryId = null },
-            )
-        }
+    } else {
+        HistoryDetail(
+            padding = padding,
+            entry = selectedEntry,
+            onBack = { selectedHistoryId = null },
+        )
     }
 }
 

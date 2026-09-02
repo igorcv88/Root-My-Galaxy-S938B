@@ -54,7 +54,7 @@ data class DiagnosticAggregate(
 )
 
 internal fun aggregateDiagnostics(entries: List<InstallHistoryEntry>): DiagnosticAggregate {
-    val normalized = entries.map(::normalizeCzg3ExternalHistory)
+    val normalized = entries
     val terminal = normalized.filter { it.result != InstallRunResult.Running }
     val successful = terminal.filter { it.result == InstallRunResult.Succeeded }
     val elapsed = successful.mapNotNull(InstallHistoryEntry::exploitElapsedMillis).sorted()
@@ -104,43 +104,101 @@ internal fun historyIdsToPrune(entries: List<InstallHistoryEntry>, maximum: Int)
 
 internal fun historyLogForStorage(log: String): String = log
 
+internal const val HISTORY_SCHEMA_VERSION = 2
+
+internal fun historyNeedsExternalNormalization(
+    schemaVersion: Int,
+    appVersion: String?,
+    profileId: String?,
+    hasExternalObserverLog: Boolean,
+): Boolean {
+    if (profileId != CZG3_PROFILE_ID_FOR_DIAGNOSTICS && !hasExternalObserverLog) return false
+    if (schemaVersion >= HISTORY_SCHEMA_VERSION) return false
+    val match = appVersion?.let { Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(it) }
+        ?: return true
+    val (major, minor, patch) = match.destructured.toList().map(String::toInt)
+    return major == 0 && (minor < 3 || (minor == 3 && patch < 38))
+}
+
 class InstallHistoryStore(private val context: Context) {
     private val directory = File(context.filesDir, "install-history").apply { mkdirs() }
 
-    fun load(): List<InstallHistoryEntry> = directory.listFiles { file -> file.extension == "json" }.orEmpty()
-        .mapNotNull(::decodeOrQuarantine).sortedByDescending(InstallHistoryEntry::startedAtMillis)
-
-    fun closeInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()): List<InstallHistoryEntry> = load().map { entry ->
-        val recovered = recoverInterruptedEntry(entry, currentBootId, System.currentTimeMillis())
-        if (recovered.result == InstallRunResult.UnexpectedReboot) {
-            val record = PstoreCollector.collect(recovered.usedShizuku)
-            recovered.copy(crashRecordStatus = record.status, crashRecord = record.content).also(::save)
-        } else if (recovered != entry) recovered.also(::save) else entry
+    fun load(shouldContinue: () -> Boolean = { true }): List<InstallHistoryEntry> {
+        val entries = ArrayList<InstallHistoryEntry>()
+        for (file in directory.listFiles { candidate -> candidate.extension == "json" }.orEmpty()) {
+            if (!shouldContinue()) break
+            decodeOrQuarantine(file)?.let(entries::add)
+        }
+        return entries.sortedByDescending(InstallHistoryEntry::startedAtMillis)
     }
 
-    fun create(bootId: String? = AutoRootSupport.currentBootToken(), snapshot: DeviceSnapshot = DeviceSnapshot.current()): InstallHistoryEntry = InstallHistoryEntry(
+    fun closeInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()): List<InstallHistoryEntry> {
+        recoverInterruptedRuns(currentBootId)
+        return load()
+    }
+
+    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) {
+        val completedAtMillis = System.currentTimeMillis()
+        directory.listFiles { file -> file.extension == "json" }.orEmpty()
+            .filter(::mightContainRunningEntry)
+            .mapNotNull(::decodeOrQuarantine)
+            .filter { it.result == InstallRunResult.Running }
+            .forEach { entry ->
+                val recovered = recoverInterruptedEntry(entry, currentBootId, completedAtMillis)
+                val completed = if (recovered.result == InstallRunResult.UnexpectedReboot) {
+                    val record = PstoreCollector.collect(recovered.usedShizuku)
+                    recovered.copy(crashRecordStatus = record.status, crashRecord = record.content)
+                } else {
+                    recovered
+                }
+                save(completed)
+            }
+    }
+
+    fun create(
+        bootId: String? = AutoRootSupport.currentBootToken(),
+        snapshot: DeviceSnapshot = DeviceSnapshot.current(),
+        usedShizuku: Boolean = AppPreferences.shizukuMode(context),
+    ): InstallHistoryEntry = InstallHistoryEntry(
         id = UUID.randomUUID().toString(), startedAtMillis = System.currentTimeMillis(), completedAtMillis = null,
-        result = InstallRunResult.Running, log = "", usedShizuku = AppPreferences.shizukuMode(context), bootId = bootId,
+        result = InstallRunResult.Running, log = "", usedShizuku = usedShizuku, bootId = bootId,
         startedAtUptimeMillis = SystemClock.elapsedRealtime(), deviceIdentity = snapshot.diagnosticIdentity(), appVersion = BuildConfig.VERSION_NAME,
     ).also(::save)
 
     @Synchronized
     fun save(entry: InstallHistoryEntry) {
         val normalized = normalizeCzg3ExternalHistory(entry)
-        val atomicFile = AtomicFile(File(directory, "${normalized.id}.json"))
+        val target = File(directory, "${normalized.id}.json")
+        val isNewEntry = !target.exists()
+        val atomicFile = AtomicFile(target)
         val output = atomicFile.startWrite()
         try {
             output.write(encode(normalized).toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync(); atomicFile.finishWrite(output)
-            val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
-            val entries = files.mapNotNull(::decodeOrQuarantine)
-            val pruneIds = historyIdsToPrune(entries, MAX_HISTORY_ENTRIES)
-            files.filter { it.nameWithoutExtension in pruneIds }.forEach(File::delete)
+            if (isNewEntry) pruneHistoryFiles()
         } catch (error: Throwable) { atomicFile.failWrite(output); throw error }
     }
 
     fun delete(id: String) { File(directory, "$id.json").delete() }
 
+    private fun mightContainRunningEntry(file: File): Boolean = runCatching {
+        file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            val buffer = CharArray(RUNNING_ENTRY_SCAN_CHARS)
+            val count = reader.read(buffer)
+            count > 0 && String(buffer, 0, count).contains("\"result\":\"Running\"")
+        }
+    }.getOrDefault(false)
+
+    private fun pruneHistoryFiles() {
+        val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
+        if (files.size <= MAX_HISTORY_ENTRIES) return
+        files.sortedWith(
+            compareByDescending<File> { it.lastModified() }
+                .thenByDescending(File::getName),
+        ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
+    }
+
     private fun encode(entry: InstallHistoryEntry) = JSONObject()
+        .put("schemaVersion", HISTORY_SCHEMA_VERSION)
         .put("id", entry.id).put("startedAtMillis", entry.startedAtMillis).put("completedAtMillis", entry.completedAtMillis ?: JSONObject.NULL)
         .put("result", entry.result.name).put("log", historyLogForStorage(entry.log)).put("profileId", entry.profileId ?: JSONObject.NULL)
         .put("usedShizuku", entry.usedShizuku).put("bootId", entry.bootId ?: JSONObject.NULL)
@@ -163,7 +221,8 @@ class InstallHistoryStore(private val context: Context) {
 
     private fun decode(bytes: ByteArray): InstallHistoryEntry {
         val value = JSONObject(bytes.toString(Charsets.UTF_8)); val timings = value.optJSONArray("stageTimings")
-        return InstallHistoryEntry(
+        val schemaVersion = value.optInt("schemaVersion", 0)
+        val entry = InstallHistoryEntry(
             id = value.getString("id"), startedAtMillis = value.getLong("startedAtMillis"), completedAtMillis = value.optionalLong("completedAtMillis"),
             result = InstallRunResult.valueOf(value.getString("result")), log = value.optString("log"), profileId = value.optionalString("profileId"),
             usedShizuku = value.optBoolean("usedShizuku", false), bootId = value.optionalString("bootId"), startedAtUptimeMillis = value.optionalLong("startedAtUptimeMillis"),
@@ -178,12 +237,25 @@ class InstallHistoryStore(private val context: Context) {
             selectedMinUptimeSeconds = value.optionalInt("selectedMinUptimeSeconds"),
             lastPrepCheckpoint = value.optionalString("lastPrepCheckpoint"),
             lastPrepCheckpointUptimeMillis = value.optionalLong("lastPrepCheckpointUptimeMillis"),
-        ).let(::normalizeCzg3ExternalHistory)
+        )
+        return if (
+            historyNeedsExternalNormalization(
+                schemaVersion = schemaVersion,
+                appVersion = entry.appVersion,
+                profileId = entry.profileId,
+                hasExternalObserverLog = entry.log.contains("RMG_OBSERVER_V2|"),
+            )
+        ) {
+            normalizeCzg3ExternalHistory(entry)
+        } else {
+            entry
+        }
     }
 
     companion object {
         internal const val MAX_HISTORY_ENTRIES = 50
         private const val MAX_STAGE_TIMINGS = 128
+        private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
     }
 }
 

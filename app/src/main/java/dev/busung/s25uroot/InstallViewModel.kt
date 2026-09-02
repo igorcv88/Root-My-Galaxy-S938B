@@ -88,9 +88,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val repository = PayloadRepository(application)
     private val historyStore = InstallHistoryStore(application)
     private val mutableState = MutableStateFlow(InstallUiState())
-    private val mutableHistory = MutableStateFlow(historyStore.closeInterruptedRuns())
+    private val mutableHistory = MutableStateFlow<List<InstallHistoryEntry>>(emptyList())
     private val mutableTargetCatalog = MutableStateFlow(TargetCatalogUiState())
     private var discoveryJob: Job? = null
+    private var historyJob: Job? = null
     private var installJob: Job? = null
     private var activeHistoryEntry: InstallHistoryEntry? = null
     private var lastHistoryCheckpointAt = 0L
@@ -111,7 +112,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     fun refresh() {
         if (installJob?.isActive == true) return
-        mutableHistory.value = historyStore.load()
         discoveryJob?.cancel()
         discoveryJob = viewModelScope.launch(Dispatchers.IO) {
             val probe = NativeProbe.run()
@@ -143,12 +143,31 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun loadHistory(recoverInterrupted: Boolean = true) {
+        if (installJob?.isActive == true) return
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch(Dispatchers.IO) {
+            if (recoverInterrupted) historyStore.recoverInterruptedRuns()
+            val job = currentCoroutineContext()[Job]
+            val loaded = historyStore.load { job?.isActive != false }
+            currentCoroutineContext().ensureActive()
+            mutableHistory.value = loaded
+        }
+    }
+
+    fun cancelHistoryLoad() {
+        historyJob?.cancel()
+        historyJob = null
+    }
+
     fun deleteHistoryEntries(ids: Collection<String>) {
         val runningId = activeHistoryEntry?.id
         val toDelete = ids.filterNot { it == runningId }
         if (toDelete.isEmpty()) return
-        toDelete.forEach(historyStore::delete)
         mutableHistory.value = mutableHistory.value.filterNot { it.id in toDelete }
+        viewModelScope.launch(Dispatchers.IO) {
+            toDelete.forEach(historyStore::delete)
+        }
     }
 
     fun loadTargetCatalog() {
@@ -173,6 +192,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun install(profileId: String? = null) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
         discoveryJob?.cancel()
+        cancelHistoryLoad()
         rootRequestedAtUptimeMillis = SystemClock.elapsedRealtime()
         rootRequestContext = AndroidRunContext.snapshot(
             app,
@@ -186,6 +206,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 phase = InstallPhase.Checking,
                 probeOutput = mutableState.value.probeOutput,
             )
+            historyStore.recoverInterruptedRuns()
             startHistory()
             // Freeze the transport for the whole run so a mid-run preference
             // change cannot mix Shizuku and standalone execution between the
