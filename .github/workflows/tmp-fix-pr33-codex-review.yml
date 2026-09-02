@@ -25,27 +25,19 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_once(path, old, new):
+          def replace_once(path: str, old: str, new: str) -> None:
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
               p.write_text(text.replace(old, new, 1))
 
-          # 1) Payload-side uptime gate must not consume the app watchdog budget.
+          # 1) Start Auto Root watchdogs only when the payload uptime gate is released.
           path = 'app/src/main/java/dev/busung/s25uroot/ExploitRunControl.kt'
-          old = '''    fun releaseImmediatelyForPayloadGate(
-              requestedAtUptimeMillis: Long,
-              now: () -> Long = SystemClock::elapsedRealtime,
-          ): LaunchWindow = LaunchWindow(
-              requestedAtUptimeMillis = requestedAtUptimeMillis,
-              releasedAtUptimeMillis = now(),
-              actualWaitMillis = 0,
-          )
-
+          marker = '''    fun environment(request: ExploitEnvironmentRequest): Map<String, String> = linkedMapOf(
           '''
-          new = old + '''    fun payloadGateWatchdogStartUptimeMillis(
+          helper = '''    fun payloadGateWatchdogStartUptimeMillis(
               processStartedAtUptimeMillis: Long,
               minimumUptimeSeconds: Int?,
           ): Long {
@@ -57,16 +49,15 @@ jobs:
           }
 
           '''
-          replace_once(path, old, new)
+          replace_once(path, marker, helper + marker)
 
           path = 'app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt'
-          old = '''        try {
-              val startedAt = SystemClock.elapsedRealtime()
+          replace_once(
+              path,
+              '''            val startedAt = SystemClock.elapsedRealtime()
               var lastProgressAt = startedAt
-              var lastRawLog = ""
-          '''
-          new = '''        try {
-              val startedAt = SystemClock.elapsedRealtime()
+          ''',
+              '''            val startedAt = SystemClock.elapsedRealtime()
               val watchdogStartsAt = if (externalObserverMode) {
                   ExploitRunControl.payloadGateWatchdogStartUptimeMillis(
                       processStartedAtUptimeMillis = startedAt,
@@ -76,49 +67,51 @@ jobs:
                   startedAt
               }
               var lastProgressAt = watchdogStartsAt
-              var lastRawLog = ""
-          '''
-          replace_once(path, old, new)
-
-          old = '''                    lastProgressAt = SystemClock.elapsedRealtime()
-          '''
-          new = '''                    lastProgressAt = maxOf(SystemClock.elapsedRealtime(), watchdogStartsAt)
-          '''
-          replace_once(path, old, new)
-
-          old = '''                require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
+          ''',
+          )
+          replace_once(
+              path,
+              '''                    lastProgressAt = SystemClock.elapsedRealtime()
+          ''',
+              '''                    lastProgressAt = maxOf(SystemClock.elapsedRealtime(), watchdogStartsAt)
+          ''',
+          )
+          replace_once(
+              path,
+              '''                require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
+                  context.getString(R.string.error_exploit_stalled)
+              }
+              require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
+                  context.getString(R.string.error_exploit_timeout)
+              }
+          ''',
+              '''                if (now >= watchdogStartsAt) {
+                  require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
                       context.getString(R.string.error_exploit_stalled)
                   }
-                  require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
+                  require(now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS) {
                       context.getString(R.string.error_exploit_timeout)
                   }
-          '''
-          new = '''                if (now >= watchdogStartsAt) {
-                      require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
-                          context.getString(R.string.error_exploit_stalled)
-                      }
-                      require(now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS) {
-                          context.getString(R.string.error_exploit_timeout)
-                      }
-                  }
-          '''
-          replace_once(path, old, new)
+              }
+          ''',
+          )
 
-          # 2) Opening History must never recover/finalize a live background Auto Root.
-          # 3) Async deletes are chained and a later load waits for pending mutations.
+          # 2) Opening History is read-only: do not finalize a background Auto Root.
+          # 3) Serialize disk deletion with history reloads.
           path = 'app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt'
-          old = '''    private var discoveryJob: Job? = null
-              private var historyJob: Job? = null
+          replace_once(
+              path,
+              '''    private var historyJob: Job? = null
               private var installJob: Job? = null
-          '''
-          new = '''    private var discoveryJob: Job? = null
-              private var historyJob: Job? = null
+          ''',
+              '''    private var historyJob: Job? = null
               private var historyMutationJob: Job? = null
               private var installJob: Job? = null
-          '''
-          replace_once(path, old, new)
-
-          old = '''    fun loadHistory(recoverInterrupted: Boolean = true) {
+          ''',
+          )
+          replace_once(
+              path,
+              '''    fun loadHistory(recoverInterrupted: Boolean = true) {
               if (installJob?.isActive == true) return
               historyJob?.cancel()
               historyJob = viewModelScope.launch(Dispatchers.IO) {
@@ -129,8 +122,8 @@ jobs:
                   mutableHistory.value = loaded
               }
           }
-          '''
-          new = '''    fun loadHistory() {
+          ''',
+              '''    fun loadHistory() {
               if (installJob?.isActive == true) return
               historyJob?.cancel()
               val pendingMutation = historyMutationJob
@@ -142,10 +135,11 @@ jobs:
                   mutableHistory.value = loaded
               }
           }
-          '''
-          replace_once(path, old, new)
-
-          old = '''    fun deleteHistoryEntries(ids: Collection<String>) {
+          ''',
+          )
+          replace_once(
+              path,
+              '''    fun deleteHistoryEntries(ids: Collection<String>) {
               val runningId = activeHistoryEntry?.id
               val toDelete = ids.filterNot { it == runningId }
               if (toDelete.isEmpty()) return
@@ -154,8 +148,8 @@ jobs:
                   toDelete.forEach(historyStore::delete)
               }
           }
-          '''
-          new = '''    fun deleteHistoryEntries(ids: Collection<String>) {
+          ''',
+              '''    fun deleteHistoryEntries(ids: Collection<String>) {
               val runningId = activeHistoryEntry?.id
               val toDelete = ids.filterNot { it == runningId }
               if (toDelete.isEmpty()) return
@@ -168,28 +162,36 @@ jobs:
                   toDelete.forEach(historyStore::delete)
               }
           }
-          '''
-          replace_once(path, old, new)
+          ''',
+          )
 
-          # 4) Preserve pruning semantics by ordering from persisted startedAtMillis,
-          # without decoding/normalizing every large diagnostic entry on every save.
+          # 4) Prune by persisted startedAtMillis without decoding full observer logs.
           path = 'app/src/main/java/dev/busung/s25uroot/InstallHistory.kt'
-          old = '''internal fun historyLogForStorage(log: String): String = log
+          replace_once(
+              path,
+              '''internal fun historyLogForStorage(log: String): String = log
 
           internal const val HISTORY_SCHEMA_VERSION = 2
-          '''
-          new = '''internal fun historyLogForStorage(log: String): String = log
+          ''',
+              '''internal fun historyLogForStorage(log: String): String = log
 
-          private val HISTORY_STARTED_AT_MILLIS_PATTERN = Regex("\\\"startedAtMillis\\\"\\\\s*:\\s*(\\\\d+)")
-
-          internal fun historyStartedAtMillisFromPrefix(prefix: String): Long? =
-              HISTORY_STARTED_AT_MILLIS_PATTERN.find(prefix)?.groupValues?.get(1)?.toLongOrNull()
+          internal fun historyStartedAtMillisFromPrefix(prefix: String): Long? {
+              val marker = "\\\"startedAtMillis\\\":"
+              val markerIndex = prefix.indexOf(marker)
+              if (markerIndex < 0) return null
+              val start = markerIndex + marker.length
+              var end = start
+              while (end < prefix.length && prefix[end].isDigit()) end++
+              if (end == start) return null
+              return prefix.substring(start, end).toLongOrNull()
+          }
 
           internal const val HISTORY_SCHEMA_VERSION = 2
-          '''
-          replace_once(path, old, new)
-
-          old = '''    private fun pruneHistoryFiles() {
+          ''',
+          )
+          replace_once(
+              path,
+              '''    private fun pruneHistoryFiles() {
               val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
               if (files.size <= MAX_HISTORY_ENTRIES) return
               files.sortedWith(
@@ -197,8 +199,8 @@ jobs:
                       .thenByDescending(File::getName),
               ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
           }
-          '''
-          new = '''    private fun storedStartedAtMillis(file: File): Long? = runCatching {
+          ''',
+              '''    private fun storedStartedAtMillis(file: File): Long? = runCatching {
               file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
                   val buffer = CharArray(HISTORY_ORDER_SCAN_CHARS)
                   val count = reader.read(buffer)
@@ -210,96 +212,75 @@ jobs:
               val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
               if (files.size <= MAX_HISTORY_ENTRIES) return
               files.sortedWith(
-                  compareByDescending<File> { storedStartedAtMillis(it) ?: Long.MIN_VALUE }
+                  compareByDescending<File> { storedStartedAtMillis(it) ?: it.lastModified() }
                       .thenByDescending(File::getName),
               ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
           }
-          '''
-          replace_once(path, old, new)
-
-          old = '''        private const val MAX_STAGE_TIMINGS = 128
-              private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
-          '''
-          new = '''        private const val MAX_STAGE_TIMINGS = 128
-              private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
+          ''',
+          )
+          replace_once(
+              path,
+              '''        private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
+          ''',
+              '''        private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
               private const val HISTORY_ORDER_SCAN_CHARS = 2_048
-          '''
-          replace_once(path, old, new)
+          ''',
+          )
 
-          # Regression tests for watchdog and persisted ordering key.
+          # Regression tests.
           path = 'app/src/test/java/dev/busung/s25uroot/ExploitRunControlTest.kt'
-          old = '''    @Test
-              fun autoRootPayloadGateReleasesHelperImmediately() {
-                  val window = ExploitRunControl.releaseImmediatelyForPayloadGate(
-                      requestedAtUptimeMillis = 60_000L,
-                      now = { 60_123L },
-                  )
-                  assertEquals(60_000L, window.requestedAtUptimeMillis)
-                  assertEquals(60_123L, window.releasedAtUptimeMillis)
-                  assertEquals(0L, window.actualWaitMillis)
-                  assertFalse(window.waited)
-              }
-
+          marker = '''    private fun request(mode: InvocationMode) = ExploitEnvironmentRequest(
           '''
-          new = old + '''    @Test
+          test = '''    @Test
               fun payloadGateWatchdogStartsAtGateAndKeepsFullExploitBudget() {
-                  assertEquals(
-                      600_000L,
-                      ExploitRunControl.payloadGateWatchdogStartUptimeMillis(60_000L, 600),
-                  )
-                  assertEquals(
-                      700_000L,
-                      ExploitRunControl.payloadGateWatchdogStartUptimeMillis(700_000L, 600),
-                  )
-                  assertEquals(
-                      60_000L,
-                      ExploitRunControl.payloadGateWatchdogStartUptimeMillis(60_000L, null),
-                  )
-              }
+              assertEquals(600_000L, ExploitRunControl.payloadGateWatchdogStartUptimeMillis(60_000L, 600))
+              assertEquals(700_000L, ExploitRunControl.payloadGateWatchdogStartUptimeMillis(700_000L, 600))
+              assertEquals(60_000L, ExploitRunControl.payloadGateWatchdogStartUptimeMillis(60_000L, null))
+          }
 
           '''
-          replace_once(path, old, new)
+          replace_once(path, marker, test + marker)
 
           path = 'app/src/test/java/dev/busung/s25uroot/DiagnosticHistoryTest.kt'
-          old = '''import org.junit.Assert.assertFalse
+          replace_once(
+              path,
+              '''import org.junit.Assert.assertFalse
           import org.junit.Assert.assertTrue
-          '''
-          new = '''import org.junit.Assert.assertFalse
+          ''',
+              '''import org.junit.Assert.assertFalse
           import org.junit.Assert.assertNull
           import org.junit.Assert.assertTrue
-          '''
-          replace_once(path, old, new)
-
-          old = '''    @Test
+          ''',
+          )
+          marker = '''    @Test
               fun recentObserverHistoryDoesNotNeedExpensiveRenormalization() {
           '''
-          new = '''    @Test
+          test = '''    @Test
               fun pruningReadsPersistedStartTimeInsteadOfFilesystemMtime() {
-                  assertEquals(
-                      123456L,
-                      historyStartedAtMillisFromPrefix(
-                          "{\\\"schemaVersion\\\":2,\\\"id\\\":\\\"x\\\",\\\"startedAtMillis\\\":123456,\\\"result\\\":\\\"Failed\\\"}",
-                      ),
-                  )
-                  assertNull(historyStartedAtMillisFromPrefix("{\\\"id\\\":\\\"x\\\"}"))
-              }
+              assertEquals(
+                  123456L,
+                  historyStartedAtMillisFromPrefix(
+                      "{\\\"schemaVersion\\\":2,\\\"id\\\":\\\"x\\\",\\\"startedAtMillis\\\":123456,\\\"result\\\":\\\"Failed\\\"}",
+                  ),
+              )
+              assertNull(historyStartedAtMillisFromPrefix("{\\\"id\\\":\\\"x\\\"}"))
+          }
 
-              @Test
-              fun recentObserverHistoryDoesNotNeedExpensiveRenormalization() {
           '''
-          replace_once(path, old, new)
+          replace_once(path, marker, test + marker)
 
-          # Structural invariants corresponding to the four review comments.
+          # Assert the exact semantics before compiling.
           view = Path('app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt').read_text()
-          assert 'fun loadHistory()' in view
           load_body = view.split('fun loadHistory()', 1)[1].split('fun cancelHistoryLoad()', 1)[0]
           assert 'recoverInterruptedRuns' not in load_body
           assert 'pendingMutation?.join()' in load_body
+          assert 'previousMutation?.join()' in view
           runner = Path('app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt').read_text()
-          assert 'now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS' in runner
           assert 'if (now >= watchdogStartsAt)' in runner
+          assert 'now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS' in runner
+          assert 'now - startedAt < EXPLOIT_TOTAL_MILLIS' not in runner
           hist = Path('app/src/main/java/dev/busung/s25uroot/InstallHistory.kt').read_text()
-          assert 'compareByDescending<File> { storedStartedAtMillis(it) ?: Long.MIN_VALUE }' in hist
+          assert 'storedStartedAtMillis(it) ?: it.lastModified()' in hist
           PY
 
       - name: Prepare Java 21
@@ -319,8 +300,8 @@ jobs:
           ./gradlew --build-cache \
             :app:testDebugUnitTest \
             :app:compileReleaseKotlin \
-            -PreleaseVersionCode=10041 \
-            -PreleaseVersionName=0.3.41
+            -PreleaseVersionCode=19999 \
+            -PreleaseVersionName=0.3.reviewfix
 
       - name: Commit validated fixes directly to main
         shell: bash
