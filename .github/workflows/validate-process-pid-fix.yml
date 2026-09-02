@@ -28,6 +28,7 @@ jobs:
       - name: Compile and test Android sources
         run: |
           set -euo pipefail
+          echo "Validating Android Process PID compatibility"
           chmod +x gradlew
           ./gradlew --build-cache \
             :app:testDebugUnitTest \
