@@ -161,8 +161,12 @@ internal class AutoRootRunner(
                 invocationMode = InvocationMode.AutoRoot,
                 transport = transport,
                 payloadLog = if (useShizuku) null else logFile,
-                attachController = !useShizuku,
             )
+        } else {
+            null
+        }
+        val observerChildSnapshot = if (externalObserverMode && !useShizuku) {
+            ExploitObserverChildLocator.snapshotCurrentThread()
         } else {
             null
         }
@@ -184,6 +188,14 @@ internal class AutoRootRunner(
         } catch (error: Throwable) {
             stopObserver(observer)
             throw error
+        }
+        if (observerChildSnapshot != null) {
+            val localPid = ExploitObserverChildLocator.findSingleNewChild(observerChildSnapshot)
+            val attached = localPid?.let { observer?.attachPid(it) } ?: false
+            onLog(
+                "RMG_OBSERVER_V2|event=controller_attach|attached=$attached|" +
+                    "target_pid=${localPid ?: -1}",
+            )
         }
 
         val output = ProcessOutputCollector(process)
@@ -295,15 +307,18 @@ internal class AutoRootRunner(
                 payloads.profile.profileId == CZG3_PROFILE_ID,
             )
         } finally {
-            incrementalLog?.close()
-            if (process.isAlive) {
-                process.destroy()
-                delay(500.milliseconds)
-                if (process.isAlive) process.destroyForcibly()
+            withContext(NonCancellable) {
+                incrementalLog?.close()
+                if (process.isAlive) {
+                    process.destroy()
+                    delay(500.milliseconds)
+                    if (process.isAlive) process.destroyForcibly()
+                }
+                output.awaitCompletion()
+                stopObserver(observer)
             }
-            output.awaitCompletion()
-            stopObserver(observer)
         }
+        currentCoroutineContext().ensureActive()
         onLog(context.getString(R.string.log_bootstrap_root))
     }
 

@@ -329,8 +329,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 invocationMode = invocationMode,
                 transport = transport,
                 payloadLog = if (shizuku) null else logFile,
-                attachController = !shizuku,
             )
+        } else {
+            null
+        }
+        val observerChildSnapshot = if (externalObserverMode && !shizuku) {
+            ExploitObserverChildLocator.snapshotCurrentThread()
         } else {
             null
         }
@@ -352,6 +356,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         } catch (error: Throwable) {
             stopObserver(observer)
             throw error
+        }
+        if (observerChildSnapshot != null) {
+            val localPid = ExploitObserverChildLocator.findSingleNewChild(observerChildSnapshot)
+            val attached = localPid?.let { observer?.attachPid(it) } ?: false
+            appendLog(
+                "RMG_OBSERVER_V2|event=controller_attach|attached=$attached|" +
+                    "target_pid=${localPid ?: -1}",
+            )
         }
         val logPrefix = mutableState.value.log
         val captured = StringBuilder()
@@ -496,14 +508,17 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 profile.profileId == CZG3_PROFILE_ID,
             )
         } finally {
-            incrementalLog?.close()
-            if (process.isAlive) {
-                process.destroy()
-                delay(500.milliseconds)
-                if (process.isAlive) process.destroyForcibly()
+            withContext(NonCancellable) {
+                incrementalLog?.close()
+                if (process.isAlive) {
+                    process.destroy()
+                    delay(500.milliseconds)
+                    if (process.isAlive) process.destroyForcibly()
+                }
+                stopObserver(observer)
             }
-            stopObserver(observer)
         }
+        currentCoroutineContext().ensureActive()
         appendLog(app.getString(R.string.log_bootstrap_root))
     }
 
