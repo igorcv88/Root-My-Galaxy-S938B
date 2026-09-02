@@ -51,7 +51,6 @@ object ShizukuController {
                 binderAlive = false,
                 binderDeadUptimeMillis = now,
                 permissionGranted = null,
-                permissionObservedUptimeMillis = now,
             )
         }
     }
