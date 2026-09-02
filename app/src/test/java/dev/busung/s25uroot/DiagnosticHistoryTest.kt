@@ -48,6 +48,32 @@ class DiagnosticHistoryTest {
     }
 
     @Test
+    fun externalObserverNormalizationRunsOnlyForTerminalWrites() {
+        val running = entry("observer", "boot").copy(
+            profileId = CZG3_PROFILE_ID_FOR_DIAGNOSTICS,
+            log = "RMG_OBSERVER_V2|event=start|t_ms=100",
+        )
+        assertFalse(shouldNormalizeHistoryBeforeTerminalSave(running))
+        assertTrue(
+            shouldNormalizeHistoryBeforeTerminalSave(
+                running.copy(
+                    completedAtMillis = 2,
+                    result = InstallRunResult.Succeeded,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun historyRecoveryRecognizesAtomicBackupsAndQuarantineFiles() {
+        assertTrue(isRecoverableHistoryArtifactName("run.json.bak"))
+        assertTrue(isRecoverableHistoryArtifactName("run.json.corrupt"))
+        assertTrue(isRecoverableHistoryArtifactName("run.json.123456.corrupt"))
+        assertFalse(isRecoverableHistoryArtifactName("run.json"))
+        assertFalse(isRecoverableHistoryArtifactName("notes.corrupt"))
+    }
+
+    @Test
     fun aggregatesLatencyAttemptsAndCoarseUptimeBuckets() {
         val entries = listOf(
             terminal("a", true, 100, 2, 5 * 60_000L),
