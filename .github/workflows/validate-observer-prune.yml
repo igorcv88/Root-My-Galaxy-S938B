@@ -30,35 +30,14 @@ jobs:
           from pathlib import Path
           p = Path('app/src/main/cpp/external_observer.c')
           s = p.read_text()
-          def rep(old, new):
-              global s
-              if s.count(old) != 1:
-                  raise SystemExit(f'expected one match, got {s.count(old)}')
-              s = s.replace(old, new, 1)
-          rep('#define OBS_MAX_SEEN_PIDS 96', '#define OBS_MAX_SEEN_PIDS 256')
-          rep('''static size_t observer_snapshot_tracked(struct observer_tracked_pid *out,
-                                                  size_t capacity) {
-            if (!out || capacity == 0) return 0;
-            pthread_mutex_lock(&observer_pid_mutex);
-            size_t count = observer_tracked_pid_count;
-            if (count > capacity) count = capacity;
-            memcpy(out, observer_tracked_pids, count * sizeof(*out));
-            pthread_mutex_unlock(&observer_pid_mutex);
-            return count;
-          }
 
-          static pid_t parse_marker_pid_after''', '''static size_t observer_snapshot_tracked(struct observer_tracked_pid *out,
-                                                  size_t capacity) {
-            if (!out || capacity == 0) return 0;
-            pthread_mutex_lock(&observer_pid_mutex);
-            size_t count = observer_tracked_pid_count;
-            if (count > capacity) count = capacity;
-            memcpy(out, observer_tracked_pids, count * sizeof(*out));
-            pthread_mutex_unlock(&observer_pid_mutex);
-            return count;
-          }
+          old = '#define OBS_MAX_SEEN_PIDS 96'
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, '#define OBS_MAX_SEEN_PIDS 256', 1)
 
-          static void observer_forget_tracked_pid(pid_t pid) {
+          anchor = 'static pid_t parse_marker_pid_after(const char *line, const char *token) {'
+          assert s.count(anchor) == 1, s.count(anchor)
+          forget = '''static void observer_forget_tracked_pid(pid_t pid) {
             if (pid <= 0) return;
             pthread_mutex_lock(&observer_pid_mutex);
             for (size_t i = 0; i < observer_tracked_pid_count; ++i) {
@@ -75,23 +54,28 @@ jobs:
             pthread_mutex_unlock(&observer_pid_mutex);
           }
 
-          static pid_t parse_marker_pid_after''')
-          rep('''              if (!parse_proc_stat(pids[i], &sample)) {
-                if (!pid_seen(pids[i])) {
-                  observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\\n",
-                      (unsigned long long)now_ms, pids[i],
-                      tracked_role_for_pid(pids[i], root, tracked, tracked_count));
-                }
-                continue;
-              }''', '''              if (!parse_proc_stat(pids[i], &sample)) {
-                if (!pid_seen(pids[i])) {
-                  observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\\n",
-                      (unsigned long long)now_ms, pids[i],
-                      tracked_role_for_pid(pids[i], root, tracked, tracked_count));
-                }
-                if (pids[i] != root) observer_forget_tracked_pid(pids[i]);
-                continue;
-              }''')
+          '''
+          s = s.replace(anchor, forget + anchor, 1)
+
+          old_fail = '''    if (!parse_proc_stat(pids[i], &sample)) {
+              if (!pid_seen(pids[i])) {
+                observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\\n",
+                    (unsigned long long)now_ms, pids[i],
+                    tracked_role_for_pid(pids[i], root, tracked, tracked_count));
+              }
+              continue;
+            }'''
+          new_fail = '''    if (!parse_proc_stat(pids[i], &sample)) {
+              if (!pid_seen(pids[i])) {
+                observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\\n",
+                    (unsigned long long)now_ms, pids[i],
+                    tracked_role_for_pid(pids[i], root, tracked, tracked_count));
+              }
+              if (pids[i] != root) observer_forget_tracked_pid(pids[i]);
+              continue;
+            }'''
+          assert s.count(old_fail) == 1, s.count(old_fail)
+          s = s.replace(old_fail, new_fail, 1)
           p.write_text(s)
           PY
       - name: Validate
