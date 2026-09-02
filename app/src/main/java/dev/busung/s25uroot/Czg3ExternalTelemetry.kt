@@ -28,7 +28,6 @@ internal object Czg3ExternalTelemetryParser {
     private val observerStart = Regex("""RMG_OBSERVER_V2\|event=start\|t_ms=(\d+)""")
     private val observerStop = Regex("""RMG_OBSERVER_V2\|event=stop\|t_ms=(\d+)\|dropped=(\d+)""")
     private val nativeAttach = Regex("""RMG_OBSERVER_V2\|event=attach\|t_ms=(\d+)\|pid=(\d+)\|stat_access=(\d+)""")
-    private val controllerAttach = Regex("""RMG_OBSERVER_V2\|event=controller_attach\|attached=(true|false)\|target_pid=(-?\d+)""")
     private val marker = Regex("""RMG_OBSERVER_V2\|event=marker\|t_ms=(\d+)\|name=([a-z0-9_]+)\|""")
     private val pselect = Regex("""slide pselect returned[^\n]*elapsed_usec=(\d+)""")
     private val fopsConsume = Regex("""app fops slide route[^\n]*effective_consume_usec=(\d+)""")
@@ -46,12 +45,12 @@ internal object Czg3ExternalTelemetryParser {
         val stop = stopMatch?.groupValues?.get(1)?.toLongOrNull()
         val dropped = stopMatch?.groupValues?.get(2)?.toLongOrNull()
 
+        // Only a native acknowledgement proves that the observer process could
+        // actually read the target. Controller startService success is merely a
+        // queued request and must never be promoted to a verified attachment.
         val native = nativeAttach.findAll(log).lastOrNull()
-        val controller = controllerAttach.findAll(log).lastOrNull()
         val targetPid = native?.groupValues?.get(2)?.toLongOrNull()
-            ?: controller?.groupValues?.get(2)?.toLongOrNull()?.takeIf { it > 0L }
-        val attached = native?.groupValues?.get(3) == "1" ||
-            controller?.groupValues?.get(1) == "true"
+        val attached = native?.groupValues?.get(3) == "1"
 
         val markers = marker.findAll(log).mapNotNull { match ->
             val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
