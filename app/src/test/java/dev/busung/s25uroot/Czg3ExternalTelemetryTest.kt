@@ -105,6 +105,35 @@ class Czg3ExternalTelemetryTest {
     }
 
     @Test
+    fun normalizationNeverRegressesKernelSuStagesOrAddsRaceTiming() {
+        listOf(
+            ExploitStage.StagingKernelSu,
+            ExploitStage.LateLoadingKernelSu,
+            ExploitStage.VerifyingKernelSu,
+        ).forEach { advancedStage ->
+            val existingTiming = StageTiming(advancedStage, 120_000L, 9)
+            val entry = InstallHistoryEntry(
+                id = "advanced-${advancedStage.name}",
+                startedAtMillis = 1L,
+                completedAtMillis = 2L,
+                result = InstallRunResult.Succeeded,
+                log = log,
+                profileId = CZG3_PROFILE_ID_FOR_DIAGNOSTICS,
+                stage = advancedStage,
+                attemptCount = 9,
+                exploitElapsedMillis = 120_000L,
+                stageTimings = listOf(existingTiming),
+            )
+
+            val normalized = normalizeCzg3ExternalHistory(entry)
+
+            assertEquals(advancedStage, normalized.stage)
+            assertEquals(120_000L, normalized.exploitElapsedMillis)
+            assertEquals(listOf(existingTiming), normalized.stageTimings)
+        }
+    }
+
+    @Test
     fun externalReportsMarkUnavailableRoleTimingsExplicitlyAndIgnoreMarkerCopies() {
         val race = raceAnalysisReport(log)
         val prep = preparationAnalysisReport(log)
