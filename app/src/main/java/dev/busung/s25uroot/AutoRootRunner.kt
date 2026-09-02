@@ -132,6 +132,14 @@ internal class AutoRootRunner(
             ),
         )
         val spawnUptimeMillis = SystemClock.elapsedRealtime()
+        val diagnosticElapsedStartUptimeMillis = if (externalObserverMode) {
+            ExploitRunControl.payloadGateWatchdogStartUptimeMillis(
+                processStartedAtUptimeMillis = spawnUptimeMillis,
+                minimumUptimeSeconds = minimumUptimeSeconds,
+            )
+        } else {
+            spawnUptimeMillis
+        }
         onLog(
             ExploitRunControl.contextRecord(
                 AndroidRunContext.snapshot(context, "payload_launch", spawnUptimeMillis),
@@ -254,7 +262,8 @@ internal class AutoRootRunner(
                 if (attempt != previousSupervisorAttempt) {
                     onSupervisorAttempt(
                         attempt,
-                        SystemClock.elapsedRealtime() - spawnUptimeMillis,
+                        (SystemClock.elapsedRealtime() - diagnosticElapsedStartUptimeMillis)
+                            .coerceAtLeast(0L),
                     )
                 }
             }
