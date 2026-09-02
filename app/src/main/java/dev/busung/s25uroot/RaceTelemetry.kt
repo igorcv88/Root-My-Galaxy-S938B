@@ -103,7 +103,7 @@ internal object RaceTelemetryParser {
 internal fun raceAnalysisReport(log: String): String {
     if (!log.contains("RMG_RACE_V1|") && log.contains("RMG_OBSERVER_V2|")) {
         val value = Czg3ExternalTelemetryParser.parse(log)
-        val traceComplete = value.observerAttached && value.observerDroppedEvents == 0L && value.observerStopUptimeMillis != null
+        val traceComplete = value.traceComplete
         return buildString {
             appendLine("race_analysis:")
             appendLine("source=external_observer_v2")
@@ -118,7 +118,14 @@ internal fun raceAnalysisReport(log: String): String {
             appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
             appendLine("malformed_records=0")
             appendLine("observer_target_pid=${value.observerTargetPid ?: "unknown"}")
+            appendLine("observer_scope=${value.observerScope ?: "unknown"}")
             appendLine("process_samples=${value.processSamples}")
+            appendLine("process_coverage_complete=${value.processCoverageComplete ?: "not_applicable"}")
+            appendLine("process_coverage_reason=${value.processCoverageReason}")
+            appendLine("critical_slide_pid=${value.criticalSlidePid ?: "none"}")
+            value.roleMetrics.forEach { (role, metrics) ->
+                appendLine("process_role_$role expected=${metrics.expectedPids} sampled=${metrics.sampledPids} samples=${metrics.processSamples} cpu_changes=${metrics.cpuChangesObserved ?: "unavailable"} runtime_delta_ns=${metrics.runtimeDeltaNanos ?: "unavailable"} wait_delta_ns=${metrics.waitDeltaNanos ?: "unavailable"} slices_delta=${metrics.slicesDelta ?: "unavailable"}")
+            }
             appendLine("target_cpu_changes_observed=${value.targetCpuChangesObserved ?: "unavailable"}")
             appendLine("target_runtime_delta_ns=${value.targetRuntimeDeltaNanos ?: "unavailable"}")
             appendLine("target_wait_delta_ns=${value.targetWaitDeltaNanos ?: "unavailable"}")

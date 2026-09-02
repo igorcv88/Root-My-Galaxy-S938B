@@ -21,8 +21,10 @@
 #include <unistd.h>
 
 #define OBS_BUFFER_CAPACITY (4U * 1024U * 1024U)
-#define OBS_MAX_PIDS 32
+#define OBS_MAX_PIDS 96
 #define OBS_MAX_SEEN_PIDS 96
+#define OBS_MAX_TRACKED_PIDS 64
+#define OBS_ROLE_CAPACITY 24
 #define OBS_MAX_CPUS 16
 #define OBS_POLL_INTERVAL_MS 25ULL
 #define OBS_PROCESS_INTERVAL_BURST_MS 25ULL
@@ -45,6 +47,13 @@ static char observer_log_partial[1024];
 static size_t observer_log_partial_length;
 static pid_t observer_seen_pids[OBS_MAX_SEEN_PIDS];
 static size_t observer_seen_pid_count;
+struct observer_tracked_pid {
+  pid_t pid;
+  char role[OBS_ROLE_CAPACITY];
+};
+static struct observer_tracked_pid observer_tracked_pids[OBS_MAX_TRACKED_PIDS];
+static size_t observer_tracked_pid_count;
+static pthread_mutex_t observer_pid_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_ullong observer_burst_until_ms;
 
 struct observer_capabilities {
@@ -215,6 +224,80 @@ static int pid_seen(pid_t pid) {
   return 0;
 }
 
+static void observer_track_pid(pid_t pid, const char *role, uint64_t now_ms) {
+  if (pid <= 0 || !role || !*role) return;
+  int changed = 0;
+  pthread_mutex_lock(&observer_pid_mutex);
+  for (size_t i = 0; i < observer_tracked_pid_count; ++i) {
+    if (observer_tracked_pids[i].pid != pid) continue;
+    if (strcmp(observer_tracked_pids[i].role, role) != 0) {
+      snprintf(observer_tracked_pids[i].role,
+               sizeof(observer_tracked_pids[i].role), "%s", role);
+      changed = 1;
+    }
+    pthread_mutex_unlock(&observer_pid_mutex);
+    if (changed) {
+      observer_append("RMG_OBSERVER_V2|event=pid_discovered|t_ms=%llu|role=%s|pid=%d|source=marker\n",
+          (unsigned long long)now_ms, role, pid);
+    }
+    return;
+  }
+  if (observer_tracked_pid_count < OBS_MAX_TRACKED_PIDS) {
+    struct observer_tracked_pid *slot =
+        &observer_tracked_pids[observer_tracked_pid_count++];
+    slot->pid = pid;
+    snprintf(slot->role, sizeof(slot->role), "%s", role);
+    changed = 1;
+  }
+  pthread_mutex_unlock(&observer_pid_mutex);
+  if (changed) {
+    observer_append("RMG_OBSERVER_V2|event=pid_discovered|t_ms=%llu|role=%s|pid=%d|source=marker\n",
+        (unsigned long long)now_ms, role, pid);
+  }
+}
+
+static size_t observer_snapshot_tracked(struct observer_tracked_pid *out,
+                                        size_t capacity) {
+  if (!out || capacity == 0) return 0;
+  pthread_mutex_lock(&observer_pid_mutex);
+  size_t count = observer_tracked_pid_count;
+  if (count > capacity) count = capacity;
+  memcpy(out, observer_tracked_pids, count * sizeof(*out));
+  pthread_mutex_unlock(&observer_pid_mutex);
+  return count;
+}
+
+static pid_t parse_marker_pid_after(const char *line, const char *token) {
+  if (!line || !token) return 0;
+  const char *p = strstr(line, token);
+  if (!p) return 0;
+  p += strlen(token);
+  errno = 0;
+  char *end = NULL;
+  long value = strtol(p, &end, 10);
+  if (errno != 0 || end == p || value <= 0 || value > INT_MAX) return 0;
+  return (pid_t)value;
+}
+
+static void track_marker_processes(const char *line, uint64_t now_ms) {
+  pid_t pid = parse_marker_pid_after(line, "preload supervisor pid=");
+  if (pid > 0) {
+    observer_track_pid(pid, "supervisor", now_ms);
+    return;
+  }
+  if (strstr(line, "[+] exploit attempt=")) {
+    pid = parse_marker_pid_after(line, " pid=");
+    if (pid > 0) {
+      observer_track_pid(pid, "attempt", now_ms);
+      return;
+    }
+  }
+  if (strstr(line, "slide child context")) {
+    pid = parse_marker_pid_after(line, " pid=");
+    if (pid > 0) observer_track_pid(pid, "slide_child", now_ms);
+  }
+}
+
 static void sample_process_metadata(pid_t pid, uint64_t now_ms) {
   char path[128], status[8192] = {0}, cgroup[2048] = {0}, sched_text[8192] = {0};
   char allowed[128] = "NA", voluntary[64] = "NA", involuntary[64] = "NA";
@@ -246,11 +329,15 @@ static void sample_process_metadata(pid_t pid, uint64_t now_ms) {
 
 struct proc_sample {
   pid_t ppid; char state; unsigned long long utime, stime; long threads, processor;
-  unsigned long long runtime_ns, wait_ns, slices; int schedstat_ok; char comm[48];
+  unsigned long long runtime_ns, wait_ns, slices;
+  int schedstat_ok, processor_ok;
+  char comm[48];
 };
 
 static int parse_proc_stat(pid_t pid, struct proc_sample *sample) {
   char path[128], text[4096];
+  sample->processor = -1;
+  sample->processor_ok = 0;
   snprintf(path, sizeof(path), "/proc/%d/stat", pid);
   if (read_text(path, text, sizeof(text)) <= 0) return 0;
   char *lparen = strchr(text, '('), *rparen = strrchr(text, ')');
@@ -271,7 +358,10 @@ static int parse_proc_stat(pid_t pid, struct proc_sample *sample) {
     if (field == 14) sample->utime = (unsigned long long)value;
     if (field == 15) sample->stime = (unsigned long long)value;
     if (field == 20) sample->threads = (long)value;
-    if (field == 39) sample->processor = (long)value;
+    if (field == 39) {
+      sample->processor = (long)value;
+      sample->processor_ok = value >= 0;
+    }
     p = end; field++;
   }
   snprintf(path, sizeof(path), "/proc/%d/schedstat", pid);
@@ -323,33 +413,60 @@ static void collect_thread_children(pid_t process, pid_t *pids, size_t *count, s
   }
 }
 
-static size_t collect_process_tree(pid_t root, pid_t *pids, size_t capacity) {
-  if (root <= 0 || capacity == 0) return 0;
-  size_t count = 1; pids[0] = root;
+static const char *tracked_role_for_pid(
+    pid_t pid, pid_t root, const struct observer_tracked_pid *tracked,
+    size_t tracked_count) {
+  for (size_t i = 0; i < tracked_count; ++i) {
+    if (tracked[i].pid == pid) return tracked[i].role;
+  }
+  return pid == root ? "helper" : "tree";
+}
+
+static size_t collect_observed_processes(
+    pid_t root, pid_t *pids, size_t capacity,
+    const struct observer_tracked_pid *tracked, size_t tracked_count) {
+  if (capacity == 0) return 0;
+  size_t count = 0;
+  if (root > 0) pids[count++] = root;
+  for (size_t i = 0; i < tracked_count && count < capacity; ++i) {
+    if (tracked[i].pid > 0 && !pid_in_list(pids, count, tracked[i].pid))
+      pids[count++] = tracked[i].pid;
+  }
   for (size_t index = 0; index < count && count < capacity; ++index)
     collect_thread_children(pids[index], pids, &count, capacity);
   return count;
 }
 
 static void sample_process_tree(pid_t root, uint64_t now_ms) {
-  pid_t pids[OBS_MAX_PIDS]; size_t count = collect_process_tree(root, pids, OBS_MAX_PIDS);
-  observer_append("RMG_OBSERVER_V2|event=tree|t_ms=%llu|root=%d|count=%zu\n",
-                  (unsigned long long)now_ms, root, count);
+  struct observer_tracked_pid tracked[OBS_MAX_TRACKED_PIDS];
+  size_t tracked_count = observer_snapshot_tracked(tracked, OBS_MAX_TRACKED_PIDS);
+  pid_t pids[OBS_MAX_PIDS];
+  size_t count = collect_observed_processes(
+      root, pids, OBS_MAX_PIDS, tracked, tracked_count);
+  observer_append("RMG_OBSERVER_V2|event=tree|t_ms=%llu|root=%d|count=%zu|tracked=%zu\n",
+                  (unsigned long long)now_ms, root, count, tracked_count);
   for (size_t i = 0; i < count; ++i) {
-    struct proc_sample sample; memset(&sample, 0, sizeof(sample)); sample.processor = -1;
+    struct proc_sample sample; memset(&sample, 0, sizeof(sample));
     if (!parse_proc_stat(pids[i], &sample)) {
-      if (!pid_seen(pids[i])) observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d\n", (unsigned long long)now_ms, pids[i]);
+      if (!pid_seen(pids[i])) {
+        observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\n",
+            (unsigned long long)now_ms, pids[i],
+            tracked_role_for_pid(pids[i], root, tracked, tracked_count));
+      }
       continue;
     }
     if (!pid_seen(pids[i])) sample_process_metadata(pids[i], now_ms);
-    char runtime[40], wait[40], slices[40];
+    char cpu[24], runtime[40], wait[40], slices[40];
+    if (sample.processor_ok) snprintf(cpu, sizeof(cpu), "%ld", sample.processor);
+    else snprintf(cpu, sizeof(cpu), "NA");
     format_u64(runtime, sizeof(runtime), sample.schedstat_ok, sample.runtime_ns);
     format_u64(wait, sizeof(wait), sample.schedstat_ok, sample.wait_ns);
     format_u64(slices, sizeof(slices), sample.schedstat_ok, sample.slices);
-    observer_append("RMG_OBSERVER_V2|event=proc|t_ms=%llu|pid=%d|ppid=%d|comm=%s|state=%c|cpu=%ld|threads=%ld|utime=%llu|stime=%llu|runtime_ns=%s|wait_ns=%s|slices=%s\n",
+    observer_append("RMG_OBSERVER_V2|event=proc|t_ms=%llu|pid=%d|ppid=%d|comm=%s|state=%c|cpu=%s|threads=%ld|utime=%llu|stime=%llu|runtime_ns=%s|wait_ns=%s|slices=%s|role=%s\n",
         (unsigned long long)now_ms, pids[i], sample.ppid, sample.comm,
-        sample.state ? sample.state : '?', sample.processor, sample.threads,
-        sample.utime, sample.stime, runtime, wait, slices);
+        sample.state ? sample.state : '?', cpu, sample.threads,
+        sample.utime, sample.stime, runtime, wait, slices,
+        tracked_role_for_pid(pids[i], root, tracked, tracked_count));
   }
 }
 
@@ -439,7 +556,9 @@ static void sample_slow(uint64_t now_ms) {
 }
 
 static const char *classify_marker(const char *line) {
+  if(strstr(line,"preload supervisor pid="))return "supervisor_start";
   if(strstr(line,"[+] exploit attempt="))return "attempt_begin";
+  if(strstr(line,"slide child context"))return "slide_child";
   if(strstr(line,"slide source mode=p0"))return "p0_begin";
   if(strstr(line,"p0 pipe oracle prepared"))return "p0_oracle_ready";
   if(strstr(line,"kernel page prepare mode=1"))return "p0_page_prepared";
@@ -457,7 +576,7 @@ static const char *classify_marker(const char *line) {
   return NULL;
 }
 
-static void record_log_line(const char *line,uint64_t now_ms){const char *marker=classify_marker(line);if(!marker)return;unsigned long long until=now_ms+OBS_BURST_WINDOW_MS,current=atomic_load_explicit(&observer_burst_until_ms,memory_order_relaxed);while(until>current&&!atomic_compare_exchange_weak_explicit(&observer_burst_until_ms,&current,until,memory_order_relaxed,memory_order_relaxed)){}char copy[256];size_t len=strlen(line);if(len>=sizeof(copy))len=sizeof(copy)-1;memcpy(copy,line,len);copy[len]='\0';sanitize_inline(copy);observer_append("RMG_OBSERVER_V2|event=marker|t_ms=%llu|name=%s|line=%s\n",(unsigned long long)now_ms,marker,copy);}
+static void record_log_line(const char *line,uint64_t now_ms){track_marker_processes(line,now_ms);const char *marker=classify_marker(line);if(!marker)return;unsigned long long until=now_ms+OBS_BURST_WINDOW_MS,current=atomic_load_explicit(&observer_burst_until_ms,memory_order_relaxed);while(until>current&&!atomic_compare_exchange_weak_explicit(&observer_burst_until_ms,&current,until,memory_order_relaxed,memory_order_relaxed)){}char copy[256];size_t len=strlen(line);if(len>=sizeof(copy))len=sizeof(copy)-1;memcpy(copy,line,len);copy[len]='\0';sanitize_inline(copy);observer_append("RMG_OBSERVER_V2|event=marker|t_ms=%llu|name=%s|line=%s\n",(unsigned long long)now_ms,marker,copy);}
 
 static void tail_payload_log(uint64_t now_ms){if(observer_log_fd<0)return;struct stat st;if(fstat(observer_log_fd,&st)==0&&st.st_size<observer_log_offset){observer_log_offset=0;observer_log_partial_length=0;}char chunk[2048];for(;;){ssize_t count=pread(observer_log_fd,chunk,sizeof(chunk),observer_log_offset);if(count<=0)break;observer_log_offset+=count;for(ssize_t idx=0;idx<count;++idx){char ch=chunk[idx];if(ch=='\n'){observer_log_partial[observer_log_partial_length]='\0';record_log_line(observer_log_partial,now_ms);observer_log_partial_length=0;}else if(ch!='\r'){if(observer_log_partial_length+1<sizeof(observer_log_partial))observer_log_partial[observer_log_partial_length++]=ch;else observer_log_partial_length=0;}}}}
 
@@ -469,15 +588,15 @@ struct sched_param idle={.sched_priority=0};errno=0;result.scheduler_ret=sched_s
 #else
 result.scheduler_ret=-1;result.scheduler_errno=ENOTSUP;
 #endif
-long cpus=sysconf(_SC_NPROCESSORS_ONLN);if(cpus>2){cpu_set_t set;CPU_ZERO(&set);long selected=cpus-1;if(selected>=CPU_SETSIZE)selected=CPU_SETSIZE-1;result.requested_cpu=selected;CPU_SET((int)selected,&set);errno=0;result.affinity_ret=sched_setaffinity(0,sizeof(set),&set);result.affinity_errno=result.affinity_ret==0?0:errno;}else{result.affinity_ret=-1;result.affinity_errno=ENOTSUP;}cpu_set_t effective;CPU_ZERO(&effective);if(sched_getaffinity(0,sizeof(effective),&effective)==0)format_cpu_set(&effective,result.effective_cpus,sizeof(result.effective_cpus));return result;}
+cpu_set_t allowed;CPU_ZERO(&allowed);errno=0;if(sched_getaffinity(0,sizeof(allowed),&allowed)==0){long selected=-1;for(int cpu=CPU_SETSIZE-1;cpu>=0;--cpu){if(CPU_ISSET(cpu,&allowed)){selected=cpu;break;}}if(selected>=0){cpu_set_t set;CPU_ZERO(&set);result.requested_cpu=selected;CPU_SET((int)selected,&set);errno=0;result.affinity_ret=sched_setaffinity(0,sizeof(set),&set);result.affinity_errno=result.affinity_ret==0?0:errno;}else{result.affinity_ret=-1;result.affinity_errno=ENOTSUP;}}else{result.affinity_ret=-1;result.affinity_errno=errno;}cpu_set_t effective;CPU_ZERO(&effective);if(sched_getaffinity(0,sizeof(effective),&effective)==0)format_cpu_set(&effective,result.effective_cpus,sizeof(result.effective_cpus));return result;}
 
 static void *observer_main(void *unused){(void)unused;struct observer_sched_setup ss=observer_pin_away_from_exploit();observer_append("RMG_OBSERVER_V2|event=observer_sched|t_ms=%llu|policy=%d|nice=%d|cpu=%d|setpriority_ret=%d|setpriority_errno=%d|setscheduler_ret=%d|setscheduler_errno=%d|requested_cpu=%ld|setaffinity_ret=%d|setaffinity_errno=%d|effective_cpus=%s\n",(unsigned long long)boottime_ms(),sched_getscheduler(0),getpriority(PRIO_PROCESS,0),sched_getcpu(),ss.nice_ret,ss.nice_errno,ss.scheduler_ret,ss.scheduler_errno,ss.requested_cpu,ss.affinity_ret,ss.affinity_errno,ss.effective_cpus);probe_capabilities();uint64_t last_process=0,last_system=0,last_slow=0;int last_target=-1;while(atomic_load_explicit(&observer_running,memory_order_relaxed)){uint64_t now=boottime_ms();int target=atomic_load_explicit(&observer_target_pid,memory_order_relaxed);if(target!=last_target){observer_append("RMG_OBSERVER_V2|event=target|t_ms=%llu|pid=%d\n",(unsigned long long)now,target);last_target=target;}tail_payload_log(now);unsigned long long until=atomic_load_explicit(&observer_burst_until_ms,memory_order_relaxed);int burst=now<=until;uint64_t pi=burst?OBS_PROCESS_INTERVAL_BURST_MS:OBS_PROCESS_INTERVAL_IDLE_MS;if(target>0&&(last_process==0||now-last_process>=pi)){sample_process_tree((pid_t)target,now);last_process=now;}uint64_t si=burst?OBS_SYSTEM_INTERVAL_BURST_MS:OBS_SYSTEM_INTERVAL_IDLE_MS;if(last_system==0||now-last_system>=si){sample_system(now);last_system=now;}if(last_slow==0||now-last_slow>=OBS_SLOW_INTERVAL_MS){sample_slow(now);last_slow=now;}struct timespec sleep_for={.tv_sec=0,.tv_nsec=(long)OBS_POLL_INTERVAL_MS*1000000L};while(nanosleep(&sleep_for,&sleep_for)<0&&errno==EINTR){}}tail_payload_log(boottime_ms());return NULL;}
 
-static void observer_reset(void){if(observer_log_fd>=0){close(observer_log_fd);observer_log_fd=-1;}free(observer_buffer);observer_buffer=NULL;observer_length=0;observer_dropped=0;observer_log_path[0]='\0';observer_log_offset=0;observer_log_partial_length=0;observer_seen_pid_count=0;memset(&observer_caps,0,sizeof(observer_caps));atomic_store(&observer_burst_until_ms,0);atomic_store(&observer_target_pid,0);}
+static void observer_reset(void){if(observer_log_fd>=0){close(observer_log_fd);observer_log_fd=-1;}free(observer_buffer);observer_buffer=NULL;observer_length=0;observer_dropped=0;observer_log_path[0]='\0';observer_log_offset=0;observer_log_partial_length=0;observer_seen_pid_count=0;pthread_mutex_lock(&observer_pid_mutex);observer_tracked_pid_count=0;memset(observer_tracked_pids,0,sizeof(observer_tracked_pids));pthread_mutex_unlock(&observer_pid_mutex);memset(&observer_caps,0,sizeof(observer_caps));atomic_store(&observer_burst_until_ms,0);atomic_store(&observer_target_pid,0);}
 
 JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerStart(JNIEnv *env,jobject thiz,jstring log_path){(void)thiz;if(atomic_load(&observer_running))return JNI_TRUE;observer_reset();observer_buffer=malloc(OBS_BUFFER_CAPACITY);if(!observer_buffer)return JNI_FALSE;observer_buffer[0]='\0';if(log_path){const char *path=(*env)->GetStringUTFChars(env,log_path,NULL);if(path){snprintf(observer_log_path,sizeof(observer_log_path),"%s",path);(*env)->ReleaseStringUTFChars(env,log_path,path);observer_log_fd=open(observer_log_path,O_RDONLY|O_CLOEXEC);}}observer_append("RMG_OBSERVER_V2|event=start|t_ms=%llu|observer_pid=%d|poll_ms=%llu|proc_idle_ms=%llu|proc_burst_ms=%llu|system_idle_ms=%llu|system_burst_ms=%llu|burst_window_ms=%llu|slow_ms=%llu|log_tail=%d|buffer_bytes=%u\n",(unsigned long long)boottime_ms(),getpid(),(unsigned long long)OBS_POLL_INTERVAL_MS,(unsigned long long)OBS_PROCESS_INTERVAL_IDLE_MS,(unsigned long long)OBS_PROCESS_INTERVAL_BURST_MS,(unsigned long long)OBS_SYSTEM_INTERVAL_IDLE_MS,(unsigned long long)OBS_SYSTEM_INTERVAL_BURST_MS,(unsigned long long)OBS_BURST_WINDOW_MS,(unsigned long long)OBS_SLOW_INTERVAL_MS,observer_log_fd>=0,OBS_BUFFER_CAPACITY);atomic_store(&observer_running,1);if(pthread_create(&observer_thread,NULL,observer_main,NULL)!=0){atomic_store(&observer_running,0);observer_reset();return JNI_FALSE;}return JNI_TRUE;}
 
-JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerAttachPid(JNIEnv *env,jobject thiz,jlong pid){(void)env;(void)thiz;if(!atomic_load(&observer_running)||pid<=0||pid>INT_MAX)return JNI_FALSE;char path[128],text[256];snprintf(path,sizeof(path),"/proc/%lld/stat",(long long)pid);int stat_access=read_text(path,text,sizeof(text))>0;observer_append("RMG_OBSERVER_V2|event=attach|t_ms=%llu|pid=%lld|stat_access=%d\n",(unsigned long long)boottime_ms(),(long long)pid,stat_access);atomic_store_explicit(&observer_target_pid,(int)pid,memory_order_relaxed);return JNI_TRUE;}
+JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerAttachPid(JNIEnv *env,jobject thiz,jlong pid){(void)env;(void)thiz;if(!atomic_load(&observer_running)||pid<=0||pid>INT_MAX)return JNI_FALSE;char path[128],text[256];snprintf(path,sizeof(path),"/proc/%lld/stat",(long long)pid);int stat_access=read_text(path,text,sizeof(text))>0;uint64_t now=boottime_ms();observer_append("RMG_OBSERVER_V2|event=attach|t_ms=%llu|pid=%lld|stat_access=%d\n",(unsigned long long)now,(long long)pid,stat_access);observer_track_pid((pid_t)pid,"helper",now);atomic_store_explicit(&observer_target_pid,(int)pid,memory_order_relaxed);return JNI_TRUE;}
 
 JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerMarker(JNIEnv *env,jobject thiz,jstring line){(void)thiz;if(!atomic_load(&observer_running)||!line)return JNI_FALSE;const char *text=(*env)->GetStringUTFChars(env,line,NULL);if(!text)return JNI_FALSE;record_log_line(text,boottime_ms());(*env)->ReleaseStringUTFChars(env,line,text);return JNI_TRUE;}
 

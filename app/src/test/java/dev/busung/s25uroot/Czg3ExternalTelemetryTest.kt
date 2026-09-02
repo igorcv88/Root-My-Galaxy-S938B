@@ -134,6 +134,61 @@ class Czg3ExternalTelemetryTest {
     }
 
     @Test
+    fun standaloneTraceRequiresSupervisorAttemptAndCriticalSlideCoverage() {
+        val complete = """
+            RMG_OBSERVER_V2|event=controller_start|available=true|transport=standalone|scope=process_tree_system
+            RMG_OBSERVER_V2|event=start|t_ms=120000|observer_pid=10
+            RMG_OBSERVER_V2|event=attach|t_ms=120010|pid=100|stat_access=1
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120010|role=helper|pid=100|source=marker
+            [+] preload supervisor pid=101 attempts=24 base_delay=20000 p0_timeout=45 timeout=120
+            [+] exploit attempt=1/24 pid=102 delay=25000 p0_offset=scan
+            [+] slide child context stack_writer=pselect pid=103 uid=10524
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120020|role=supervisor|pid=101|source=marker
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120030|role=attempt|pid=102|source=marker
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120040|role=slide_child|pid=103|source=marker
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=100|ppid=1|comm=helper|state=S|cpu=NA|threads=1|utime=0|stime=0|runtime_ns=10|wait_ns=5|slices=1|role=helper
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=101|ppid=100|comm=supervisor|state=S|cpu=2|threads=1|utime=0|stime=0|runtime_ns=20|wait_ns=8|slices=2|role=supervisor
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=102|ppid=101|comm=attempt|state=R|cpu=3|threads=1|utime=0|stime=0|runtime_ns=100|wait_ns=10|slices=3|role=attempt
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=200|wait_ns=20|slices=4|role=slide_child
+            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=102|ppid=101|comm=attempt|state=R|cpu=5|threads=1|utime=0|stime=0|runtime_ns=500|wait_ns=30|slices=8|role=attempt
+            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=900|wait_ns=40|slices=9|role=slide_child
+            RMG_OBSERVER_V2|event=marker|t_ms=120040|name=attempt_begin|line=[+] exploit attempt=1/24 pid=102
+            RMG_OBSERVER_V2|event=stop|t_ms=120200|dropped=0|bytes=1000
+        """.trimIndent()
+        val value = Czg3ExternalTelemetryParser.parse(complete)
+        assertTrue(value.traceComplete)
+        assertEquals(true, value.processCoverageComplete)
+        assertEquals("complete", value.processCoverageReason)
+        assertEquals(103L, value.criticalSlidePid)
+        assertEquals(null, value.roleMetrics.getValue("helper").cpuChangesObserved)
+        assertEquals(1, value.roleMetrics.getValue("attempt").cpuChangesObserved)
+        assertEquals(400L, value.roleMetrics.getValue("attempt").runtimeDeltaNanos)
+        assertEquals(700L, value.roleMetrics.getValue("slide_child").runtimeDeltaNanos)
+
+        val missingAttemptSample = complete.lines()
+            .filterNot { it.contains("|pid=102|ppid=") }
+            .joinToString("\n")
+        val incomplete = Czg3ExternalTelemetryParser.parse(missingAttemptSample)
+        assertFalse(incomplete.traceComplete)
+        assertEquals(false, incomplete.processCoverageComplete)
+        assertTrue(incomplete.processCoverageReason.contains("attempt_sample"))
+    }
+
+    @Test
+    fun remoteMarkerScopeDoesNotRequireLocalProcessAttach() {
+        val remote = """
+            RMG_OBSERVER_V2|event=controller_start|available=true|transport=shizuku|scope=system_remote_markers
+            RMG_OBSERVER_V2|event=start|t_ms=100|observer_pid=10
+            RMG_OBSERVER_V2|event=marker|t_ms=120|name=attempt_begin|line=[+] exploit attempt=1/24 pid=200
+            RMG_OBSERVER_V2|event=stop|t_ms=200|dropped=0|bytes=100
+        """.trimIndent()
+        val value = Czg3ExternalTelemetryParser.parse(remote)
+        assertTrue(value.traceComplete)
+        assertEquals(null, value.processCoverageComplete)
+        assertEquals("not_applicable_remote_markers", value.processCoverageReason)
+    }
+
+    @Test
     fun externalReportsMarkUnavailableRoleTimingsExplicitlyAndIgnoreMarkerCopies() {
         val race = raceAnalysisReport(log)
         val prep = preparationAnalysisReport(log)
