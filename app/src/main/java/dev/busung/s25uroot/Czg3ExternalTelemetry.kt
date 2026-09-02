@@ -287,6 +287,12 @@ private fun laterExploitStage(existing: ExploitStage?, inferred: ExploitStage?):
     else -> inferred
 }
 
+private val postExploitStages = setOf(
+    ExploitStage.StagingKernelSu,
+    ExploitStage.LateLoadingKernelSu,
+    ExploitStage.VerifyingKernelSu,
+)
+
 internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHistoryEntry {
     if (entry.profileId != CZG3_PROFILE_ID_FOR_DIAGNOSTICS && !entry.log.contains("RMG_OBSERVER_V2|")) return entry
     val summary = Czg3ExternalTelemetryParser.parse(entry.log)
@@ -302,6 +308,17 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
     val attemptCount = maxOf(entry.attemptCount, summary.maxSupervisorAttempt)
     val checkpoint = entry.lastPrepCheckpoint ?: summary.lastCheckpoint
     val checkpointUptime = entry.lastPrepCheckpointUptimeMillis ?: summary.lastCheckpointUptimeMillis
+    val normalizedStageTimings = if (elapsed == null) {
+        entry.stageTimings
+    } else {
+        entry.stageTimings.map { timing ->
+            if (timing.stage in postExploitStages && timing.elapsedMillis < elapsed) {
+                timing.copy(elapsedMillis = elapsed)
+            } else {
+                timing
+            }
+        }
+    }
     val canRecordInferredTiming = inferredStage != null &&
         (entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
     val timing = if (canRecordInferredTiming && elapsed != null) {
@@ -315,7 +332,11 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
         exploitElapsedMillis = elapsed,
         lastPrepCheckpoint = checkpoint,
         lastPrepCheckpointUptimeMillis = checkpointUptime,
-        stageTimings = if (timing != null && entry.stageTimings.lastOrNull() != timing) entry.stageTimings + timing else entry.stageTimings,
+        stageTimings = if (timing != null && normalizedStageTimings.lastOrNull() != timing) {
+            normalizedStageTimings + timing
+        } else {
+            normalizedStageTimings
+        },
     )
 }
 
@@ -337,13 +358,13 @@ internal fun externalObserverAnalysisReport(log: String): String {
         appendLine("process_coverage_reason=${value.processCoverageReason}")
         appendLine("critical_slide_pid=${value.criticalSlidePid ?: "none"}")
         value.roleMetrics.forEach { (role, metrics) ->
-  appendLine("role_${role}_expected_pids=${metrics.expectedPids}")
-  appendLine("role_${role}_sampled_pids=${metrics.sampledPids}")
-  appendLine("role_${role}_samples=${metrics.processSamples}")
-  appendLine("role_${role}_cpu_changes=${metrics.cpuChangesObserved ?: "unavailable"}")
-  appendLine("role_${role}_runtime_delta_ns=${metrics.runtimeDeltaNanos ?: "unavailable"}")
-  appendLine("role_${role}_wait_delta_ns=${metrics.waitDeltaNanos ?: "unavailable"}")
-  appendLine("role_${role}_slices_delta=${metrics.slicesDelta ?: "unavailable"}")
+            appendLine("role_${role}_expected_pids=${metrics.expectedPids}")
+            appendLine("role_${role}_sampled_pids=${metrics.sampledPids}")
+            appendLine("role_${role}_samples=${metrics.processSamples}")
+            appendLine("role_${role}_cpu_changes=${metrics.cpuChangesObserved ?: "unavailable"}")
+            appendLine("role_${role}_runtime_delta_ns=${metrics.runtimeDeltaNanos ?: "unavailable"}")
+            appendLine("role_${role}_wait_delta_ns=${metrics.waitDeltaNanos ?: "unavailable"}")
+            appendLine("role_${role}_slices_delta=${metrics.slicesDelta ?: "unavailable"}")
         }
         appendLine("max_supervisor_attempt=${value.maxSupervisorAttempt}")
         appendLine("p0_succeeded=${value.p0Succeeded}")

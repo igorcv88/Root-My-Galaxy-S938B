@@ -354,13 +354,19 @@ static pid_t parse_marker_pid_after(const char *line, const char *token) {
   return (pid_t)value;
 }
 
+static int is_attempt_begin_line(const char *line) {
+  return line && strstr(line, "exploit attempt=") &&
+         strstr(line, " pid=") && strstr(line, " delay=") &&
+         !strstr(line, " timeout pid=");
+}
+
 static void track_marker_processes(const char *line, uint64_t now_ms) {
   pid_t pid = parse_marker_pid_after(line, "preload supervisor pid=");
   if (pid > 0) {
     observer_track_pid(pid, "supervisor", now_ms);
     return;
   }
-  if (strstr(line, "[+] exploit attempt=")) {
+  if (is_attempt_begin_line(line)) {
     pid = parse_marker_pid_after(line, " pid=");
     if (pid > 0) {
       observer_track_pid(pid, "attempt", now_ms);
@@ -691,7 +697,7 @@ static void sample_slow(uint64_t now_ms) {
 
 static const char *classify_marker(const char *line) {
   if(strstr(line,"preload supervisor pid="))return "supervisor_start";
-  if(strstr(line,"[+] exploit attempt="))return "attempt_begin";
+  if(is_attempt_begin_line(line))return "attempt_begin";
   if(strstr(line,"slide child context"))return "slide_child";
   if(strstr(line,"slide source mode=p0"))return "p0_begin";
   if(strstr(line,"p0 pipe oracle prepared"))return "p0_oracle_ready";
