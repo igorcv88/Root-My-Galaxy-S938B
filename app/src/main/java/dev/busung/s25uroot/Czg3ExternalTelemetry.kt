@@ -134,21 +134,35 @@ internal object Czg3ExternalTelemetryParser {
     )
 }
 
+private fun laterExploitStage(existing: ExploitStage?, inferred: ExploitStage?): ExploitStage? = when {
+    existing == null -> inferred
+    inferred == null -> existing
+    existing.ordinal >= inferred.ordinal -> existing
+    else -> inferred
+}
+
 internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHistoryEntry {
     if (entry.profileId != CZG3_PROFILE_ID_FOR_DIAGNOSTICS && !entry.log.contains("RMG_OBSERVER_V2|")) return entry
     val summary = Czg3ExternalTelemetryParser.parse(entry.log)
-    val stage = when {
+    val inferredStage = when {
         summary.fopsReached -> ExploitStage.AttemptingRace
         summary.p0Succeeded -> ExploitStage.ValidatingPrimitive
         summary.maxSupervisorAttempt > 0 -> ExploitStage.ResolvingKernelState
-        else -> entry.stage
+        else -> null
     }
+    val stage = laterExploitStage(entry.stage, inferredStage)
     val elapsed = maxOf(entry.exploitElapsedMillis ?: 0L, summary.exploitElapsedMillis ?: 0L)
         .takeIf { it > 0L } ?: entry.exploitElapsedMillis
     val attemptCount = maxOf(entry.attemptCount, summary.maxSupervisorAttempt)
     val checkpoint = entry.lastPrepCheckpoint ?: summary.lastCheckpoint
     val checkpointUptime = entry.lastPrepCheckpointUptimeMillis ?: summary.lastCheckpointUptimeMillis
-    val timing = if (stage != null && elapsed != null) StageTiming(stage, elapsed, attemptCount.takeIf { it > 0 }) else null
+    val canRecordInferredTiming = inferredStage != null &&
+        (entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
+    val timing = if (canRecordInferredTiming && elapsed != null) {
+        StageTiming(inferredStage, elapsed, attemptCount.takeIf { it > 0 })
+    } else {
+        null
+    }
     return entry.copy(
         stage = stage,
         attemptCount = attemptCount,
