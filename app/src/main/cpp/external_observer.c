@@ -365,21 +365,34 @@ static int parse_proc_stat(pid_t pid, struct proc_sample *sample) {
   sanitize_inline(sample->comm);
   char *p = rparen + 2;
   if (!*p) return 0;
-  sample->state = *p; p += 2; int field = 4;
+  sample->state = *p;
+  p += 2;
+  int field = 4;
   while (*p && field <= 39) {
     while (*p == ' ') p++;
     if (!*p) break;
-    char *end = NULL; errno = 0; long long value = strtoll(p, &end, 10);
-    if (end == p || errno != 0) break;
-    if (field == 4) sample->ppid = (pid_t)value;
-    if (field == 14) sample->utime = (unsigned long long)value;
-    if (field == 15) sample->stime = (unsigned long long)value;
-    if (field == 20) sample->threads = (long)value;
-    if (field == 39) {
-      sample->processor = (long)value;
-      sample->processor_ok = value >= 0;
+    char *token_end = p;
+    while (*token_end && *token_end != ' ') token_end++;
+    char *parsed_end = NULL;
+    errno = 0;
+    if (field == 4 || field == 20 || field == 39) {
+      long long value = strtoll(p, &parsed_end, 10);
+      int parsed = errno == 0 && parsed_end == token_end;
+      if (!parsed && field <= 20) return 0;
+      if (parsed && field == 4) sample->ppid = (pid_t)value;
+      if (parsed && field == 20) sample->threads = (long)value;
+      if (parsed && field == 39) {
+        sample->processor = (long)value;
+        sample->processor_ok = value >= 0;
+      }
+    } else if (field == 14 || field == 15) {
+      unsigned long long value = strtoull(p, &parsed_end, 10);
+      if (errno != 0 || parsed_end != token_end) return 0;
+      if (field == 14) sample->utime = value;
+      else sample->stime = value;
     }
-    p = end; field++;
+    p = token_end;
+    field++;
   }
   snprintf(path, sizeof(path), "/proc/%d/schedstat", pid);
   char schedstat[256];
