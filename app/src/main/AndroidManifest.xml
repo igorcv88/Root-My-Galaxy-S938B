@@ -45,6 +45,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="@string/autoroot_fgs_subtype" />
         </service>
+        <service
+            android:name=".ExploitObserverService"
+            android:exported="false"
+            android:process=":observer"
+            android:stopWithTask="false" />
         <receiver
             android:name=".AutoRootBootReceiver"
             android:enabled="true"
