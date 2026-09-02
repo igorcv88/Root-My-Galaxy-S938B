@@ -353,15 +353,72 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
         else -> elapsed
     }
     val timing = if (canRecordInferredTiming && inferredTimingElapsed != null) {
-        StageTiming(inferredStage, inferredTimingElapsed, attemptCount.takeIf { it > 0 })
+        val timingAttempt = if (
+            inferredStage == ExploitStage.AttemptingRace &&
+            summary.firstAttemptUptimeMillis != null
+        ) {
+            1
+        } else {
+            attemptCount.takeIf { it > 0 }
+        }
+        StageTiming(inferredStage, inferredTimingElapsed, timingAttempt)
     } else {
         null
     }
-    val stageTimingsBeforeInference = if (
+    val stageTimingsWithInference = if (
         timing?.stage == ExploitStage.AttemptingRace &&
         summary.firstAttemptUptimeMillis != null
     ) {
-        normalizedStageTimings.filterNot { it.stage == ExploitStage.AttemptingRace }
+        val updated = normalizedStageTimings.toMutableList()
+        val firstAttemptIndex = updated.indexOfFirst {
+            it.stage == ExploitStage.AttemptingRace && it.attempt == 1
+        }
+        val raceTimingCount = updated.count { it.stage == ExploitStage.AttemptingRace }
+        val staleTerminalIndex = updated.lastIndex.takeIf { index ->
+            if (index < 0 || elapsed == null) {
+                false
+            } else {
+                val candidate = updated[index]
+                val matchesTerminalInference =
+                    candidate.stage == ExploitStage.AttemptingRace &&
+                        candidate.elapsedMillis == elapsed &&
+                        candidate.attempt == attemptCount.takeIf { it > 0 }
+                val hasEarlierSameAttempt = (0 until index).any { priorIndex ->
+                    val prior = updated[priorIndex]
+                    prior.stage == ExploitStage.AttemptingRace &&
+                        prior.attempt == candidate.attempt
+                }
+                matchesTerminalInference &&
+                    (raceTimingCount == 1 || hasEarlierSameAttempt)
+            }
+        }
+        when {
+            firstAttemptIndex >= 0 -> {
+                updated[firstAttemptIndex] = timing
+                if (staleTerminalIndex != null && staleTerminalIndex != firstAttemptIndex) {
+                    updated.removeAt(staleTerminalIndex)
+                }
+                updated
+            }
+            staleTerminalIndex != null -> {
+                updated[staleTerminalIndex] = timing
+                updated
+            }
+            updated.lastOrNull() == timing -> updated
+            else -> {
+                val firstRaceIndex = updated.indexOfFirst {
+                    it.stage == ExploitStage.AttemptingRace
+                }
+                if (firstRaceIndex >= 0) {
+                    updated.add(firstRaceIndex, timing)
+                } else {
+                    updated += timing
+                }
+                updated
+            }
+        }
+    } else if (timing != null && normalizedStageTimings.lastOrNull() != timing) {
+        normalizedStageTimings + timing
     } else {
         normalizedStageTimings
     }
@@ -371,11 +428,7 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
         exploitElapsedMillis = elapsed,
         lastPrepCheckpoint = checkpoint,
         lastPrepCheckpointUptimeMillis = checkpointUptime,
-        stageTimings = if (timing != null && stageTimingsBeforeInference.lastOrNull() != timing) {
-            stageTimingsBeforeInference + timing
-        } else {
-            stageTimingsBeforeInference
-        },
+        stageTimings = stageTimingsWithInference,
     )
 }
 
