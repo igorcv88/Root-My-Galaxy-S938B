@@ -121,7 +121,7 @@ private object LightRaceTelemetryParser {
             if (separator > 0) fields[field.substring(0, separator)] = field.substring(separator + 1)
         }
         return metricNames.associateWith { name ->
-            fields[name]?.toLongOrNull()?.takeUnless { it == -1L }
+            fields[name]?.toLongOrNull()?.takeUnless { it == Long.MIN_VALUE }
         }
     }
 }
