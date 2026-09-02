@@ -115,10 +115,14 @@ class PayloadRepository(private val context: Context) {
             }
         }
         return try {
-            downloadRemote(profile, onProgress).also {
+            downloadRemote(profile, onProgress).let { downloaded ->
                 onProgress(
-                    "RMG_PAYLOAD_V1|invocation_source=${PayloadSource.ManualOnline.wireValue}|" +
+                    "RMG_PAYLOAD_V1|invocation_source=${resolutionSource.wireValue}|" +
                         "artifact_source=${PayloadArtifactSource.RemoteDownload.wireValue}",
+                )
+                downloaded.copy(
+                    source = resolutionSource,
+                    artifactSource = PayloadArtifactSource.RemoteDownload,
                 )
             }
         } catch (error: PayloadNetworkException) {
