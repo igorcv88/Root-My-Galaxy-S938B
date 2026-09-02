@@ -187,7 +187,7 @@ internal fun preparationAnalysisReport(log: String): String {
         val summary = Czg3ExternalTelemetryParser.parse(log)
         val p0 = externalPrep(log, 1)
         val fops = externalPrep(log, 0)
-        val traceComplete = summary.observerAttached && summary.observerDroppedEvents == 0L && summary.observerStopUptimeMillis != null
+        val traceComplete = summary.traceComplete
         return buildString {
             appendLine("prep_analysis:")
             appendLine("source=external_observer_v2")
