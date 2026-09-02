@@ -16,6 +16,8 @@ internal data class Czg3ExternalRunSummary(
     val observerStopUptimeMillis: Long?,
     val observerElapsedMillis: Long?,
     val exploitElapsedMillis: Long?,
+    val payloadReleaseUptimeMillis: Long?,
+    val firstAttemptUptimeMillis: Long?,
     val observerTargetPid: Long?,
     val observerAttached: Boolean,
     val observerScope: String?,
@@ -85,6 +87,7 @@ internal object Czg3ExternalTelemetryParser {
             val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
             time to match.groupValues[2]
         }.toList()
+        val firstAttemptTime = markers.firstOrNull { it.second == "attempt_begin" }?.first
 
         val discoveries = discovered.findAll(log).mapNotNull { match ->
             val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
@@ -200,6 +203,8 @@ internal object Czg3ExternalTelemetryParser {
             observerStopUptimeMillis = stop,
             observerElapsedMillis = observerElapsed,
             exploitElapsedMillis = exploitElapsed,
+            payloadReleaseUptimeMillis = release,
+            firstAttemptUptimeMillis = firstAttemptTime,
             observerTargetPid = targetPid,
             observerAttached = attached,
             observerScope = scope,
@@ -335,10 +340,87 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
     }
     val canRecordInferredTiming = inferredStage != null &&
         (entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
-    val timing = if (canRecordInferredTiming && elapsed != null) {
-        StageTiming(inferredStage, elapsed, attemptCount.takeIf { it > 0 })
+    val inferredTimingElapsed = when (inferredStage) {
+        ExploitStage.AttemptingRace -> {
+            val stageUptime = summary.firstAttemptUptimeMillis
+            val baseline = summary.payloadReleaseUptimeMillis ?: summary.observerStartUptimeMillis
+            if (stageUptime != null && baseline != null && stageUptime >= baseline) {
+                stageUptime - baseline
+            } else {
+                elapsed
+            }
+        }
+        else -> elapsed
+    }
+    val timing = if (canRecordInferredTiming && inferredTimingElapsed != null) {
+        val timingAttempt = if (
+            inferredStage == ExploitStage.AttemptingRace &&
+            summary.firstAttemptUptimeMillis != null
+        ) {
+            1
+        } else {
+            attemptCount.takeIf { it > 0 }
+        }
+        StageTiming(inferredStage, inferredTimingElapsed, timingAttempt)
     } else {
         null
+    }
+    val stageTimingsWithInference = if (
+        timing?.stage == ExploitStage.AttemptingRace &&
+        summary.firstAttemptUptimeMillis != null
+    ) {
+        val updated = normalizedStageTimings.toMutableList()
+        val firstAttemptIndex = updated.indexOfFirst {
+            it.stage == ExploitStage.AttemptingRace && it.attempt == 1
+        }
+        val raceTimingCount = updated.count { it.stage == ExploitStage.AttemptingRace }
+        val staleTerminalIndex = updated.lastIndex.takeIf { index ->
+            if (index < 0 || elapsed == null) {
+                false
+            } else {
+                val candidate = updated[index]
+                val matchesTerminalInference =
+                    candidate.stage == ExploitStage.AttemptingRace &&
+                        candidate.elapsedMillis == elapsed &&
+                        candidate.attempt == attemptCount.takeIf { it > 0 }
+                val hasEarlierSameAttempt = (0 until index).any { priorIndex ->
+                    val prior = updated[priorIndex]
+                    prior.stage == ExploitStage.AttemptingRace &&
+                        prior.attempt == candidate.attempt
+                }
+                matchesTerminalInference &&
+                    (raceTimingCount == 1 || hasEarlierSameAttempt)
+            }
+        }
+        when {
+            firstAttemptIndex >= 0 -> {
+                updated[firstAttemptIndex] = timing
+                if (staleTerminalIndex != null && staleTerminalIndex != firstAttemptIndex) {
+                    updated.removeAt(staleTerminalIndex)
+                }
+                updated
+            }
+            staleTerminalIndex != null -> {
+                updated[staleTerminalIndex] = timing
+                updated
+            }
+            updated.lastOrNull() == timing -> updated
+            else -> {
+                val firstRaceIndex = updated.indexOfFirst {
+                    it.stage == ExploitStage.AttemptingRace
+                }
+                if (firstRaceIndex >= 0) {
+                    updated.add(firstRaceIndex, timing)
+                } else {
+                    updated += timing
+                }
+                updated
+            }
+        }
+    } else if (timing != null && normalizedStageTimings.lastOrNull() != timing) {
+        normalizedStageTimings + timing
+    } else {
+        normalizedStageTimings
     }
     return entry.copy(
         stage = stage,
@@ -346,11 +428,7 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
         exploitElapsedMillis = elapsed,
         lastPrepCheckpoint = checkpoint,
         lastPrepCheckpointUptimeMillis = checkpointUptime,
-        stageTimings = if (timing != null && normalizedStageTimings.lastOrNull() != timing) {
-            normalizedStageTimings + timing
-        } else {
-            normalizedStageTimings
-        },
+        stageTimings = stageTimingsWithInference,
     )
 }
 
@@ -365,6 +443,8 @@ internal fun externalObserverAnalysisReport(log: String): String {
         appendLine("observer_start_uptime_ms=${value.observerStartUptimeMillis ?: "unknown"}")
         appendLine("observer_stop_uptime_ms=${value.observerStopUptimeMillis ?: "unknown"}")
         appendLine("observer_elapsed_ms=${value.observerElapsedMillis ?: "unknown"}")
+        appendLine("payload_release_uptime_ms=${value.payloadReleaseUptimeMillis ?: "unknown"}")
+        appendLine("first_attempt_uptime_ms=${value.firstAttemptUptimeMillis ?: "unknown"}")
         appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
         appendLine("process_samples=${value.processSamples}")
         appendLine("trace_complete=${value.traceComplete}")
