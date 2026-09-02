@@ -54,7 +54,7 @@ data class DiagnosticAggregate(
 )
 
 internal fun aggregateDiagnostics(entries: List<InstallHistoryEntry>): DiagnosticAggregate {
-    val normalized = entries.map(::normalizeCzg3ExternalHistory)
+    val normalized = entries
     val terminal = normalized.filter { it.result != InstallRunResult.Running }
     val successful = terminal.filter { it.result == InstallRunResult.Succeeded }
     val elapsed = successful.mapNotNull(InstallHistoryEntry::exploitElapsedMillis).sorted()
@@ -110,12 +110,27 @@ class InstallHistoryStore(private val context: Context) {
     fun load(): List<InstallHistoryEntry> = directory.listFiles { file -> file.extension == "json" }.orEmpty()
         .mapNotNull(::decodeOrQuarantine).sortedByDescending(InstallHistoryEntry::startedAtMillis)
 
-    fun closeInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()): List<InstallHistoryEntry> = load().map { entry ->
-        val recovered = recoverInterruptedEntry(entry, currentBootId, System.currentTimeMillis())
-        if (recovered.result == InstallRunResult.UnexpectedReboot) {
-            val record = PstoreCollector.collect(recovered.usedShizuku)
-            recovered.copy(crashRecordStatus = record.status, crashRecord = record.content).also(::save)
-        } else if (recovered != entry) recovered.also(::save) else entry
+    fun closeInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()): List<InstallHistoryEntry> {
+        recoverInterruptedRuns(currentBootId)
+        return load()
+    }
+
+    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) {
+        val completedAtMillis = System.currentTimeMillis()
+        directory.listFiles { file -> file.extension == "json" }.orEmpty()
+            .filter(::mightContainRunningEntry)
+            .mapNotNull(::decodeOrQuarantine)
+            .filter { it.result == InstallRunResult.Running }
+            .forEach { entry ->
+                val recovered = recoverInterruptedEntry(entry, currentBootId, completedAtMillis)
+                val completed = if (recovered.result == InstallRunResult.UnexpectedReboot) {
+                    val record = PstoreCollector.collect(recovered.usedShizuku)
+                    recovered.copy(crashRecordStatus = record.status, crashRecord = record.content)
+                } else {
+                    recovered
+                }
+                save(completed)
+            }
     }
 
     fun create(bootId: String? = AutoRootSupport.currentBootToken(), snapshot: DeviceSnapshot = DeviceSnapshot.current()): InstallHistoryEntry = InstallHistoryEntry(
@@ -127,18 +142,34 @@ class InstallHistoryStore(private val context: Context) {
     @Synchronized
     fun save(entry: InstallHistoryEntry) {
         val normalized = normalizeCzg3ExternalHistory(entry)
-        val atomicFile = AtomicFile(File(directory, "${normalized.id}.json"))
+        val target = File(directory, "${normalized.id}.json")
+        val isNewEntry = !target.exists()
+        val atomicFile = AtomicFile(target)
         val output = atomicFile.startWrite()
         try {
             output.write(encode(normalized).toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync(); atomicFile.finishWrite(output)
-            val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
-            val entries = files.mapNotNull(::decodeOrQuarantine)
-            val pruneIds = historyIdsToPrune(entries, MAX_HISTORY_ENTRIES)
-            files.filter { it.nameWithoutExtension in pruneIds }.forEach(File::delete)
+            if (isNewEntry) pruneHistoryFiles()
         } catch (error: Throwable) { atomicFile.failWrite(output); throw error }
     }
 
     fun delete(id: String) { File(directory, "$id.json").delete() }
+
+    private fun mightContainRunningEntry(file: File): Boolean = runCatching {
+        file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            val buffer = CharArray(RUNNING_ENTRY_SCAN_CHARS)
+            val count = reader.read(buffer)
+            count > 0 && String(buffer, 0, count).contains("\"result\":\"Running\"")
+        }
+    }.getOrDefault(false)
+
+    private fun pruneHistoryFiles() {
+        val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
+        if (files.size <= MAX_HISTORY_ENTRIES) return
+        files.sortedWith(
+            compareByDescending<File> { it.lastModified() }
+                .thenByDescending(File::getName),
+        ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
+    }
 
     private fun encode(entry: InstallHistoryEntry) = JSONObject()
         .put("id", entry.id).put("startedAtMillis", entry.startedAtMillis).put("completedAtMillis", entry.completedAtMillis ?: JSONObject.NULL)
@@ -184,6 +215,7 @@ class InstallHistoryStore(private val context: Context) {
     companion object {
         internal const val MAX_HISTORY_ENTRIES = 50
         private const val MAX_STAGE_TIMINGS = 128
+        private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
     }
 }
 

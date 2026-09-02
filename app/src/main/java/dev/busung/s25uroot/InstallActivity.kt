@@ -1,9 +1,13 @@
 package dev.busung.s25uroot
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowManager
@@ -16,8 +20,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,8 +44,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -69,7 +69,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
-import kotlinx.coroutines.delay
 
 class InstallActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -101,12 +100,44 @@ class InstallActivity : ComponentActivity() {
                 var installSessionStartedAt by rememberSaveable {
                     mutableStateOf(if (startInstall) System.currentTimeMillis() else 0L)
                 }
+                val batteryOptimizationLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult(),
+                ) {
+                    val exempt = getSystemService(PowerManager::class.java)
+                        .isIgnoringBatteryOptimizations(packageName)
+                    AppPreferences.setAutoRootEnabled(this@InstallActivity, exempt)
+                    autoRootEnabled = exempt
+                    if (!exempt) {
+                        Toast.makeText(
+                            this@InstallActivity,
+                            getString(R.string.autoroot_battery_optimization_required),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+                val requestBatteryOptimizationExemption: () -> Unit = {
+                    val powerManager = getSystemService(PowerManager::class.java)
+                    if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
+                        autoRootEnabled = true
+                    } else {
+                        val packageUri = Uri.parse("package:$packageName")
+                        runCatching {
+                            batteryOptimizationLauncher.launch(
+                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri),
+                            )
+                        }.onFailure {
+                            batteryOptimizationLauncher.launch(
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                            )
+                        }
+                    }
+                }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
                     if (granted) {
-                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
-                        autoRootEnabled = true
+                        requestBatteryOptimizationExemption()
                     } else {
                         AppPreferences.setAutoRootEnabled(this@InstallActivity, false)
                         autoRootEnabled = false
@@ -133,8 +164,7 @@ class InstallActivity : ComponentActivity() {
                             Manifest.permission.POST_NOTIFICATIONS,
                         ) == PackageManager.PERMISSION_GRANTED
                     ) {
-                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
-                        autoRootEnabled = true
+                        requestBatteryOptimizationExemption()
                     } else {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
@@ -229,12 +259,7 @@ private fun InstallScreen(
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
-    val logScrollState = rememberScrollState()
     val view = LocalView.current
-    LaunchedEffect(installState.log) {
-        delay(40)
-        logScrollState.scrollTo(logScrollState.maxValue)
-    }
 
     Scaffold { padding ->
         Column(
@@ -267,7 +292,6 @@ private fun InstallScreen(
             InstallerLog(
                 output = installState.log,
                 modifier = Modifier.weight(1f),
-                scrollState = logScrollState,
             )
 
             if (installState.phase == InstallPhase.Installed) {
@@ -405,9 +429,7 @@ private fun SoftRebootOptInCard(
 @Composable
 private fun InstallerStatusCard(installState: InstallUiState) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+        modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             containerColor = when (installState.phase) {
@@ -429,23 +451,22 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                AnimatedContent(targetState = installState.phase, label = "install-status-icon") { phase ->
-                    when {
-                        installState.busy -> LoadingIndicator(
-                            modifier = Modifier.size(44.dp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                        phase == InstallPhase.Installed -> Icon(
-                            Icons.Rounded.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(44.dp),
-                        )
-                        else -> Icon(
-                            Icons.Rounded.Error,
-                            contentDescription = null,
-                            modifier = Modifier.size(44.dp),
-                        )
-                    }
+                when {
+                    installState.busy -> Icon(
+                        Icons.Rounded.Memory,
+                        contentDescription = null,
+                        modifier = Modifier.size(44.dp),
+                    )
+                    installState.phase == InstallPhase.Installed -> Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(44.dp),
+                    )
+                    else -> Icon(
+                        Icons.Rounded.Error,
+                        contentDescription = null,
+                        modifier = Modifier.size(44.dp),
+                    )
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -457,13 +478,6 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                         color = LocalContentColor.current.copy(alpha = 0.78f),
                     )
                 }
-            }
-            if (installState.busy) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = LocalContentColor.current,
-                    trackColor = LocalContentColor.current.copy(alpha = 0.2f),
-                )
             }
         }
     }
@@ -521,12 +535,6 @@ private fun InstallerSteps(phase: InstallPhase) {
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
                         )
                     }
-                    if (stepState == 1 && phase !in setOf(InstallPhase.Failed, InstallPhase.Ready)) {
-                        LoadingIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
                 }
             }
         }
@@ -537,8 +545,9 @@ private fun InstallerSteps(phase: InstallPhase) {
 private fun InstallerLog(
     output: String,
     modifier: Modifier,
-    scrollState: androidx.compose.foundation.ScrollState,
 ) {
+    val scrollState = rememberScrollState()
+    val visibleOutput = remember(output) { installerLogForDisplay(output) }
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -551,7 +560,7 @@ private fun InstallerLog(
         ) {
             Text(stringResource(R.string.install_live_progress), style = MaterialTheme.typography.titleMedium)
             Text(
-                text = output.ifBlank { stringResource(R.string.install_preparing) },
+                text = visibleOutput.ifBlank { stringResource(R.string.install_preparing) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -563,6 +572,17 @@ private fun InstallerLog(
             )
         }
     }
+}
+
+internal const val INSTALLER_LOG_RENDER_CHARS = 32_768
+
+internal fun installerLogForDisplay(
+    output: String,
+    maxChars: Int = INSTALLER_LOG_RENDER_CHARS,
+): String {
+    require(maxChars > 0)
+    if (output.length <= maxChars) return output
+    return "…\n" + output.takeLast(maxChars)
 }
 
 @Composable

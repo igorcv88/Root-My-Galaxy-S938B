@@ -88,9 +88,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val repository = PayloadRepository(application)
     private val historyStore = InstallHistoryStore(application)
     private val mutableState = MutableStateFlow(InstallUiState())
-    private val mutableHistory = MutableStateFlow(historyStore.closeInterruptedRuns())
+    private val mutableHistory = MutableStateFlow<List<InstallHistoryEntry>>(emptyList())
     private val mutableTargetCatalog = MutableStateFlow(TargetCatalogUiState())
     private var discoveryJob: Job? = null
+    private var historyJob: Job? = null
     private var installJob: Job? = null
     private var activeHistoryEntry: InstallHistoryEntry? = null
     private var lastHistoryCheckpointAt = 0L
@@ -106,12 +107,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     val targetCatalog: StateFlow<TargetCatalogUiState> = mutableTargetCatalog.asStateFlow()
 
     init {
-        refresh()
+        refreshInternal(recoverInterrupted = true)
     }
 
-    fun refresh() {
+    fun refresh() = refreshInternal(recoverInterrupted = false)
+
+    private fun refreshInternal(recoverInterrupted: Boolean) {
         if (installJob?.isActive == true) return
-        mutableHistory.value = historyStore.load()
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch(Dispatchers.IO) {
+            mutableHistory.value = if (recoverInterrupted) {
+                historyStore.closeInterruptedRuns()
+            } else {
+                historyStore.load()
+            }
+        }
         discoveryJob?.cancel()
         discoveryJob = viewModelScope.launch(Dispatchers.IO) {
             val probe = NativeProbe.run()
@@ -147,8 +157,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val runningId = activeHistoryEntry?.id
         val toDelete = ids.filterNot { it == runningId }
         if (toDelete.isEmpty()) return
-        toDelete.forEach(historyStore::delete)
         mutableHistory.value = mutableHistory.value.filterNot { it.id in toDelete }
+        viewModelScope.launch(Dispatchers.IO) {
+            toDelete.forEach(historyStore::delete)
+        }
     }
 
     fun loadTargetCatalog() {
