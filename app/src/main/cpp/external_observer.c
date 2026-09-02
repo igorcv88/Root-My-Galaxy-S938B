@@ -27,9 +27,11 @@
 #define OBS_ROLE_CAPACITY 24
 #define OBS_MAX_CPUS 16
 #define OBS_POLL_INTERVAL_MS 25ULL
-#define OBS_PROCESS_INTERVAL_BURST_MS 25ULL
+/* Keep marker discovery responsive while making the expensive /proc sweeps
+ * substantially less frequent during timing-sensitive exploit bursts. */
+#define OBS_PROCESS_INTERVAL_BURST_MS 100ULL
 #define OBS_PROCESS_INTERVAL_IDLE_MS 250ULL
-#define OBS_SYSTEM_INTERVAL_BURST_MS 200ULL
+#define OBS_SYSTEM_INTERVAL_BURST_MS 500ULL
 #define OBS_SYSTEM_INTERVAL_IDLE_MS 500ULL
 #define OBS_SLOW_INTERVAL_MS 1000ULL
 #define OBS_BURST_WINDOW_MS 2000ULL
