@@ -54,7 +54,8 @@ data class DiagnosticAggregate(
 )
 
 internal fun aggregateDiagnostics(entries: List<InstallHistoryEntry>): DiagnosticAggregate {
-    val terminal = entries.filter { it.result != InstallRunResult.Running }
+    val normalized = entries.map(::normalizeCzg3ExternalHistory)
+    val terminal = normalized.filter { it.result != InstallRunResult.Running }
     val successful = terminal.filter { it.result == InstallRunResult.Succeeded }
     val elapsed = successful.mapNotNull(InstallHistoryEntry::exploitElapsedMillis).sorted()
     val attempts = terminal.map(InstallHistoryEntry::attemptCount).filter { it > 0 }.sorted()
@@ -125,10 +126,11 @@ class InstallHistoryStore(private val context: Context) {
 
     @Synchronized
     fun save(entry: InstallHistoryEntry) {
-        val atomicFile = AtomicFile(File(directory, "${entry.id}.json"))
+        val normalized = normalizeCzg3ExternalHistory(entry)
+        val atomicFile = AtomicFile(File(directory, "${normalized.id}.json"))
         val output = atomicFile.startWrite()
         try {
-            output.write(encode(entry).toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync(); atomicFile.finishWrite(output)
+            output.write(encode(normalized).toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync(); atomicFile.finishWrite(output)
             val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
             val entries = files.mapNotNull(::decodeOrQuarantine)
             val pruneIds = historyIdsToPrune(entries, MAX_HISTORY_ENTRIES)
@@ -176,7 +178,7 @@ class InstallHistoryStore(private val context: Context) {
             selectedMinUptimeSeconds = value.optionalInt("selectedMinUptimeSeconds"),
             lastPrepCheckpoint = value.optionalString("lastPrepCheckpoint"),
             lastPrepCheckpointUptimeMillis = value.optionalLong("lastPrepCheckpointUptimeMillis"),
-        )
+        ).let(::normalizeCzg3ExternalHistory)
     }
 
     companion object {

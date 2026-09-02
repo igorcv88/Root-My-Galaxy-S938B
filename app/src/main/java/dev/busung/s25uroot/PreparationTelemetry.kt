@@ -94,32 +94,21 @@ internal object PreparationTelemetryParser {
         return PreparationScopeAnalysis(
             preparationBeginUptimeMillis = active.firstOrNull { it.event == "preparation_begin" }
                 ?.arguments?.get("arg0")?.toLongOrNull(),
-            mode = preparationContext
-                ?.arguments?.get("arg1")?.toLongOrNull(),
-            preparationAttempt = preparationContext
-                ?.arguments?.get("arg0")?.toLongOrNull(),
+            mode = preparationContext?.arguments?.get("arg1")?.toLongOrNull(),
+            preparationAttempt = preparationContext?.arguments?.get("arg0")?.toLongOrNull(),
             preparationCycles = totals.size,
             failedCycles = totals.count { it.result != "ok" },
-            totalMicros = totals.map(PreparationRecord::durationMicros)
-                .takeIf(List<Long>::isNotEmpty)?.sum(),
+            totalMicros = totals.map(PreparationRecord::durationMicros).takeIf(List<Long>::isNotEmpty)?.sum(),
             kernelSnitchSetupMicros = duration("kernelsnitch_setup"),
-            allocationsMicros = duration(
-                "initial_prep_allocations",
-                "spray_allocations",
-                "pre_allocations",
-                "post_allocations",
-                "leak_memfd_open",
-            ),
+            allocationsMicros = duration("initial_prep_allocations", "spray_allocations", "pre_allocations", "post_allocations", "leak_memfd_open"),
             collisionPhaseMicros = duration("collision_ready", "wait_leak_child"),
             bruteForceMicros = duration("kernelsnitch_bruteforce"),
-            reclaimMicros = reclaim.map(PreparationRecord::durationMicros)
-                .takeIf(List<Long>::isNotEmpty)?.sum(),
+            reclaimMicros = reclaim.map(PreparationRecord::durationMicros).takeIf(List<Long>::isNotEmpty)?.sum(),
             objectIndex = lastTotal?.arguments?.get("object_index")?.toLongOrNull(),
             skBuffSendsRequested = skBuff?.arguments?.get("arg0")?.toLongOrNull(),
             skBuffSendsCompleted = skBuff?.arguments?.get("arg1")?.toLongOrNull(),
             result = lastTotal?.result,
-            traceComplete = totals.takeIf(List<PreparationRecord>::isNotEmpty)
-                ?.all { it.arguments["trace_complete"] == "1" },
+            traceComplete = totals.takeIf(List<PreparationRecord>::isNotEmpty)?.all { it.arguments["trace_complete"] == "1" },
             phaseDurationsMicros = phaseDurations,
         )
     }
@@ -132,15 +121,7 @@ internal object PreparationTelemetryParser {
         val attempt = requireNotNull(fields["attempt"]).toInt().also { require(it > 0) }
         val duration = requireNotNull(fields["duration_us"]).toLong().also { require(it >= 0) }
         val result = requireNotNull(fields["result"]).also { require(it.matches(Regex("[a-z0-9_]+"))) }
-        return PreparationRecord(
-            runId,
-            attempt,
-            scope,
-            event,
-            duration,
-            result,
-            fields - setOf("run", "attempt", "scope", "event", "duration_us", "result"),
-        )
+        return PreparationRecord(runId, attempt, scope, event, duration, result, fields - setOf("run", "attempt", "scope", "event", "duration_us", "result"))
     }
 
     private fun parseCheckpoint(body: String): PreparationCheckpoint {
@@ -160,36 +141,130 @@ internal object PreparationTelemetryParser {
     }
 }
 
-internal fun preparationAnalysisReport(log: String): String = buildString {
-    val analysis = PreparationTelemetryParser.analyze(log)
-    appendLine("prep_analysis:")
-    listOf("p0", "fops").forEach { scope ->
-        val value = analysis.scopes.getValue(scope)
-        appendLine("$scope:")
-        appendLine("preparation_begin_uptime_ms=${value.preparationBeginUptimeMillis ?: "unknown"}")
-        appendLine("mode=${value.mode ?: "unknown"}")
-        appendLine("preparation_attempt=${value.preparationAttempt ?: "unknown"}")
-        appendLine("preparation_cycles=${value.preparationCycles}")
-        appendLine("failed_cycles=${value.failedCycles}")
-        appendLine("total_us=${value.totalMicros ?: "unknown"}")
-        appendLine("kernelsnitch_setup_us=${value.kernelSnitchSetupMicros ?: "unknown"}")
-        appendLine("allocations_us=${value.allocationsMicros ?: "unknown"}")
-        appendLine("collision_phase_us=${value.collisionPhaseMicros ?: "unknown"}")
-        appendLine("brute_force_us=${value.bruteForceMicros ?: "unknown"}")
-        appendLine("reclaim_us=${value.reclaimMicros ?: "unknown"}")
-        appendLine("object_index=${value.objectIndex ?: "unknown"}")
-        appendLine("sk_buff_sends_requested=${value.skBuffSendsRequested ?: "unknown"}")
-        appendLine("sk_buff_sends_completed=${value.skBuffSendsCompleted ?: "unknown"}")
-        appendLine("result=${value.result ?: "unknown"}")
-        appendLine("trace_complete=${value.traceComplete ?: "unknown"}")
-        appendLine("phases:")
-        if (value.phaseDurationsMicros.isEmpty()) {
-            appendLine("  none")
-        } else {
-            value.phaseDurationsMicros.forEach { (event, duration) ->
-                appendLine("  ${event}_us=$duration")
-            }
+private data class ExternalPrep(
+    val cycles: Int,
+    val lastAttempt: Long?,
+    val lastElapsedMicros: Long?,
+    val lastObjectIndex: Long?,
+    val skRequested: Long?,
+    val skCompleted: Long?,
+)
+
+private fun externalPrep(log: String, mode: Int): ExternalPrep {
+    // Match only original payload lines. Observer marker records intentionally
+    // embed the original text after `line=` and must not be counted as a second
+    // preparation cycle.
+    val prepare = Regex(
+        """(?m)^\[\*\] kernel page prepare mode=$mode attempt=(\d+)/(\d+) elapsed_ms=(\d+)[^\n]*""",
+    )
+    val all = prepare.findAll(log).toList()
+    val last = all.lastOrNull()
+    val objectIndex = if (last != null) {
+        val prefix = log.substring(0, last.range.first)
+        Regex("""(?m)^\[\*\] mm leaked=[^\n]*object_index=(\d+)""")
+            .findAll(prefix)
+            .lastOrNull()
+            ?.groupValues?.get(1)?.toLongOrNull()
+    } else null
+    val sk = if (last != null) {
+        val prefix = log.substring(0, last.range.first)
+        Regex("""(?m)^\[\*\] sk_buff reclaim sends=(\d+)/(\d+) mode=$mode""")
+            .findAll(prefix)
+            .lastOrNull()
+    } else null
+    return ExternalPrep(
+        cycles = all.size,
+        lastAttempt = last?.groupValues?.get(1)?.toLongOrNull(),
+        lastElapsedMicros = last?.groupValues?.get(3)?.toLongOrNull()?.times(1_000L),
+        lastObjectIndex = objectIndex,
+        skRequested = sk?.groupValues?.get(2)?.toLongOrNull(),
+        skCompleted = sk?.groupValues?.get(1)?.toLongOrNull(),
+    )
+}
+
+internal fun preparationAnalysisReport(log: String): String {
+    if (!log.contains("RMG_PREP_V1|") && log.contains("RMG_OBSERVER_V2|")) {
+        val summary = Czg3ExternalTelemetryParser.parse(log)
+        val p0 = externalPrep(log, 1)
+        val fops = externalPrep(log, 0)
+        val traceComplete = summary.observerAttached && summary.observerDroppedEvents == 0L && summary.observerStopUptimeMillis != null
+        return buildString {
+            appendLine("prep_analysis:")
+            appendLine("source=external_observer_v2")
+            appendLine("p0:")
+            appendLine("preparation_begin_uptime_ms=unavailable")
+            appendLine("mode=1")
+            appendLine("preparation_attempt=${p0.lastAttempt ?: "unknown"}")
+            appendLine("preparation_cycles=${p0.cycles}")
+            appendLine("failed_cycles=unavailable")
+            appendLine("total_us=${p0.lastElapsedMicros ?: "unknown"}")
+            appendLine("kernelsnitch_setup_us=unavailable")
+            appendLine("allocations_us=unavailable")
+            appendLine("collision_phase_us=unavailable")
+            appendLine("brute_force_us=unavailable")
+            appendLine("reclaim_us=unavailable")
+            appendLine("object_index=${p0.lastObjectIndex ?: "unknown"}")
+            appendLine("sk_buff_sends_requested=${p0.skRequested ?: "unknown"}")
+            appendLine("sk_buff_sends_completed=${p0.skCompleted ?: "unknown"}")
+            appendLine("result=${if (summary.p0Succeeded) "success" else "not_acquired"}")
+            appendLine("trace_complete=$traceComplete")
+            appendLine("phases:")
+            appendLine("  unavailable")
+            appendLine("fops:")
+            appendLine("preparation_begin_uptime_ms=unavailable")
+            appendLine("mode=0")
+            appendLine("preparation_attempt=${fops.lastAttempt ?: "unknown"}")
+            appendLine("preparation_cycles=${fops.cycles}")
+            appendLine("failed_cycles=unavailable")
+            appendLine("total_us=${fops.lastElapsedMicros ?: "unknown"}")
+            appendLine("kernelsnitch_setup_us=unavailable")
+            appendLine("allocations_us=unavailable")
+            appendLine("collision_phase_us=unavailable")
+            appendLine("brute_force_us=unavailable")
+            appendLine("reclaim_us=unavailable")
+            appendLine("object_index=${fops.lastObjectIndex ?: "unknown"}")
+            appendLine("sk_buff_sends_requested=${fops.skRequested ?: "unknown"}")
+            appendLine("sk_buff_sends_completed=${fops.skCompleted ?: "unknown"}")
+            appendLine("result=" + when {
+                summary.fopsTriggered == true -> "triggered"
+                summary.unsafeStop -> "mutation_uncertain"
+                summary.fopsReached -> "reached"
+                else -> "not_reached"
+            })
+            appendLine("trace_complete=$traceComplete")
+            appendLine("phases:")
+            appendLine("  unavailable")
+            appendLine("malformed_records=0")
+            append(externalObserverAnalysisReport(log))
         }
     }
-    appendLine("malformed_records=${analysis.malformedRecords}")
+
+    return buildString {
+        val analysis = PreparationTelemetryParser.analyze(log)
+        appendLine("prep_analysis:")
+        listOf("p0", "fops").forEach { scope ->
+            val value = analysis.scopes.getValue(scope)
+            appendLine("$scope:")
+            appendLine("preparation_begin_uptime_ms=${value.preparationBeginUptimeMillis ?: "unknown"}")
+            appendLine("mode=${value.mode ?: "unknown"}")
+            appendLine("preparation_attempt=${value.preparationAttempt ?: "unknown"}")
+            appendLine("preparation_cycles=${value.preparationCycles}")
+            appendLine("failed_cycles=${value.failedCycles}")
+            appendLine("total_us=${value.totalMicros ?: "unknown"}")
+            appendLine("kernelsnitch_setup_us=${value.kernelSnitchSetupMicros ?: "unknown"}")
+            appendLine("allocations_us=${value.allocationsMicros ?: "unknown"}")
+            appendLine("collision_phase_us=${value.collisionPhaseMicros ?: "unknown"}")
+            appendLine("brute_force_us=${value.bruteForceMicros ?: "unknown"}")
+            appendLine("reclaim_us=${value.reclaimMicros ?: "unknown"}")
+            appendLine("object_index=${value.objectIndex ?: "unknown"}")
+            appendLine("sk_buff_sends_requested=${value.skBuffSendsRequested ?: "unknown"}")
+            appendLine("sk_buff_sends_completed=${value.skBuffSendsCompleted ?: "unknown"}")
+            appendLine("result=${value.result ?: "unknown"}")
+            appendLine("trace_complete=${value.traceComplete ?: "unknown"}")
+            appendLine("phases:")
+            if (value.phaseDurationsMicros.isEmpty()) appendLine("  none")
+            else value.phaseDurationsMicros.forEach { (event, duration) -> appendLine("  ${event}_us=$duration") }
+        }
+        appendLine("malformed_records=${analysis.malformedRecords}")
+    }
 }
