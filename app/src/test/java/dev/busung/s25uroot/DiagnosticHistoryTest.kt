@@ -2,6 +2,7 @@ package dev.busung.s25uroot
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -25,6 +26,17 @@ class DiagnosticHistoryTest {
     fun boundedHistoryPrunesOnlyOldestEntries() {
         val entries = (1..55).map { entry(it.toString(), "boot", started = it.toLong()) }
         assertEquals((1..5).map(Int::toString).toSet(), historyIdsToPrune(entries, 50))
+    }
+
+    @Test
+    fun pruningReadsPersistedStartTimeInsteadOfFilesystemMtime() {
+        assertEquals(
+            123456L,
+            historyStartedAtMillisFromPrefix(
+                "{\"schemaVersion\":2,\"id\":\"x\",\"startedAtMillis\":123456,\"result\":\"Failed\"}",
+            ),
+        )
+        assertNull(historyStartedAtMillisFromPrefix("{\"id\":\"x\"}"))
     }
 
     @Test

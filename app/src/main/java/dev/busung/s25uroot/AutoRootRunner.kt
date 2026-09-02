@@ -268,7 +268,15 @@ internal class AutoRootRunner(
 
         try {
             val startedAt = SystemClock.elapsedRealtime()
-            var lastProgressAt = startedAt
+            val watchdogStartsAt = if (externalObserverMode) {
+                ExploitRunControl.payloadGateWatchdogStartUptimeMillis(
+                    processStartedAtUptimeMillis = startedAt,
+                    minimumUptimeSeconds = minimumUptimeSeconds,
+                )
+            } else {
+                startedAt
+            }
+            var lastProgressAt = watchdogStartsAt
             var lastRawLog = ""
             while (process.isAlive) {
                 val rawLog = readLog()
@@ -276,14 +284,16 @@ internal class AutoRootRunner(
                     if (!externalObserverMode) cacheP0Offset(bootToken, rawLog)
                     publishNewLog(rawLog)
                     lastRawLog = rawLog
-                    lastProgressAt = SystemClock.elapsedRealtime()
+                    lastProgressAt = maxOf(SystemClock.elapsedRealtime(), watchdogStartsAt)
                 }
                 val now = SystemClock.elapsedRealtime()
-                require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
-                    context.getString(R.string.error_exploit_stalled)
-                }
-                require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
-                    context.getString(R.string.error_exploit_timeout)
+                if (now >= watchdogStartsAt) {
+                    require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
+                        context.getString(R.string.error_exploit_stalled)
+                    }
+                    require(now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS) {
+                        context.getString(R.string.error_exploit_timeout)
+                    }
                 }
                 delay(
                     if (useShizuku || externalObserverMode) {

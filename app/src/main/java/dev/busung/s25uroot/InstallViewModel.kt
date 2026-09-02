@@ -92,6 +92,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val mutableTargetCatalog = MutableStateFlow(TargetCatalogUiState())
     private var discoveryJob: Job? = null
     private var historyJob: Job? = null
+    private var historyMutationJob: Job? = null
     private var installJob: Job? = null
     private var activeHistoryEntry: InstallHistoryEntry? = null
     private var lastHistoryCheckpointAt = 0L
@@ -143,11 +144,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun loadHistory(recoverInterrupted: Boolean = true) {
+    fun loadHistory() {
         if (installJob?.isActive == true) return
         historyJob?.cancel()
+        val pendingMutation = historyMutationJob
         historyJob = viewModelScope.launch(Dispatchers.IO) {
-            if (recoverInterrupted) historyStore.recoverInterruptedRuns()
+            pendingMutation?.join()
             val job = currentCoroutineContext()[Job]
             val loaded = historyStore.load { job?.isActive != false }
             currentCoroutineContext().ensureActive()
@@ -164,8 +166,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val runningId = activeHistoryEntry?.id
         val toDelete = ids.filterNot { it == runningId }
         if (toDelete.isEmpty()) return
+        historyJob?.cancel()
+        historyJob = null
         mutableHistory.value = mutableHistory.value.filterNot { it.id in toDelete }
-        viewModelScope.launch(Dispatchers.IO) {
+        val previousMutation = historyMutationJob
+        historyMutationJob = viewModelScope.launch(Dispatchers.IO) {
+            previousMutation?.join()
             toDelete.forEach(historyStore::delete)
         }
     }

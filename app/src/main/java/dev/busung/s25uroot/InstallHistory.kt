@@ -104,6 +104,20 @@ internal fun historyIdsToPrune(entries: List<InstallHistoryEntry>, maximum: Int)
 
 internal fun historyLogForStorage(log: String): String = log
 
+internal fun historyStartedAtMillisFromPrefix(prefix: String): Long? {
+    val marker = "startedAtMillis"
+    val markerIndex = prefix.indexOf(marker)
+    if (markerIndex < 0) return null
+    val colonIndex = prefix.indexOf(':', markerIndex + marker.length)
+    if (colonIndex < 0) return null
+    var start = colonIndex + 1
+    while (start < prefix.length && prefix[start].isWhitespace()) start++
+    var end = start
+    while (end < prefix.length && prefix[end].isDigit()) end++
+    if (end == start) return null
+    return prefix.substring(start, end).toLongOrNull()
+}
+
 internal const val HISTORY_SCHEMA_VERSION = 2
 
 internal fun historyNeedsExternalNormalization(
@@ -188,11 +202,19 @@ class InstallHistoryStore(private val context: Context) {
         }
     }.getOrDefault(false)
 
+    private fun storedStartedAtMillis(file: File): Long? = runCatching {
+        file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            val buffer = CharArray(HISTORY_ORDER_SCAN_CHARS)
+            val count = reader.read(buffer)
+            if (count <= 0) null else historyStartedAtMillisFromPrefix(String(buffer, 0, count))
+        }
+    }.getOrNull()
+
     private fun pruneHistoryFiles() {
         val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
         if (files.size <= MAX_HISTORY_ENTRIES) return
         files.sortedWith(
-            compareByDescending<File> { it.lastModified() }
+            compareByDescending<File> { storedStartedAtMillis(it) ?: it.lastModified() }
                 .thenByDescending(File::getName),
         ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
     }
@@ -256,6 +278,7 @@ class InstallHistoryStore(private val context: Context) {
         internal const val MAX_HISTORY_ENTRIES = 50
         private const val MAX_STAGE_TIMINGS = 128
         private const val RUNNING_ENTRY_SCAN_CHARS = 2_048
+        private const val HISTORY_ORDER_SCAN_CHARS = 2_048
     }
 }
 
