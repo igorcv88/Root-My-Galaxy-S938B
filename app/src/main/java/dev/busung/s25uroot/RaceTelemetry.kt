@@ -41,7 +41,7 @@ internal object RaceTelemetryParser {
         fun delta(start: String, end: String): Long? {
             val first = time(start) ?: return null
             val last = time(end) ?: return null
-            return ((last - first).takeIf { it >= 0 })?.div(1_000)
+            return (last - first) / 1_000
         }
         val schedulerDeltas = listOf("parent", "owner", "waiter", "consumer").associateWith { role ->
             schedulerDelta(log, status?.runId, role, "nr_migrations")
@@ -100,20 +100,48 @@ internal object RaceTelemetryParser {
     }
 }
 
+private object LightRaceTelemetryParser {
+    private const val PREFIX = "RMG_RACE_LIGHT_V1|"
+    private val metricNames = listOf(
+        "pselect_duration_us",
+        "consumer_arm_to_action_us",
+        "consumer_action_to_readiness_us",
+        "readiness_to_pselect_return_us",
+        "writer_enter_to_return_us",
+        "consumer_action_to_writer_enter_us",
+        "writer_enter_to_pselect_return_us",
+    )
+
+    fun measurements(log: String): Map<String, Long?>? {
+        val line = log.lineSequence().lastOrNull { it.contains(PREFIX) } ?: return null
+        val body = line.substringAfter(PREFIX)
+        val fields = linkedMapOf<String, String>()
+        body.split('|').filter(String::isNotBlank).forEach { field ->
+            val separator = field.indexOf('=')
+            if (separator > 0) fields[field.substring(0, separator)] = field.substring(separator + 1)
+        }
+        return metricNames.associateWith { name ->
+            fields[name]?.toLongOrNull()?.takeUnless { it == -1L }
+        }
+    }
+}
+
 internal fun raceAnalysisReport(log: String): String {
     if (!log.contains("RMG_RACE_V1|") && log.contains("RMG_OBSERVER_V2|")) {
         val value = Czg3ExternalTelemetryParser.parse(log)
         val traceComplete = value.traceComplete
+        val light = LightRaceTelemetryParser.measurements(log)
+        fun measurement(name: String): Any = light?.get(name) ?: "unavailable"
         return buildString {
             appendLine("race_analysis:")
             appendLine("source=external_observer_v2")
-            appendLine("pselect_duration_us=${value.lastPselectDurationMicros ?: "unknown"}")
-            appendLine("consumer_arm_to_action_us=unavailable")
-            appendLine("consumer_action_to_readiness_us=unavailable")
-            appendLine("readiness_to_pselect_return_us=unavailable")
-            appendLine("writer_enter_to_return_us=unavailable")
-            appendLine("consumer_action_to_writer_enter_us=unavailable")
-            appendLine("writer_enter_to_pselect_return_us=unavailable")
+            appendLine("pselect_duration_us=${light?.get("pselect_duration_us") ?: value.lastPselectDurationMicros ?: "unknown"}")
+            appendLine("consumer_arm_to_action_us=${measurement("consumer_arm_to_action_us")}")
+            appendLine("consumer_action_to_readiness_us=${measurement("consumer_action_to_readiness_us")}")
+            appendLine("readiness_to_pselect_return_us=${measurement("readiness_to_pselect_return_us")}")
+            appendLine("writer_enter_to_return_us=${measurement("writer_enter_to_return_us")}")
+            appendLine("consumer_action_to_writer_enter_us=${measurement("consumer_action_to_writer_enter_us")}")
+            appendLine("writer_enter_to_pselect_return_us=${measurement("writer_enter_to_pselect_return_us")}")
             appendLine("trace_complete=$traceComplete")
             appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
             appendLine("malformed_records=0")
