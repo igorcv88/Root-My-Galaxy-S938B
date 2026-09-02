@@ -25,7 +25,7 @@ jobs:
           java-version: '21'
 
       - name: Apply review fixes
-        run: python3 .github/scripts/address_observer_review_v2.py
+        run: python3 .github/scripts/run_observer_review_v2.py
 
       - name: Validate app
         run: |
@@ -41,6 +41,7 @@ jobs:
           git add app/src/main/java/dev/busung/s25uroot/ExploitObserver.kt
           git add app/src/main/java/dev/busung/s25uroot/AutoRootRunner.kt
           git add app/src/main/java/dev/busung/s25uroot/InstallViewModel.kt
+          git add app/src/test/java/dev/busung/s25uroot/ExploitObserverTest.kt
           git diff --cached --check
           git commit -m "Address observer review v2"
           git push origin HEAD:feat/czg3-external-observer-v2
