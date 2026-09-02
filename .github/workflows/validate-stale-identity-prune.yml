@@ -1,0 +1,68 @@
+name: Validate stale observer identity pruning
+
+on:
+  push:
+    branches:
+      - fix/czg3-observer-process-coverage
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/czg3-observer-process-coverage
+          fetch-depth: 0
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Prune stale tracked identities
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/cpp/external_observer.c')
+          s = p.read_text()
+          old = '''    unsigned long long current = 0;
+              if (!read_proc_starttime(tracked[i].pid, &current) ||
+                  current != tracked[i].starttime_ticks)
+                continue;
+              pids[count++] = tracked[i].pid;
+          '''
+          new = '''    unsigned long long current = 0;
+              if (!read_proc_starttime(tracked[i].pid, &current) ||
+                  current != tracked[i].starttime_ticks) {
+                observer_forget_tracked_identity(
+                    tracked[i].pid, tracked[i].starttime_ticks);
+                continue;
+              }
+              pids[count++] = tracked[i].pid;
+          '''
+          if s.count(old) != 1:
+              raise SystemExit(f'prune anchor matches={s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'observer_forget_tracked_identity(' app/src/main/cpp/external_observer.c
+          chmod +x gradlew
+          ./gradlew --build-cache :app:testDebugUnitTest :app:lintDebug :app:assembleRelease -PreleaseVersionCode=10039 -PreleaseVersionName=0.3.39
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/cpp/external_observer.c
+          git diff --cached --check
+          git commit -m 'Prune stale observer process identities'
+          git push origin HEAD:fix/czg3-observer-process-coverage
