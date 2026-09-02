@@ -244,7 +244,11 @@ class InstallHistoryStore(private val context: Context) {
             .orEmpty()
             .sortedBy(File::getName)
         for (candidate in candidates) {
-            val recovered = runCatching { decode(candidate.readBytes()) }.getOrNull() ?: continue
+            val recovered = runCatching { decode(candidate.readBytes()) }.getOrNull()
+            if (recovered == null) {
+                candidate.delete()
+                continue
+            }
             val target = File(directory, "${recovered.id}.json")
             if (target.exists()) {
                 val targetValid = runCatching { decode(target.readBytes()) }.isSuccess
