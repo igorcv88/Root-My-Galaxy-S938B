@@ -35,19 +35,11 @@ object ShizukuController {
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         val now = SystemClock.elapsedRealtime()
-        val granted = runCatching {
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        }.getOrNull()
         synchronized(stateLock) {
             passiveState = passiveState.copy(
                 binderAlive = true,
                 binderSeenUptimeMillis = now,
-                permissionGranted = granted,
-                permissionObservedUptimeMillis = if (granted == null) {
-                    passiveState.permissionObservedUptimeMillis
-                } else {
-                    now
-                },
+                permissionGranted = null,
             )
         }
     }
@@ -106,6 +98,7 @@ object ShizukuController {
     private fun refreshActiveState(): ShizukuPassiveState {
         initializePassiveTracking()
         val now = SystemClock.elapsedRealtime()
+        val wasRunning = passiveState.binderAlive
         val running = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
         val granted = if (running) {
             runCatching {
@@ -122,7 +115,7 @@ object ShizukuController {
                 } else {
                     passiveState.binderSeenUptimeMillis
                 },
-                binderDeadUptimeMillis = if (!running && passiveState.binderAlive) {
+                binderDeadUptimeMillis = if (!running && wasRunning) {
                     now
                 } else {
                     passiveState.binderDeadUptimeMillis
