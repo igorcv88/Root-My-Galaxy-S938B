@@ -30,7 +30,7 @@ class Czg3ExternalStageTimingTest {
         val raceTiming = normalized.stageTimings.single { it.stage == ExploitStage.AttemptingRace }
 
         assertEquals(ExploitStage.AttemptingRace, normalized.stage)
-        assertEquals(900L, normalized.exploitElapsedMillis)
+        assertEquals(20_900L, normalized.exploitElapsedMillis)
         assertEquals(25L, raceTiming.elapsedMillis)
         assertEquals(1, raceTiming.attempt)
         assertTrue(raceTiming.elapsedMillis < normalized.exploitElapsedMillis!!)
@@ -57,8 +57,8 @@ class Czg3ExternalStageTimingTest {
             profileId = CZG3_PROFILE_ID_FOR_DIAGNOSTICS,
             stage = ExploitStage.AttemptingRace,
             attemptCount = 1,
-            exploitElapsedMillis = 900L,
-            stageTimings = listOf(StageTiming(ExploitStage.AttemptingRace, 900L, 1)),
+            exploitElapsedMillis = 20_900L,
+            stageTimings = listOf(StageTiming(ExploitStage.AttemptingRace, 20_900L, 1)),
         )
 
         val normalized = normalizeCzg3ExternalHistory(entry)
