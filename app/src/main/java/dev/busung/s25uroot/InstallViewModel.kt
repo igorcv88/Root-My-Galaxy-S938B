@@ -107,21 +107,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     val targetCatalog: StateFlow<TargetCatalogUiState> = mutableTargetCatalog.asStateFlow()
 
     init {
-        refreshInternal(recoverInterrupted = true)
+        refresh()
     }
 
-    fun refresh() = refreshInternal(recoverInterrupted = false)
-
-    private fun refreshInternal(recoverInterrupted: Boolean) {
+    fun refresh() {
         if (installJob?.isActive == true) return
-        historyJob?.cancel()
-        historyJob = viewModelScope.launch(Dispatchers.IO) {
-            mutableHistory.value = if (recoverInterrupted) {
-                historyStore.closeInterruptedRuns()
-            } else {
-                historyStore.load()
-            }
-        }
         discoveryJob?.cancel()
         discoveryJob = viewModelScope.launch(Dispatchers.IO) {
             val probe = NativeProbe.run()
@@ -151,6 +141,23 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
         }
+    }
+
+    fun loadHistory(recoverInterrupted: Boolean = true) {
+        if (installJob?.isActive == true) return
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch(Dispatchers.IO) {
+            if (recoverInterrupted) historyStore.recoverInterruptedRuns()
+            val job = currentCoroutineContext()[Job]
+            val loaded = historyStore.load { job?.isActive != false }
+            currentCoroutineContext().ensureActive()
+            mutableHistory.value = loaded
+        }
+    }
+
+    fun cancelHistoryLoad() {
+        historyJob?.cancel()
+        historyJob = null
     }
 
     fun deleteHistoryEntries(ids: Collection<String>) {
@@ -185,6 +192,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun install(profileId: String? = null) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
         discoveryJob?.cancel()
+        cancelHistoryLoad()
         rootRequestedAtUptimeMillis = SystemClock.elapsedRealtime()
         rootRequestContext = AndroidRunContext.snapshot(
             app,
@@ -198,6 +206,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 phase = InstallPhase.Checking,
                 probeOutput = mutableState.value.probeOutput,
             )
+            historyStore.recoverInterruptedRuns()
             startHistory()
             // Freeze the transport for the whole run so a mid-run preference
             // change cannot mix Shizuku and standalone execution between the

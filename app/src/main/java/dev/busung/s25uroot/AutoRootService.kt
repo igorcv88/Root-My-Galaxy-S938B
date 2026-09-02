@@ -197,7 +197,7 @@ class AutoRootService : Service() {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            historyEntry = historyStore.create().copy(
+            historyEntry = historyStore.create(usedShizuku = false).copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = useShizuku,
                 payloadSha256 = payloads.profile.exploit.sha256,

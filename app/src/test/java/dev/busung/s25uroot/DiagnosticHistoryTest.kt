@@ -28,6 +28,14 @@ class DiagnosticHistoryTest {
     }
 
     @Test
+    fun recentObserverHistoryDoesNotNeedExpensiveRenormalization() {
+        assertFalse(historyNeedsExternalNormalization(0, "0.3.38", CZG3_PROFILE_ID_FOR_DIAGNOSTICS, true))
+        assertFalse(historyNeedsExternalNormalization(HISTORY_SCHEMA_VERSION, null, CZG3_PROFILE_ID_FOR_DIAGNOSTICS, true))
+        assertTrue(historyNeedsExternalNormalization(0, "0.3.37", CZG3_PROFILE_ID_FOR_DIAGNOSTICS, true))
+        assertFalse(historyNeedsExternalNormalization(0, "0.3.37", "other-profile", false))
+    }
+
+    @Test
     fun aggregatesLatencyAttemptsAndCoarseUptimeBuckets() {
         val entries = listOf(
             terminal("a", true, 100, 2, 5 * 60_000L),
