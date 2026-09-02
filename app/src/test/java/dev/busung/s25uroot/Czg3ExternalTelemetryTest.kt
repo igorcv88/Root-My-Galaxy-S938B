@@ -134,6 +134,36 @@ class Czg3ExternalTelemetryTest {
     }
 
     @Test
+    fun normalizationFloorsKernelSuStageTimingsAtObserverElapsed() {
+        val stages = listOf(
+            ExploitStage.StagingKernelSu,
+            ExploitStage.LateLoadingKernelSu,
+            ExploitStage.VerifyingKernelSu,
+        )
+        val entry = InstallHistoryEntry(
+            id = "zero-kernel-su-stage-timings",
+            startedAtMillis = 1L,
+            completedAtMillis = 2L,
+            result = InstallRunResult.Succeeded,
+            log = log,
+            profileId = CZG3_PROFILE_ID_FOR_DIAGNOSTICS,
+            stage = ExploitStage.VerifyingKernelSu,
+            attemptCount = 9,
+            exploitElapsedMillis = 0L,
+            stageTimings = stages.map { StageTiming(it, 0L) },
+        )
+
+        val normalized = normalizeCzg3ExternalHistory(entry)
+
+        assertEquals(94_133L, normalized.exploitElapsedMillis)
+        assertEquals(ExploitStage.VerifyingKernelSu, normalized.stage)
+        assertEquals(
+            stages.map { StageTiming(it, 94_133L) },
+            normalized.stageTimings,
+        )
+    }
+
+    @Test
     fun standaloneTraceRequiresSupervisorAttemptAndCriticalSlideCoverage() {
         val complete = """
             RMG_OBSERVER_V2|event=controller_start|available=true|transport=standalone|scope=process_tree_system
