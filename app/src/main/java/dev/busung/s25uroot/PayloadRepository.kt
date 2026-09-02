@@ -69,13 +69,30 @@ class PayloadRepository(private val context: Context) {
     }
 
     /**
-     * Online manual root downloads the selected payload again for every run.
+     * Online manual root normally downloads the selected payload again for
+     * every run. CZG3 Shizuku is the one deliberately narrow exception: after
+     * the online manifest has already selected the current target, reuse the
+     * last verified local files when their payload identities are byte-for-byte
+     * identical to the current manifest. This avoids redundant download/fsync
+     * allocator and page-cache churn immediately before the shell-context race,
+     * while preserving online freshness and integrity checks. A changed payload
+     * or missing/invalid cache follows the normal remote-download path.
+     *
      * Only network unavailability falls back to the last successful manual-root
      * snapshot. Manifest/hash/compatibility failures remain hard failures.
      */
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
+        onProgress("Payload source: Root-My-Galaxy-Payloads-S938B/main")
+        if (
+            profile.profileId == CZG3_PROFILE_ID_FOR_DIAGNOSTICS &&
+            AppPreferences.shizukuMode(context)
+        ) {
+            verifiedLocalPayloadsIfCurrent(profile)?.let { cached ->
+                onProgress("Remote payload unchanged; reusing verified local snapshot for quiet Shizuku launch")
+                return cached.copy(profile = profile, source = PayloadSource.ManualOnline)
+            }
+        }
         return try {
-            onProgress("Payload source: Root-My-Galaxy-Payloads-S938B/main")
             downloadRemote(profile, onProgress)
         } catch (error: PayloadNetworkException) {
             onProgress("Payloads/main unavailable; using last successful manual-root snapshot")
@@ -86,6 +103,25 @@ class PayloadRepository(private val context: Context) {
             cached.copy(source = PayloadSource.ManualOffline)
         }
     }
+
+    private fun verifiedLocalPayloadsIfCurrent(profile: TargetProfile): VerifiedPayloads? {
+        val cached = runCatching { AutoRootSupport.loadVerifiedLocalPayloads(context) }
+            .getOrNull()
+            ?: return null
+        if (!samePayloadIdentity(cached.profile, profile)) return null
+        if (!fileMatchesArtifact(cached.exploit, profile.exploit)) return null
+        if (!fileMatchesArtifact(cached.kernelSu, profile.kernelSu.artifact)) return null
+        return cached
+    }
+
+    private fun samePayloadIdentity(cached: TargetProfile, current: TargetProfile): Boolean =
+        cached.profileId == current.profileId &&
+            cached.exploit.size == current.exploit.size &&
+            cached.exploit.sha256 == current.exploit.sha256 &&
+            cached.kernelSu.artifact.size == current.kernelSu.artifact.size &&
+            cached.kernelSu.artifact.sha256 == current.kernelSu.artifact.sha256 &&
+            cached.kernelSu.kmi == current.kernelSu.kmi &&
+            cached.kernelSu.managerPackage == current.kernelSu.managerPackage
 
     private fun downloadRemote(
         profile: TargetProfile,
