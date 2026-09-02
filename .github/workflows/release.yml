@@ -1,52 +1,213 @@
 name: Gerar APK Release
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
-  actions: write
-  contents: read
+  contents: write
+
+concurrency:
+  group: root-my-galaxy-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_SERIES: "0.3"
 
 jobs:
-  cleanup-history:
-    name: Limpar histórico de workflows antigos
+  release:
+    name: Gerar, assinar e publicar APK
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Apagar execuções de outros workflows
-        uses: actions/github-script@v8
+      - name: Baixar repositório
+        uses: actions/checkout@v7
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const keepPath = '.github/workflows/release.yml';
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRunsForRepo,
-              { owner, repo, per_page: 100 }
-            );
+          fetch-depth: 0
 
-            const foreign = runs.filter(run => run.path !== keepPath);
-            const active = foreign.filter(run => run.status !== 'completed');
-            const completed = foreign.filter(run => run.status === 'completed');
+      - name: Confirmar branch main
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Execute este workflow pela branch main." >&2
+            exit 1
+          fi
 
-            core.info(`Total runs found: ${runs.length}`);
-            core.info(`Preserving ${runs.length - foreign.length} run(s) from ${keepPath}`);
-            core.info(`Deleting ${completed.length} completed run(s) from other workflows`);
+      - name: Escolher próxima versão
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          SERIES_PATTERN="${RELEASE_SERIES//./\.}"
+          BASE_TAG="$(git tag --sort=-version:refname --list "v${RELEASE_SERIES}.*" | head -n 1)"
+          LAST_PATCH="$(
+            git tag --list "v${RELEASE_SERIES}.*" \
+              | sed -nE "s/^v${SERIES_PATTERN}\.([0-9]+)$/\1/p" \
+              | sort -n \
+              | tail -n 1
+          )"
+          LAST_PATCH="${LAST_PATCH:-0}"
+          PATCH=$((LAST_PATCH + 1))
+          VERSION_NAME="${RELEASE_SERIES}.${PATCH}"
+          VERSION_CODE=$((10000 + PATCH))
+          RELEASE_TAG="v${VERSION_NAME}"
 
-            for (const run of completed) {
-              core.info(`Deleting run ${run.id}: ${run.name} (${run.path})`);
-              await github.rest.actions.deleteWorkflowRun({
-                owner,
-                repo,
-                run_id: run.id,
-              });
-            }
+          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "A tag ${RELEASE_TAG} já existe." >&2
+            exit 1
+          fi
 
-            if (active.length > 0) {
-              core.setFailed(
-                `There are ${active.length} non-release workflow run(s) still active; refusing to report complete cleanup.`
-              );
-            }
+          {
+            echo "BASE_TAG=$BASE_TAG"
+            echo "VERSION_NAME=$VERSION_NAME"
+            echo "VERSION_CODE=$VERSION_CODE"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+          } >> "$GITHUB_ENV"
+
+      - name: Reservar tag da release
+        run: |
+          set -euo pipefail
+          git tag "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Verificar regras do Auto Root
+        run: |
+          set -euo pipefail
+          grep -F 'android.intent.action.BOOT_COMPLETED' app/src/main/AndroidManifest.xml
+          if grep -R -n -E 'LOCKED_BOOT_COMPLETED|ctl\.restart zygote|ksud soft-reboot' \
+              app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt app/src/main/AndroidManifest.xml; then
+            echo "Auto Root contém uma operação não permitida no fluxo pós-boot." >&2
+            exit 1
+          fi
+          if grep -R -n -E 'https?://' app/src/main/java/dev/busung/s25uroot/AutoRoot*.kt; then
+            echo "Auto Root não deve depender de rede durante o boot." >&2
+            exit 1
+          fi
+
+      - name: Preparar Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Preparar cache do Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Testar, validar e gerar APK
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --build-cache \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleRelease \
+            -PreleaseVersionCode="$VERSION_CODE" \
+            -PreleaseVersionName="$VERSION_NAME"
+
+      - name: Preparar chave de assinatura
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Secret obrigatório ausente: $name" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > release.keystore
+          chmod 600 release.keystore
+          keytool -list \
+            -keystore release.keystore \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+      - name: Assinar e verificar APK
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Secret obrigatório ausente: $name" >&2
+              exit 1
+            fi
+          done
+
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          ALIGNED_APK=app/build/outputs/apk/release/app-release-aligned.apk
+          RELEASE_ASSET="Root-My-Galaxy-${VERSION_NAME}.apk"
+
+          "$BUILD_TOOLS_DIR/zipalign" -P 16 -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:STORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out "$RELEASE_ASSET" \
+            "$ALIGNED_APK"
+          "$BUILD_TOOLS_DIR/zipalign" -c -P 16 4 "$RELEASE_ASSET"
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs "$RELEASE_ASSET"
+
+          BADGING="$($BUILD_TOOLS_DIR/aapt dump badging "$RELEASE_ASSET" | head -n 1)"
+          grep -F "package: name='dev.busung.s25uroot'" <<< "$BADGING"
+          grep -F "versionCode='${VERSION_CODE}'" <<< "$BADGING"
+          grep -F "versionName='${VERSION_NAME}'" <<< "$BADGING"
+
+          sha256sum "$RELEASE_ASSET" | tee "${RELEASE_ASSET}.sha256"
+          echo "RELEASE_ASSET=$RELEASE_ASSET" >> "$GITHUB_ENV"
+
+      - name: Gerar changelog detalhado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA256="$(awk '{print $1}' "${RELEASE_ASSET}.sha256")"
+          NOTES_PATH="$RUNNER_TEMP/release-notes.md"
+          export BASE_TAG
+          export HEAD_SHA="$GITHUB_SHA"
+          export VERSION_NAME
+          export SHA256
+          export PRODUCT_NAME="Root My Galaxy"
+          export BASE_BRANCH="main"
+          export NOTES_PATH
+          python3 .github/scripts/build_release_notes.py
+          test -s "$NOTES_PATH"
+          echo "NOTES_PATH=$NOTES_PATH" >> "$GITHUB_ENV"
+
+      - name: Publicar release com changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "$RELEASE_ASSET" \
+            "${RELEASE_ASSET}.sha256" \
+            --verify-tag \
+            --title "Root My Galaxy ${VERSION_NAME}" \
+            --notes-file "$NOTES_PATH" \
+            --latest
+
+      - name: Remover tag reservada se a publicação falhar
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG:-}" ]]; then
+            echo "Nenhuma tag de release foi reservada; nada para remover."
+            exit 0
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "A release já existe; preservando ${RELEASE_TAG}."
+            exit 0
+          fi
+          git push origin ":refs/tags/${RELEASE_TAG}" || true
+
+      - name: Apagar chave temporária
+        if: always()
+        run: rm -f release.keystore
