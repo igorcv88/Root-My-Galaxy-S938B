@@ -14,6 +14,7 @@ internal data class Czg3ExternalRunSummary(
     val maxSupervisorAttempt: Int,
     val observerStartUptimeMillis: Long?,
     val observerStopUptimeMillis: Long?,
+    val observerElapsedMillis: Long?,
     val exploitElapsedMillis: Long?,
     val observerTargetPid: Long?,
     val observerAttached: Boolean,
@@ -43,6 +44,7 @@ internal object Czg3ExternalTelemetryParser {
     private val attempt = Regex("""\bexploit attempt=(\d+)/(\d+)\b""")
     private val observerStart = Regex("""RMG_OBSERVER_V2\|event=start\|t_ms=(\d+)""")
     private val observerStop = Regex("""RMG_OBSERVER_V2\|event=stop\|t_ms=(\d+)\|dropped=(\d+)""")
+    private val payloadRelease = Regex("""RMG_BOOT_V1\|[^\n]*payload_release_uptime_ms=(\d+)""")
     private val nativeAttach = Regex("""RMG_OBSERVER_V2\|event=attach\|t_ms=(\d+)\|pid=(\d+)\|stat_access=(\d+)""")
     private val controllerScope = Regex("""RMG_OBSERVER_V2\|event=controller_start\|[^\n]*\|scope=([^|\n]+)""")
     private val marker = Regex("""RMG_OBSERVER_V2\|event=marker\|t_ms=(\d+)\|name=([a-z0-9_]+)\|""")
@@ -63,6 +65,17 @@ internal object Czg3ExternalTelemetryParser {
         val stop = stopMatch?.groupValues?.get(1)?.toLongOrNull()
         val dropped = stopMatch?.groupValues?.get(2)?.toLongOrNull()
         val scope = controllerScope.findAll(log).lastOrNull()?.groupValues?.get(1)
+        val release = payloadRelease.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull()
+        val observerElapsed = if (start != null && stop != null && stop >= start) stop - start else null
+        val exploitStart = when {
+            release != null && stop != null && release <= stop && (start == null || release >= start) -> release
+            else -> start
+        }
+        val exploitElapsed = if (exploitStart != null && stop != null && stop >= exploitStart) {
+            stop - exploitStart
+        } else {
+            observerElapsed
+        }
 
         val native = nativeAttach.findAll(log).lastOrNull()
         val targetPid = native?.groupValues?.get(2)?.toLongOrNull()
@@ -185,7 +198,8 @@ internal object Czg3ExternalTelemetryParser {
             maxSupervisorAttempt = maxAttempt,
             observerStartUptimeMillis = start,
             observerStopUptimeMillis = stop,
-            exploitElapsedMillis = if (start != null && stop != null && stop >= start) stop - start else null,
+            observerElapsedMillis = observerElapsed,
+            exploitElapsedMillis = exploitElapsed,
             observerTargetPid = targetPid,
             observerAttached = attached,
             observerScope = scope,
@@ -350,7 +364,7 @@ internal fun externalObserverAnalysisReport(log: String): String {
         appendLine("observer_scope=${value.observerScope ?: "unknown"}")
         appendLine("observer_start_uptime_ms=${value.observerStartUptimeMillis ?: "unknown"}")
         appendLine("observer_stop_uptime_ms=${value.observerStopUptimeMillis ?: "unknown"}")
-        appendLine("observer_elapsed_ms=${value.exploitElapsedMillis ?: "unknown"}")
+        appendLine("observer_elapsed_ms=${value.observerElapsedMillis ?: "unknown"}")
         appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
         appendLine("process_samples=${value.processSamples}")
         appendLine("trace_complete=${value.traceComplete}")
