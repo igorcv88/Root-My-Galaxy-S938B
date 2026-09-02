@@ -130,8 +130,27 @@ internal class AutoRootRunner(
                 transport,
             ),
         )
+
+        // The observer is intentionally created after the boot gate but before the
+        // helper. Keep its setup time out of process-spawn and attempt elapsed
+        // accounting so diagnostics measure the exploit process itself.
+        val observer = if (externalObserverMode) {
+            ExploitObserverSession.start(
+                context = context,
+                runId = runId,
+                invocationMode = InvocationMode.AutoRoot,
+                transport = transport,
+                payloadLog = if (useShizuku) null else logFile,
+            )
+        } else {
+            null
+        }
+        val observerChildSnapshot = if (externalObserverMode && !useShizuku) {
+            ExploitObserverChildLocator.snapshotCurrentThread()
+        } else {
+            null
+        }
         val spawnUptimeMillis = SystemClock.elapsedRealtime()
-        val diagnosticElapsedStartUptimeMillis = spawnUptimeMillis
         onLog(
             ExploitRunControl.contextRecord(
                 AndroidRunContext.snapshot(context, "payload_launch", spawnUptimeMillis),
@@ -160,22 +179,6 @@ internal class AutoRootRunner(
                 cachedP0Offset(bootToken),
             ),
         )
-        val observer = if (externalObserverMode) {
-            ExploitObserverSession.start(
-                context = context,
-                runId = runId,
-                invocationMode = InvocationMode.AutoRoot,
-                transport = transport,
-                payloadLog = if (useShizuku) null else logFile,
-            )
-        } else {
-            null
-        }
-        val observerChildSnapshot = if (externalObserverMode && !useShizuku) {
-            ExploitObserverChildLocator.snapshotCurrentThread()
-        } else {
-            null
-        }
         val process = try {
             observer?.let {
                 onLog(
@@ -195,6 +198,7 @@ internal class AutoRootRunner(
             stopObserver(observer)
             throw error
         }
+        val diagnosticElapsedStartUptimeMillis = SystemClock.elapsedRealtime()
         if (observerChildSnapshot != null) {
             val localPid = ExploitObserverChildLocator.findSingleNewChild(observerChildSnapshot)
             val attached = localPid?.let { observer?.attachPid(it) } ?: false
@@ -274,7 +278,7 @@ internal class AutoRootRunner(
         }
 
         try {
-            val startedAt = SystemClock.elapsedRealtime()
+            val startedAt = diagnosticElapsedStartUptimeMillis
             val watchdogStartsAt = startedAt
             var lastProgressAt = watchdogStartsAt
             var lastRawLog = ""
