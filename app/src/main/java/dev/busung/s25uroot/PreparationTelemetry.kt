@@ -151,16 +151,26 @@ private data class ExternalPrep(
 )
 
 private fun externalPrep(log: String, mode: Int): ExternalPrep {
-    val prepare = Regex("""kernel page prepare mode=$mode attempt=(\d+)/(\d+) elapsed_ms=(\d+)[^\n]*""")
+    // Match only original payload lines. Observer marker records intentionally
+    // embed the original text after `line=` and must not be counted as a second
+    // preparation cycle.
+    val prepare = Regex(
+        """(?m)^\[\*\] kernel page prepare mode=$mode attempt=(\d+)/(\d+) elapsed_ms=(\d+)[^\n]*""",
+    )
     val all = prepare.findAll(log).toList()
     val last = all.lastOrNull()
     val objectIndex = if (last != null) {
         val prefix = log.substring(0, last.range.first)
-        Regex("""mm leaked=[^\n]*object_index=(\d+)""").findAll(prefix).lastOrNull()?.groupValues?.get(1)?.toLongOrNull()
+        Regex("""(?m)^\[\*\] mm leaked=[^\n]*object_index=(\d+)""")
+            .findAll(prefix)
+            .lastOrNull()
+            ?.groupValues?.get(1)?.toLongOrNull()
     } else null
     val sk = if (last != null) {
         val prefix = log.substring(0, last.range.first)
-        Regex("""sk_buff reclaim sends=(\d+)/(\d+) mode=$mode""").findAll(prefix).lastOrNull()
+        Regex("""(?m)^\[\*\] sk_buff reclaim sends=(\d+)/(\d+) mode=$mode""")
+            .findAll(prefix)
+            .lastOrNull()
     } else null
     return ExternalPrep(
         cycles = all.size,
