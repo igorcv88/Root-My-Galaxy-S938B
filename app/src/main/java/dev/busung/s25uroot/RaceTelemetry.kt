@@ -100,19 +100,56 @@ internal object RaceTelemetryParser {
     }
 }
 
-internal fun raceAnalysisReport(log: String): String = buildString {
-    val analysis = RaceTelemetryParser.analyze(log)
-    appendLine("race_analysis:")
-    analysis.measurementsMicros.forEach { (name, value) -> appendLine("$name=${value ?: "unknown"}") }
-    appendLine("trace_complete=${analysis.traceComplete ?: "unknown"}")
-    appendLine("dropped_events=${analysis.droppedEvents ?: "unknown"}")
-    appendLine("malformed_records=${analysis.malformedRecords}")
-    appendLine("thread_migrations:")
-    listOf("parent", "owner", "waiter", "consumer").forEach { role ->
-        appendLine("$role=${analysis.schedulerDeltas[role] ?: "unknown"}")
+internal fun raceAnalysisReport(log: String): String {
+    if (!log.contains("RMG_RACE_V1|") && log.contains("RMG_OBSERVER_V2|")) {
+        val value = Czg3ExternalTelemetryParser.parse(log)
+        val traceComplete = value.observerAttached && value.observerDroppedEvents == 0L && value.observerStopUptimeMillis != null
+        return buildString {
+            appendLine("race_analysis:")
+            appendLine("source=external_observer_v2")
+            appendLine("pselect_duration_us=${value.lastPselectDurationMicros ?: "unknown"}")
+            appendLine("consumer_arm_to_action_us=unavailable")
+            appendLine("consumer_action_to_readiness_us=unavailable")
+            appendLine("readiness_to_pselect_return_us=unavailable")
+            appendLine("writer_enter_to_return_us=unavailable")
+            appendLine("consumer_action_to_writer_enter_us=unavailable")
+            appendLine("writer_enter_to_pselect_return_us=unavailable")
+            appendLine("trace_complete=$traceComplete")
+            appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
+            appendLine("malformed_records=0")
+            appendLine("observer_target_pid=${value.observerTargetPid ?: "unknown"}")
+            appendLine("process_samples=${value.processSamples}")
+            appendLine("target_cpu_changes_observed=${value.targetCpuChangesObserved ?: "unavailable"}")
+            appendLine("target_runtime_delta_ns=${value.targetRuntimeDeltaNanos ?: "unavailable"}")
+            appendLine("target_wait_delta_ns=${value.targetWaitDeltaNanos ?: "unavailable"}")
+            appendLine("target_slices_delta=${value.targetSlicesDelta ?: "unavailable"}")
+            appendLine("thread_migrations:")
+            appendLine("parent=unavailable")
+            appendLine("owner=unavailable")
+            appendLine("waiter=unavailable")
+            appendLine("consumer=unavailable")
+            appendLine("involuntary_switch_delta:")
+            appendLine("parent=unavailable")
+            appendLine("owner=unavailable")
+            appendLine("waiter=unavailable")
+            appendLine("consumer=unavailable")
+        }
     }
-    appendLine("involuntary_switch_delta:")
-    listOf("parent", "owner", "waiter", "consumer").forEach { role ->
-        appendLine("$role=${analysis.schedulerDeltas["${role}_involuntary_switches"] ?: "unknown"}")
+
+    return buildString {
+        val analysis = RaceTelemetryParser.analyze(log)
+        appendLine("race_analysis:")
+        analysis.measurementsMicros.forEach { (name, value) -> appendLine("$name=${value ?: "unknown"}") }
+        appendLine("trace_complete=${analysis.traceComplete ?: "unknown"}")
+        appendLine("dropped_events=${analysis.droppedEvents ?: "unknown"}")
+        appendLine("malformed_records=${analysis.malformedRecords}")
+        appendLine("thread_migrations:")
+        listOf("parent", "owner", "waiter", "consumer").forEach { role ->
+            appendLine("$role=${analysis.schedulerDeltas[role] ?: "unknown"}")
+        }
+        appendLine("involuntary_switch_delta:")
+        listOf("parent", "owner", "waiter", "consumer").forEach { role ->
+            appendLine("$role=${analysis.schedulerDeltas["${role}_involuntary_switches"] ?: "unknown"}")
+        }
     }
 }
