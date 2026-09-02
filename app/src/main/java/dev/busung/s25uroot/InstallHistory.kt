@@ -8,6 +8,8 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
+private val HISTORY_IO_LOCK = Any()
+
 enum class InstallRunResult { Running, Succeeded, Failed, UnexpectedReboot }
 enum class KernelCrashRecordStatus { Found, NotAccessible, NoneFound }
 
@@ -134,16 +136,26 @@ internal fun historyNeedsExternalNormalization(
     return major == 0 && (minor < 3 || (minor == 3 && patch < 38))
 }
 
+internal fun shouldNormalizeHistoryBeforeTerminalSave(entry: InstallHistoryEntry): Boolean =
+    entry.result != InstallRunResult.Running &&
+        (entry.profileId == CZG3_PROFILE_ID_FOR_DIAGNOSTICS || entry.log.contains("RMG_OBSERVER_V2|"))
+
+internal fun isRecoverableHistoryArtifactName(name: String): Boolean =
+    name.endsWith(".json.bak") ||
+        name.endsWith(".json.corrupt") ||
+        (name.contains(".json.") && name.endsWith(".corrupt"))
+
 class InstallHistoryStore(private val context: Context) {
     private val directory = File(context.filesDir, "install-history").apply { mkdirs() }
 
-    fun load(shouldContinue: () -> Boolean = { true }): List<InstallHistoryEntry> {
+    fun load(shouldContinue: () -> Boolean = { true }): List<InstallHistoryEntry> = synchronized(HISTORY_IO_LOCK) {
+        recoverQuarantinedEntriesLocked()
         val entries = ArrayList<InstallHistoryEntry>()
         for (file in directory.listFiles { candidate -> candidate.extension == "json" }.orEmpty()) {
             if (!shouldContinue()) break
-            decodeOrQuarantine(file)?.let(entries::add)
+            decodeOrQuarantineLocked(file)?.let(entries::add)
         }
-        return entries.sortedByDescending(InstallHistoryEntry::startedAtMillis)
+        entries.sortedByDescending(InstallHistoryEntry::startedAtMillis)
     }
 
     fun closeInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()): List<InstallHistoryEntry> {
@@ -151,11 +163,12 @@ class InstallHistoryStore(private val context: Context) {
         return load()
     }
 
-    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) {
+    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) = synchronized(HISTORY_IO_LOCK) {
+        recoverQuarantinedEntriesLocked()
         val completedAtMillis = System.currentTimeMillis()
         directory.listFiles { file -> file.extension == "json" }.orEmpty()
             .filter(::mightContainRunningEntry)
-            .mapNotNull(::decodeOrQuarantine)
+            .mapNotNull(::decodeOrQuarantineLocked)
             .filter { it.result == InstallRunResult.Running }
             .forEach { entry ->
                 val recovered = recoverInterruptedEntry(entry, currentBootId, completedAtMillis)
@@ -165,7 +178,7 @@ class InstallHistoryStore(private val context: Context) {
                 } else {
                     recovered
                 }
-                save(completed)
+                saveTerminalLocked(completed)
             }
     }
 
@@ -177,22 +190,75 @@ class InstallHistoryStore(private val context: Context) {
         id = UUID.randomUUID().toString(), startedAtMillis = System.currentTimeMillis(), completedAtMillis = null,
         result = InstallRunResult.Running, log = "", usedShizuku = usedShizuku, bootId = bootId,
         startedAtUptimeMillis = SystemClock.elapsedRealtime(), deviceIdentity = snapshot.diagnosticIdentity(), appVersion = BuildConfig.VERSION_NAME,
-    ).also(::save)
+    ).also(::saveCheckpoint)
 
-    @Synchronized
     fun save(entry: InstallHistoryEntry) {
-        val normalized = normalizeCzg3ExternalHistory(entry)
-        val target = File(directory, "${normalized.id}.json")
+        if (entry.result == InstallRunResult.Running) {
+            saveCheckpoint(entry)
+        } else {
+            saveTerminal(entry)
+        }
+    }
+
+    fun saveCheckpoint(entry: InstallHistoryEntry) = synchronized(HISTORY_IO_LOCK) {
+        writeEntryLocked(entry)
+    }
+
+    fun saveTerminal(entry: InstallHistoryEntry): InstallHistoryEntry = synchronized(HISTORY_IO_LOCK) {
+        saveTerminalLocked(entry)
+    }
+
+    private fun saveTerminalLocked(entry: InstallHistoryEntry): InstallHistoryEntry {
+        val persisted = if (shouldNormalizeHistoryBeforeTerminalSave(entry)) {
+            normalizeCzg3ExternalHistory(entry)
+        } else {
+            entry
+        }
+        writeEntryLocked(persisted)
+        return persisted
+    }
+
+    fun delete(id: String) = synchronized(HISTORY_IO_LOCK) {
+        File(directory, "$id.json").delete()
+    }
+
+    private fun writeEntryLocked(entry: InstallHistoryEntry, pruneIfNew: Boolean = true) {
+        val target = File(directory, "${entry.id}.json")
         val isNewEntry = !target.exists()
         val atomicFile = AtomicFile(target)
         val output = atomicFile.startWrite()
         try {
-            output.write(encode(normalized).toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync(); atomicFile.finishWrite(output)
-            if (isNewEntry) pruneHistoryFiles()
-        } catch (error: Throwable) { atomicFile.failWrite(output); throw error }
+            output.write(encode(entry).toString().toByteArray(Charsets.UTF_8))
+            output.flush()
+            output.fd.sync()
+            atomicFile.finishWrite(output)
+            if (pruneIfNew && isNewEntry) pruneHistoryFilesLocked()
+        } catch (error: Throwable) {
+            atomicFile.failWrite(output)
+            throw error
+        }
     }
 
-    fun delete(id: String) { File(directory, "$id.json").delete() }
+    private fun recoverQuarantinedEntriesLocked() {
+        val candidates = directory.listFiles { file -> isRecoverableHistoryArtifactName(file.name) }
+            .orEmpty()
+            .sortedBy(File::getName)
+        for (candidate in candidates) {
+            val recovered = runCatching { decode(candidate.readBytes()) }.getOrNull() ?: continue
+            val target = File(directory, "${recovered.id}.json")
+            if (target.exists()) {
+                val targetValid = runCatching { decode(target.readBytes()) }.isSuccess
+                if (targetValid) {
+                    candidate.delete()
+                    continue
+                }
+                quarantineLocked(target)
+            }
+            writeEntryLocked(recovered, pruneIfNew = false)
+            candidate.delete()
+        }
+        pruneHistoryFilesLocked()
+    }
 
     private fun mightContainRunningEntry(file: File): Boolean = runCatching {
         file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
@@ -210,13 +276,22 @@ class InstallHistoryStore(private val context: Context) {
         }
     }.getOrNull()
 
-    private fun pruneHistoryFiles() {
+    private fun pruneHistoryFilesLocked() {
         val files = directory.listFiles { file -> file.extension == "json" }.orEmpty()
         if (files.size <= MAX_HISTORY_ENTRIES) return
         files.sortedWith(
             compareByDescending<File> { storedStartedAtMillis(it) ?: it.lastModified() }
                 .thenByDescending(File::getName),
         ).drop(MAX_HISTORY_ENTRIES).forEach(File::delete)
+    }
+
+    private fun quarantineLocked(file: File) {
+        if (!file.exists()) return
+        var destination = File(directory, "${file.name}.corrupt")
+        if (destination.exists()) {
+            destination = File(directory, "${file.name}.${System.currentTimeMillis()}.corrupt")
+        }
+        file.renameTo(destination)
     }
 
     private fun encode(entry: InstallHistoryEntry) = JSONObject()
@@ -237,8 +312,11 @@ class InstallHistoryStore(private val context: Context) {
         .put("lastPrepCheckpointUptimeMillis", entry.lastPrepCheckpointUptimeMillis ?: JSONObject.NULL)
         .put("stageTimings", JSONArray().apply { entry.stageTimings.takeLast(MAX_STAGE_TIMINGS).forEach { timing -> put(JSONObject().put("stage", timing.stage.name).put("elapsedMillis", timing.elapsedMillis).put("attempt", timing.attempt ?: JSONObject.NULL)) } })
 
-    private fun decodeOrQuarantine(file: File): InstallHistoryEntry? = try { decode(AtomicFile(file).openRead().use { it.readBytes() }) } catch (_: Throwable) {
-        File(directory, "${file.name}.corrupt").also { it.delete(); file.renameTo(it) }; null
+    private fun decodeOrQuarantineLocked(file: File): InstallHistoryEntry? = try {
+        decode(AtomicFile(file).openRead().use { it.readBytes() })
+    } catch (_: Throwable) {
+        quarantineLocked(file)
+        null
     }
 
     private fun decode(bytes: ByteArray): InstallHistoryEntry {

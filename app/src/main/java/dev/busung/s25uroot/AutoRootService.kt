@@ -24,7 +24,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
 
@@ -48,7 +47,10 @@ class AutoRootService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (runJob?.isActive == true) return START_NOT_STICKY
 
-        val initial = buildNotification(getString(R.string.autoroot_waiting_android), ongoing = true)
+        // AutoRootBootReceiver starts this foreground service only after
+        // ACTION_BOOT_COMPLETED. Do not launch a second getprop polling loop here:
+        // that duplicate readiness gate can hang independently of the boot event.
+        val initial = buildNotification(getString(R.string.autoroot_checking_firmware), ongoing = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 AUTO_ROOT_NOTIFICATION_ID,
@@ -103,7 +105,11 @@ class AutoRootService : Service() {
             val entry = historyEntry ?: return
             val now = SystemClock.elapsedRealtime()
             if (force || now - lastHistoryWriteAt >= HISTORY_CHECKPOINT_MILLIS) {
-                historyStore.save(entry)
+                // Checkpoints must remain durable, but external observer
+                // normalization belongs to the terminal write only. Re-parsing a
+                // multi-megabyte trace at each checkpoint caused the post-root
+                // Staging/LateLoading/Verifying path to take minutes.
+                historyStore.saveCheckpoint(entry)
                 lastHistoryWriteAt = now
             }
         }
@@ -128,8 +134,8 @@ class AutoRootService : Service() {
                 completedAtMillis = System.currentTimeMillis(),
                 result = result,
             )
-            historyStore.save(completed)
-            historyEntry = if (keepOpenForPostRootDiagnostics) completed else null
+            val persisted = historyStore.saveTerminal(completed)
+            historyEntry = if (keepOpenForPostRootDiagnostics) persisted else null
         }
         val initialBootToken = AutoRootSupport.currentBootToken()
         if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
@@ -158,11 +164,11 @@ class AutoRootService : Service() {
                 return
             }
 
-            require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
-            // CZG3 diagnostic runs use the explicit selected minimum uptime as the
-            // sole timing gate after Android readiness. Keeping the legacy 45 s
-            // stabilization here would make a requested 120 s launch occur at
-            // 120 s on some boots and ~148 s on others depending on BOOT_COMPLETED.
+            // ACTION_BOOT_COMPLETED is the readiness gate for this service.
+            // CZG3 uses its explicit selected minimum uptime as the sole timing
+            // gate after boot completion. Keeping the legacy 45 s stabilization
+            // here would make a requested 120 s launch occur at 120 s on some
+            // boots and ~148 s on others depending on BOOT_COMPLETED.
             if (shouldUseLegacyAutoRootStabilization(DeviceSnapshot.current())) {
                 updateNotification(getString(R.string.autoroot_stabilizing_android))
                 if (waitForStabilizationOrRoot(initialBootToken)) {
@@ -208,7 +214,7 @@ class AutoRootService : Service() {
                 } else {
                     null
                 },
-            ).also(historyStore::save)
+            ).also(historyStore::saveCheckpoint)
             persist(
                 serviceStartedContext
                     ?: AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis),
@@ -284,8 +290,9 @@ class AutoRootService : Service() {
             if (softReboot) {
                 persist("[*] KernelSU soft reboot requested", force = true)
                 // Mark the root run successful before userspace can disappear, but
-                // keep the in-memory entry available so a failed/no-op reboot is
-                // appended to the same History record instead of vanishing in Logcat.
+                // keep the normalized in-memory entry available so a failed/no-op
+                // reboot is appended to the same History record instead of
+                // vanishing in Logcat or forcing another full telemetry parse.
                 finishHistory(InstallRunResult.Succeeded, keepOpenForPostRootDiagnostics = true)
                 updateNotification(getString(R.string.soft_reboot_starting))
                 val result = runCatching { KernelSuSoftReboot.request(this) }
@@ -331,19 +338,9 @@ class AutoRootService : Service() {
         }
     }
 
-    private suspend fun waitForAndroidReady(): Boolean =
-        withTimeoutOrNull(BOOT_COMPLETED_TIMEOUT_MILLIS) {
-            while (scope.isActive && readBootCompletedProperty() != "1") {
-                delay(BOOT_PROPERTY_POLL_MILLIS)
-            }
-            scope.isActive
-        } == true
-
     /**
-     * Keep the existing conservative stabilization window, but stop waiting if
-     * KernelSU becomes active during it. This preserves the safer timing while
-     * avoiding up to 45 seconds of pointless latency when root was restored by
-     * another mechanism after BOOT_COMPLETED.
+     * Keep the existing conservative stabilization window for non-CZG3 targets,
+     * but stop waiting if KernelSU becomes active during it.
      */
     private suspend fun waitForStabilizationOrRoot(bootToken: String): Boolean {
         val deadline = SystemClock.elapsedRealtime() + STABILIZATION_DELAY_MILLIS
@@ -357,15 +354,6 @@ class AutoRootService : Service() {
         }
         return false
     }
-
-    private fun readBootCompletedProperty(): String = runCatching {
-        val process = ProcessBuilder("/system/bin/getprop", "sys.boot_completed")
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-        process.waitFor()
-        output
-    }.getOrDefault("")
 
     private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java).notify(
@@ -435,8 +423,6 @@ class AutoRootService : Service() {
         private const val CHANNEL_ID = "auto_root_postboot"
         private const val STABILIZATION_DELAY_MILLIS = 45_000L
         private const val STABILIZATION_POLL_MILLIS = 5_000L
-        private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
-        private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
         private const val AUTO_ROOT_SERVICE_WATCHDOG_MILLIS = 25 * 60 * 1_000L
         private const val MAX_WAKELOCK_MILLIS = AUTO_ROOT_SERVICE_WATCHDOG_MILLIS
         private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
