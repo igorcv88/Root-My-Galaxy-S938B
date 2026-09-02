@@ -1,0 +1,795 @@
+name: Apply observer process coverage fix
+
+on:
+  push:
+    branches:
+      - fix/czg3-observer-process-coverage
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: fix/czg3-observer-process-coverage
+          fetch-depth: 0
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Apply observer process coverage fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          c = 'app/src/main/cpp/external_observer.c'
+          replace_once(c,
+          '''#define OBS_MAX_PIDS 32
+          #define OBS_MAX_SEEN_PIDS 96
+          #define OBS_MAX_CPUS 16''',
+          '''#define OBS_MAX_PIDS 96
+          #define OBS_MAX_SEEN_PIDS 96
+          #define OBS_MAX_TRACKED_PIDS 64
+          #define OBS_ROLE_CAPACITY 24
+          #define OBS_MAX_CPUS 16''')
+
+          replace_once(c,
+          '''static pid_t observer_seen_pids[OBS_MAX_SEEN_PIDS];
+          static size_t observer_seen_pid_count;
+          static atomic_ullong observer_burst_until_ms;''',
+          '''static pid_t observer_seen_pids[OBS_MAX_SEEN_PIDS];
+          static size_t observer_seen_pid_count;
+          struct observer_tracked_pid {
+            pid_t pid;
+            char role[OBS_ROLE_CAPACITY];
+          };
+          static struct observer_tracked_pid observer_tracked_pids[OBS_MAX_TRACKED_PIDS];
+          static size_t observer_tracked_pid_count;
+          static pthread_mutex_t observer_pid_mutex = PTHREAD_MUTEX_INITIALIZER;
+          static atomic_ullong observer_burst_until_ms;''')
+
+          replace_once(c,
+          '''static int pid_seen(pid_t pid) {
+            for (size_t i = 0; i < observer_seen_pid_count; ++i) {
+              if (observer_seen_pids[i] == pid) return 1;
+            }
+            if (observer_seen_pid_count < OBS_MAX_SEEN_PIDS)
+              observer_seen_pids[observer_seen_pid_count++] = pid;
+            return 0;
+          }
+
+          static void sample_process_metadata''',
+          '''static int pid_seen(pid_t pid) {
+            for (size_t i = 0; i < observer_seen_pid_count; ++i) {
+              if (observer_seen_pids[i] == pid) return 1;
+            }
+            if (observer_seen_pid_count < OBS_MAX_SEEN_PIDS)
+              observer_seen_pids[observer_seen_pid_count++] = pid;
+            return 0;
+          }
+
+          static void observer_track_pid(pid_t pid, const char *role, uint64_t now_ms) {
+            if (pid <= 0 || !role || !*role) return;
+            int changed = 0;
+            pthread_mutex_lock(&observer_pid_mutex);
+            for (size_t i = 0; i < observer_tracked_pid_count; ++i) {
+              if (observer_tracked_pids[i].pid != pid) continue;
+              if (strcmp(observer_tracked_pids[i].role, role) != 0) {
+                snprintf(observer_tracked_pids[i].role,
+                         sizeof(observer_tracked_pids[i].role), "%s", role);
+                changed = 1;
+              }
+              pthread_mutex_unlock(&observer_pid_mutex);
+              if (changed) {
+                observer_append("RMG_OBSERVER_V2|event=pid_discovered|t_ms=%llu|role=%s|pid=%d|source=marker\\n",
+                    (unsigned long long)now_ms, role, pid);
+              }
+              return;
+            }
+            if (observer_tracked_pid_count < OBS_MAX_TRACKED_PIDS) {
+              struct observer_tracked_pid *slot =
+                  &observer_tracked_pids[observer_tracked_pid_count++];
+              slot->pid = pid;
+              snprintf(slot->role, sizeof(slot->role), "%s", role);
+              changed = 1;
+            }
+            pthread_mutex_unlock(&observer_pid_mutex);
+            if (changed) {
+              observer_append("RMG_OBSERVER_V2|event=pid_discovered|t_ms=%llu|role=%s|pid=%d|source=marker\\n",
+                  (unsigned long long)now_ms, role, pid);
+            }
+          }
+
+          static size_t observer_snapshot_tracked(struct observer_tracked_pid *out,
+                                                  size_t capacity) {
+            if (!out || capacity == 0) return 0;
+            pthread_mutex_lock(&observer_pid_mutex);
+            size_t count = observer_tracked_pid_count;
+            if (count > capacity) count = capacity;
+            memcpy(out, observer_tracked_pids, count * sizeof(*out));
+            pthread_mutex_unlock(&observer_pid_mutex);
+            return count;
+          }
+
+          static pid_t parse_marker_pid_after(const char *line, const char *token) {
+            if (!line || !token) return 0;
+            const char *p = strstr(line, token);
+            if (!p) return 0;
+            p += strlen(token);
+            errno = 0;
+            char *end = NULL;
+            long value = strtol(p, &end, 10);
+            if (errno != 0 || end == p || value <= 0 || value > INT_MAX) return 0;
+            return (pid_t)value;
+          }
+
+          static void track_marker_processes(const char *line, uint64_t now_ms) {
+            pid_t pid = parse_marker_pid_after(line, "preload supervisor pid=");
+            if (pid > 0) {
+              observer_track_pid(pid, "supervisor", now_ms);
+              return;
+            }
+            if (strstr(line, "[+] exploit attempt=")) {
+              pid = parse_marker_pid_after(line, " pid=");
+              if (pid > 0) {
+                observer_track_pid(pid, "attempt", now_ms);
+                return;
+              }
+            }
+            if (strstr(line, "slide child context")) {
+              pid = parse_marker_pid_after(line, " pid=");
+              if (pid > 0) observer_track_pid(pid, "slide_child", now_ms);
+            }
+          }
+
+          static void sample_process_metadata''')
+
+          replace_once(c,
+          '''struct proc_sample {
+            pid_t ppid; char state; unsigned long long utime, stime; long threads, processor;
+            unsigned long long runtime_ns, wait_ns, slices; int schedstat_ok; char comm[48];
+          };''',
+          '''struct proc_sample {
+            pid_t ppid; char state; unsigned long long utime, stime; long threads, processor;
+            unsigned long long runtime_ns, wait_ns, slices;
+            int schedstat_ok, processor_ok;
+            char comm[48];
+          };''')
+
+          replace_once(c,
+          '''static int parse_proc_stat(pid_t pid, struct proc_sample *sample) {
+            char path[128], text[4096];
+            snprintf(path, sizeof(path), "/proc/%d/stat", pid);''',
+          '''static int parse_proc_stat(pid_t pid, struct proc_sample *sample) {
+            char path[128], text[4096];
+            sample->processor = -1;
+            sample->processor_ok = 0;
+            snprintf(path, sizeof(path), "/proc/%d/stat", pid);''')
+
+          replace_once(c,
+          '''    if (field == 20) sample->threads = (long)value;
+              if (field == 39) sample->processor = (long)value;
+              p = end; field++;''',
+          '''    if (field == 20) sample->threads = (long)value;
+              if (field == 39) {
+                sample->processor = (long)value;
+                sample->processor_ok = value >= 0;
+              }
+              p = end; field++;''')
+
+          replace_once(c,
+          '''static size_t collect_process_tree(pid_t root, pid_t *pids, size_t capacity) {
+            if (root <= 0 || capacity == 0) return 0;
+            size_t count = 1; pids[0] = root;
+            for (size_t index = 0; index < count && count < capacity; ++index)
+              collect_thread_children(pids[index], pids, &count, capacity);
+            return count;
+          }
+
+          static void sample_process_tree(pid_t root, uint64_t now_ms) {
+            pid_t pids[OBS_MAX_PIDS]; size_t count = collect_process_tree(root, pids, OBS_MAX_PIDS);
+            observer_append("RMG_OBSERVER_V2|event=tree|t_ms=%llu|root=%d|count=%zu\\n",
+                            (unsigned long long)now_ms, root, count);
+            for (size_t i = 0; i < count; ++i) {
+              struct proc_sample sample; memset(&sample, 0, sizeof(sample)); sample.processor = -1;
+              if (!parse_proc_stat(pids[i], &sample)) {
+                if (!pid_seen(pids[i])) observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d\\n", (unsigned long long)now_ms, pids[i]);
+                continue;
+              }
+              if (!pid_seen(pids[i])) sample_process_metadata(pids[i], now_ms);
+              char runtime[40], wait[40], slices[40];
+              format_u64(runtime, sizeof(runtime), sample.schedstat_ok, sample.runtime_ns);
+              format_u64(wait, sizeof(wait), sample.schedstat_ok, sample.wait_ns);
+              format_u64(slices, sizeof(slices), sample.schedstat_ok, sample.slices);
+              observer_append("RMG_OBSERVER_V2|event=proc|t_ms=%llu|pid=%d|ppid=%d|comm=%s|state=%c|cpu=%ld|threads=%ld|utime=%llu|stime=%llu|runtime_ns=%s|wait_ns=%s|slices=%s\\n",
+                  (unsigned long long)now_ms, pids[i], sample.ppid, sample.comm,
+                  sample.state ? sample.state : '?', sample.processor, sample.threads,
+                  sample.utime, sample.stime, runtime, wait, slices);
+            }
+          }''',
+          '''static const char *tracked_role_for_pid(
+              pid_t pid, pid_t root, const struct observer_tracked_pid *tracked,
+              size_t tracked_count) {
+            for (size_t i = 0; i < tracked_count; ++i) {
+              if (tracked[i].pid == pid) return tracked[i].role;
+            }
+            return pid == root ? "helper" : "tree";
+          }
+
+          static size_t collect_observed_processes(
+              pid_t root, pid_t *pids, size_t capacity,
+              const struct observer_tracked_pid *tracked, size_t tracked_count) {
+            if (capacity == 0) return 0;
+            size_t count = 0;
+            if (root > 0) pids[count++] = root;
+            for (size_t i = 0; i < tracked_count && count < capacity; ++i) {
+              if (tracked[i].pid > 0 && !pid_in_list(pids, count, tracked[i].pid))
+                pids[count++] = tracked[i].pid;
+            }
+            for (size_t index = 0; index < count && count < capacity; ++index)
+              collect_thread_children(pids[index], pids, &count, capacity);
+            return count;
+          }
+
+          static void sample_process_tree(pid_t root, uint64_t now_ms) {
+            struct observer_tracked_pid tracked[OBS_MAX_TRACKED_PIDS];
+            size_t tracked_count = observer_snapshot_tracked(tracked, OBS_MAX_TRACKED_PIDS);
+            pid_t pids[OBS_MAX_PIDS];
+            size_t count = collect_observed_processes(
+                root, pids, OBS_MAX_PIDS, tracked, tracked_count);
+            observer_append("RMG_OBSERVER_V2|event=tree|t_ms=%llu|root=%d|count=%zu|tracked=%zu\\n",
+                            (unsigned long long)now_ms, root, count, tracked_count);
+            for (size_t i = 0; i < count; ++i) {
+              struct proc_sample sample; memset(&sample, 0, sizeof(sample));
+              if (!parse_proc_stat(pids[i], &sample)) {
+                if (!pid_seen(pids[i])) {
+                  observer_append("RMG_OBSERVER_V2|event=proc_unavailable|t_ms=%llu|pid=%d|role=%s\\n",
+                      (unsigned long long)now_ms, pids[i],
+                      tracked_role_for_pid(pids[i], root, tracked, tracked_count));
+                }
+                continue;
+              }
+              if (!pid_seen(pids[i])) sample_process_metadata(pids[i], now_ms);
+              char cpu[24], runtime[40], wait[40], slices[40];
+              if (sample.processor_ok) snprintf(cpu, sizeof(cpu), "%ld", sample.processor);
+              else snprintf(cpu, sizeof(cpu), "NA");
+              format_u64(runtime, sizeof(runtime), sample.schedstat_ok, sample.runtime_ns);
+              format_u64(wait, sizeof(wait), sample.schedstat_ok, sample.wait_ns);
+              format_u64(slices, sizeof(slices), sample.schedstat_ok, sample.slices);
+              observer_append("RMG_OBSERVER_V2|event=proc|t_ms=%llu|pid=%d|ppid=%d|comm=%s|state=%c|cpu=%s|threads=%ld|utime=%llu|stime=%llu|runtime_ns=%s|wait_ns=%s|slices=%s|role=%s\\n",
+                  (unsigned long long)now_ms, pids[i], sample.ppid, sample.comm,
+                  sample.state ? sample.state : '?', cpu, sample.threads,
+                  sample.utime, sample.stime, runtime, wait, slices,
+                  tracked_role_for_pid(pids[i], root, tracked, tracked_count));
+            }
+          }''')
+
+          replace_once(c,
+          '''static const char *classify_marker(const char *line) {
+            if(strstr(line,"[+] exploit attempt="))return "attempt_begin";''',
+          '''static const char *classify_marker(const char *line) {
+            if(strstr(line,"preload supervisor pid="))return "supervisor_start";
+            if(strstr(line,"[+] exploit attempt="))return "attempt_begin";
+            if(strstr(line,"slide child context"))return "slide_child";''')
+
+          replace_once(c,
+          '''static void record_log_line(const char *line,uint64_t now_ms){const char *marker=classify_marker(line);if(!marker)return;unsigned long long until=now_ms+OBS_BURST_WINDOW_MS,current=atomic_load_explicit(&observer_burst_until_ms,memory_order_relaxed);while(until>current&&!atomic_compare_exchange_weak_explicit(&observer_burst_until_ms,&current,until,memory_order_relaxed,memory_order_relaxed)){}char copy[256];size_t len=strlen(line);if(len>=sizeof(copy))len=sizeof(copy)-1;memcpy(copy,line,len);copy[len]='\\0';sanitize_inline(copy);observer_append("RMG_OBSERVER_V2|event=marker|t_ms=%llu|name=%s|line=%s\\n",(unsigned long long)now_ms,marker,copy);}''',
+          '''static void record_log_line(const char *line,uint64_t now_ms){track_marker_processes(line,now_ms);const char *marker=classify_marker(line);if(!marker)return;unsigned long long until=now_ms+OBS_BURST_WINDOW_MS,current=atomic_load_explicit(&observer_burst_until_ms,memory_order_relaxed);while(until>current&&!atomic_compare_exchange_weak_explicit(&observer_burst_until_ms,&current,until,memory_order_relaxed,memory_order_relaxed)){}char copy[256];size_t len=strlen(line);if(len>=sizeof(copy))len=sizeof(copy)-1;memcpy(copy,line,len);copy[len]='\\0';sanitize_inline(copy);observer_append("RMG_OBSERVER_V2|event=marker|t_ms=%llu|name=%s|line=%s\\n",(unsigned long long)now_ms,marker,copy);}''')
+
+          replace_once(c,
+          '''long cpus=sysconf(_SC_NPROCESSORS_ONLN);if(cpus>2){cpu_set_t set;CPU_ZERO(&set);long selected=cpus-1;if(selected>=CPU_SETSIZE)selected=CPU_SETSIZE-1;result.requested_cpu=selected;CPU_SET((int)selected,&set);errno=0;result.affinity_ret=sched_setaffinity(0,sizeof(set),&set);result.affinity_errno=result.affinity_ret==0?0:errno;}else{result.affinity_ret=-1;result.affinity_errno=ENOTSUP;}cpu_set_t effective;CPU_ZERO(&effective);if(sched_getaffinity(0,sizeof(effective),&effective)==0)format_cpu_set(&effective,result.effective_cpus,sizeof(result.effective_cpus));return result;}''',
+          '''cpu_set_t allowed;CPU_ZERO(&allowed);errno=0;if(sched_getaffinity(0,sizeof(allowed),&allowed)==0){long selected=-1;for(int cpu=CPU_SETSIZE-1;cpu>=0;--cpu){if(CPU_ISSET(cpu,&allowed)){selected=cpu;break;}}if(selected>=0){cpu_set_t set;CPU_ZERO(&set);result.requested_cpu=selected;CPU_SET((int)selected,&set);errno=0;result.affinity_ret=sched_setaffinity(0,sizeof(set),&set);result.affinity_errno=result.affinity_ret==0?0:errno;}else{result.affinity_ret=-1;result.affinity_errno=ENOTSUP;}}else{result.affinity_ret=-1;result.affinity_errno=errno;}cpu_set_t effective;CPU_ZERO(&effective);if(sched_getaffinity(0,sizeof(effective),&effective)==0)format_cpu_set(&effective,result.effective_cpus,sizeof(result.effective_cpus));return result;}''')
+
+          replace_once(c,
+          '''static void observer_reset(void){if(observer_log_fd>=0){close(observer_log_fd);observer_log_fd=-1;}free(observer_buffer);observer_buffer=NULL;observer_length=0;observer_dropped=0;observer_log_path[0]='\\0';observer_log_offset=0;observer_log_partial_length=0;observer_seen_pid_count=0;memset(&observer_caps,0,sizeof(observer_caps));atomic_store(&observer_burst_until_ms,0);atomic_store(&observer_target_pid,0);}''',
+          '''static void observer_reset(void){if(observer_log_fd>=0){close(observer_log_fd);observer_log_fd=-1;}free(observer_buffer);observer_buffer=NULL;observer_length=0;observer_dropped=0;observer_log_path[0]='\\0';observer_log_offset=0;observer_log_partial_length=0;observer_seen_pid_count=0;pthread_mutex_lock(&observer_pid_mutex);observer_tracked_pid_count=0;memset(observer_tracked_pids,0,sizeof(observer_tracked_pids));pthread_mutex_unlock(&observer_pid_mutex);memset(&observer_caps,0,sizeof(observer_caps));atomic_store(&observer_burst_until_ms,0);atomic_store(&observer_target_pid,0);}''')
+
+          replace_once(c,
+          '''JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerAttachPid(JNIEnv *env,jobject thiz,jlong pid){(void)env;(void)thiz;if(!atomic_load(&observer_running)||pid<=0||pid>INT_MAX)return JNI_FALSE;char path[128],text[256];snprintf(path,sizeof(path),"/proc/%lld/stat",(long long)pid);int stat_access=read_text(path,text,sizeof(text))>0;observer_append("RMG_OBSERVER_V2|event=attach|t_ms=%llu|pid=%lld|stat_access=%d\\n",(unsigned long long)boottime_ms(),(long long)pid,stat_access);atomic_store_explicit(&observer_target_pid,(int)pid,memory_order_relaxed);return JNI_TRUE;}''',
+          '''JNIEXPORT jboolean JNICALL Java_dev_busung_s25uroot_NativeProbe_observerAttachPid(JNIEnv *env,jobject thiz,jlong pid){(void)env;(void)thiz;if(!atomic_load(&observer_running)||pid<=0||pid>INT_MAX)return JNI_FALSE;char path[128],text[256];snprintf(path,sizeof(path),"/proc/%lld/stat",(long long)pid);int stat_access=read_text(path,text,sizeof(text))>0;uint64_t now=boottime_ms();observer_append("RMG_OBSERVER_V2|event=attach|t_ms=%llu|pid=%lld|stat_access=%d\\n",(unsigned long long)now,(long long)pid,stat_access);observer_track_pid((pid_t)pid,"helper",now);atomic_store_explicit(&observer_target_pid,(int)pid,memory_order_relaxed);return JNI_TRUE;}''')
+
+          replace_once('app/src/main/java/dev/busung/s25uroot/ExploitObserver.kt',
+          '''    private val markerTokens = listOf(
+                  "[+] exploit attempt=",''',
+          '''    private val markerTokens = listOf(
+                  "preload supervisor pid=",
+                  "[+] exploit attempt=",
+                  "slide child context",''')
+
+          Path('app/src/main/java/dev/busung/s25uroot/Czg3ExternalTelemetry.kt').write_text(r'''package dev.busung.s25uroot
+
+          internal data class Czg3ProcessRoleMetrics(
+              val expectedPids: Int,
+              val sampledPids: Int,
+              val processSamples: Int,
+              val cpuChangesObserved: Int?,
+              val runtimeDeltaNanos: Long?,
+              val waitDeltaNanos: Long?,
+              val slicesDelta: Long?,
+          )
+
+          internal data class Czg3ExternalRunSummary(
+              val maxSupervisorAttempt: Int,
+              val observerStartUptimeMillis: Long?,
+              val observerStopUptimeMillis: Long?,
+              val exploitElapsedMillis: Long?,
+              val observerTargetPid: Long?,
+              val observerAttached: Boolean,
+              val observerScope: String?,
+              val observerDroppedEvents: Long?,
+              val processSamples: Int,
+              val traceComplete: Boolean,
+              val processCoverageComplete: Boolean?,
+              val processCoverageReason: String,
+              val criticalSlidePid: Long?,
+              val roleMetrics: Map<String, Czg3ProcessRoleMetrics>,
+              val p0Succeeded: Boolean,
+              val fopsReached: Boolean,
+              val fopsTriggered: Boolean?,
+              val unsafeStop: Boolean,
+              val lastCheckpoint: String?,
+              val lastCheckpointUptimeMillis: Long?,
+              val lastPselectDurationMicros: Long?,
+              val fopsEffectiveConsumeMicros: Long?,
+              val targetCpuChangesObserved: Int?,
+              val targetRuntimeDeltaNanos: Long?,
+              val targetWaitDeltaNanos: Long?,
+              val targetSlicesDelta: Long?,
+          )
+
+          internal object Czg3ExternalTelemetryParser {
+              private val attempt = Regex("""\bexploit attempt=(\d+)/(\d+)\b""")
+              private val observerStart = Regex("""RMG_OBSERVER_V2\|event=start\|t_ms=(\d+)""")
+              private val observerStop = Regex("""RMG_OBSERVER_V2\|event=stop\|t_ms=(\d+)\|dropped=(\d+)""")
+              private val nativeAttach = Regex("""RMG_OBSERVER_V2\|event=attach\|t_ms=(\d+)\|pid=(\d+)\|stat_access=(\d+)""")
+              private val controllerScope = Regex("""RMG_OBSERVER_V2\|event=controller_start\|[^\n]*\|scope=([^|\n]+)""")
+              private val marker = Regex("""RMG_OBSERVER_V2\|event=marker\|t_ms=(\d+)\|name=([a-z0-9_]+)\|""")
+              private val discovered = Regex("""RMG_OBSERVER_V2\|event=pid_discovered\|t_ms=\d+\|role=([a-z_]+)\|pid=(\d+)""")
+              private val rawSupervisorPid = Regex("""preload supervisor pid=(\d+)""")
+              private val rawAttemptPid = Regex("""\[\+\] exploit attempt=\d+/\d+[^\n]*\bpid=(\d+)""")
+              private val rawSlidePid = Regex("""slide child context[^\n]*\bpid=(\d+)""")
+              private val procLine = Regex("""RMG_OBSERVER_V2\|event=proc\|([^\n]+)""")
+              private val pselect = Regex("""slide pselect returned[^\n]*elapsed_usec=(\d+)""")
+              private val fopsConsume = Regex("""app fops slide route[^\n]*effective_consume_usec=(\d+)""")
+              private val fopsTrigger = Regex("""app fops stage=trigger-return[^\n]*triggered=(\d+)""")
+              private val roles = listOf("helper", "supervisor", "attempt", "slide_child")
+
+              fun parse(log: String): Czg3ExternalRunSummary {
+                  val maxAttempt = attempt.findAll(log)
+                      .mapNotNull { it.groupValues[1].toIntOrNull() }
+                      .maxOrNull() ?: 0
+                  val start = observerStart.find(log)?.groupValues?.get(1)?.toLongOrNull()
+                  val stopMatch = observerStop.findAll(log).lastOrNull()
+                  val stop = stopMatch?.groupValues?.get(1)?.toLongOrNull()
+                  val dropped = stopMatch?.groupValues?.get(2)?.toLongOrNull()
+                  val scope = controllerScope.findAll(log).lastOrNull()?.groupValues?.get(1)
+
+                  val native = nativeAttach.findAll(log).lastOrNull()
+                  val targetPid = native?.groupValues?.get(2)?.toLongOrNull()
+                  val attached = native?.groupValues?.get(3) == "1"
+
+                  val markers = marker.findAll(log).mapNotNull { match ->
+                      val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
+                      time to match.groupValues[2]
+                  }.toList()
+
+                  val expected = linkedMapOf<String, LinkedHashSet<Long>>()
+                  fun addExpected(role: String, pid: Long?) {
+                      if (pid == null || pid <= 0L) return
+                      expected.getOrPut(role, ::LinkedHashSet).add(pid)
+                  }
+                  if (attached) addExpected("helper", targetPid)
+                  discovered.findAll(log).forEach { match ->
+                      addExpected(match.groupValues[1], match.groupValues[2].toLongOrNull())
+                  }
+                  rawSupervisorPid.findAll(log).forEach { addExpected("supervisor", it.groupValues[1].toLongOrNull()) }
+                  rawAttemptPid.findAll(log).forEach { addExpected("attempt", it.groupValues[1].toLongOrNull()) }
+                  rawSlidePid.findAll(log).forEach { addExpected("slide_child", it.groupValues[1].toLongOrNull()) }
+                  val expectedRoleByPid = linkedMapOf<Long, String>()
+                  roles.forEach { role -> expected[role].orEmpty().forEach { expectedRoleByPid[it] = role } }
+
+                  val procSamples = procLine.findAll(log).mapNotNull { match ->
+                      val fields = parseFields(match.groupValues[1])
+                      val pid = fields["pid"]?.toLongOrNull() ?: return@mapNotNull null
+                      val role = fields["role"]?.takeIf { it in roles }
+                          ?: expectedRoleByPid[pid]
+                          ?: if (pid == targetPid) "helper" else "tree"
+                      ProcessSample(
+                          timeMillis = fields["t_ms"]?.toLongOrNull() ?: 0L,
+                          pid = pid,
+                          role = role,
+                          cpu = fields["cpu"]?.toIntOrNull()?.takeIf { it >= 0 },
+                          runtimeNanos = fields["runtime_ns"]?.toLongOrNull(),
+                          waitNanos = fields["wait_ns"]?.toLongOrNull(),
+                          slices = fields["slices"]?.toLongOrNull(),
+                      )
+                  }.toList()
+
+                  val roleMetrics = roles.associateWith { role ->
+                      buildRoleMetrics(role, expected[role].orEmpty(), procSamples)
+                  }
+                  val helperMetrics = roleMetrics.getValue("helper")
+                  val criticalSlidePid = expected["slide_child"]?.lastOrNull()
+                  val sampledPids = procSamples.map(ProcessSample::pid).toSet()
+
+                  val coverageProblems = mutableListOf<String>()
+                  if (scope == "process_tree_system") {
+                      if (!attached) coverageProblems += "helper_attach"
+                      val helperExpected = expected["helper"].orEmpty()
+                      if (helperExpected.isEmpty() || !sampledPids.containsAll(helperExpected)) coverageProblems += "helper_sample"
+                      val supervisorExpected = expected["supervisor"].orEmpty()
+                      if (supervisorExpected.isEmpty() || !sampledPids.containsAll(supervisorExpected)) coverageProblems += "supervisor_sample"
+                      val attemptExpected = expected["attempt"].orEmpty()
+                      if (attemptExpected.isEmpty() || !sampledPids.containsAll(attemptExpected)) coverageProblems += "attempt_sample"
+                      if (criticalSlidePid != null && criticalSlidePid !in sampledPids) coverageProblems += "critical_slide_sample"
+                  }
+                  val processCoverage = when (scope) {
+                      "process_tree_system" -> coverageProblems.isEmpty()
+                      "system_remote_markers" -> null
+                      else -> null
+                  }
+                  val coverageReason = when {
+                      scope == "system_remote_markers" -> "not_applicable_remote_markers"
+                      scope != "process_tree_system" -> "scope_unknown"
+                      coverageProblems.isEmpty() -> "complete"
+                      else -> coverageProblems.joinToString(",")
+                  }
+                  val sessionComplete = stop != null && dropped == 0L
+                  val traceComplete = when (scope) {
+                      "process_tree_system" -> sessionComplete && processCoverage == true
+                      "system_remote_markers" -> sessionComplete && markers.isNotEmpty()
+                      else -> sessionComplete && attached
+                  }
+
+                  val p0Success = log.contains("slide-kaslr-ok") || markers.any { it.second == "p0_success" }
+                  val fopsReached = log.contains("durable log checkpoint stage=fops-page-held") ||
+                      log.contains("app fops slide route") ||
+                      markers.any { it.second == "fops_page_held" || it.second == "fops_route" }
+                  val trigger = fopsTrigger.findAll(log).lastOrNull()
+                      ?.groupValues?.get(1)?.toIntOrNull()?.let { it != 0 }
+                  val unsafe = log.contains("writer route outcome is mutation-uncertain", ignoreCase = true) ||
+                      markers.any { it.second == "unsafe_stop" }
+
+                  val checkpoint = when {
+                      fopsReached -> "fops/page-held"
+                      p0Success -> "p0/slide-kaslr-ok"
+                      log.contains("p0 pipe oracle prepared") -> "p0/oracle-ready"
+                      else -> null
+                  }
+                  val checkpointTime = when (checkpoint) {
+                      "fops/page-held" -> markers.lastOrNull { it.second == "fops_page_held" || it.second == "fops_route" }?.first
+                      "p0/slide-kaslr-ok" -> markers.lastOrNull { it.second == "p0_success" }?.first
+                      "p0/oracle-ready" -> markers.lastOrNull { it.second == "p0_oracle_ready" }?.first
+                      else -> null
+                  }
+
+                  return Czg3ExternalRunSummary(
+                      maxSupervisorAttempt = maxAttempt,
+                      observerStartUptimeMillis = start,
+                      observerStopUptimeMillis = stop,
+                      exploitElapsedMillis = if (start != null && stop != null && stop >= start) stop - start else null,
+                      observerTargetPid = targetPid,
+                      observerAttached = attached,
+                      observerScope = scope,
+                      observerDroppedEvents = dropped,
+                      processSamples = procSamples.size,
+                      traceComplete = traceComplete,
+                      processCoverageComplete = processCoverage,
+                      processCoverageReason = coverageReason,
+                      criticalSlidePid = criticalSlidePid,
+                      roleMetrics = roleMetrics,
+                      p0Succeeded = p0Success,
+                      fopsReached = fopsReached,
+                      fopsTriggered = trigger,
+                      unsafeStop = unsafe,
+                      lastCheckpoint = checkpoint,
+                      lastCheckpointUptimeMillis = checkpointTime,
+                      lastPselectDurationMicros = pselect.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
+                      fopsEffectiveConsumeMicros = fopsConsume.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
+                      targetCpuChangesObserved = helperMetrics.cpuChangesObserved,
+                      targetRuntimeDeltaNanos = helperMetrics.runtimeDeltaNanos,
+                      targetWaitDeltaNanos = helperMetrics.waitDeltaNanos,
+                      targetSlicesDelta = helperMetrics.slicesDelta,
+                  )
+              }
+
+              private fun parseFields(body: String): Map<String, String> = body
+                  .split('|')
+                  .mapNotNull { field ->
+                      val separator = field.indexOf('=')
+                      if (separator <= 0) null else field.substring(0, separator) to field.substring(separator + 1)
+                  }
+                  .toMap()
+
+              private fun buildRoleMetrics(
+                  role: String,
+                  expectedPids: Set<Long>,
+                  allSamples: List<ProcessSample>,
+              ): Czg3ProcessRoleMetrics {
+                  val samples = allSamples.filter { it.role == role }.sortedBy(ProcessSample::timeMillis)
+                  val byPid = samples.groupBy(ProcessSample::pid)
+                  val sampledPids = samples.map(ProcessSample::pid).toSet()
+                  var cpuSeen = false
+                  var cpuChanges = 0
+                  byPid.values.forEach { pidSamples ->
+                      val cpus = pidSamples.mapNotNull(ProcessSample::cpu)
+                      if (cpus.isNotEmpty()) cpuSeen = true
+                      cpuChanges += cpus.zipWithNext().count { (a, b) -> a != b }
+                  }
+
+                  fun sumDelta(selector: (ProcessSample) -> Long?): Long? {
+                      var any = false
+                      var total = 0L
+                      byPid.values.forEach { pidSamples ->
+                          val values = pidSamples.mapNotNull(selector)
+                          val first = values.firstOrNull()
+                          val last = values.lastOrNull()
+                          if (first != null && last != null && last >= first) {
+                              total += last - first
+                              any = true
+                          }
+                      }
+                      return total.takeIf { any }
+                  }
+
+                  return Czg3ProcessRoleMetrics(
+                      expectedPids = expectedPids.size,
+                      sampledPids = sampledPids.size,
+                      processSamples = samples.size,
+                      cpuChangesObserved = cpuChanges.takeIf { cpuSeen },
+                      runtimeDeltaNanos = sumDelta(ProcessSample::runtimeNanos),
+                      waitDeltaNanos = sumDelta(ProcessSample::waitNanos),
+                      slicesDelta = sumDelta(ProcessSample::slices),
+                  )
+              }
+
+              private data class ProcessSample(
+                  val timeMillis: Long,
+                  val pid: Long,
+                  val role: String,
+                  val cpu: Int?,
+                  val runtimeNanos: Long?,
+                  val waitNanos: Long?,
+                  val slices: Long?,
+              )
+          }
+
+          private fun laterExploitStage(existing: ExploitStage?, inferred: ExploitStage?): ExploitStage? = when {
+              existing == null -> inferred
+              inferred == null -> existing
+              existing.ordinal >= inferred.ordinal -> existing
+              else -> inferred
+          }
+
+          internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHistoryEntry {
+              if (entry.profileId != CZG3_PROFILE_ID_FOR_DIAGNOSTICS && !entry.log.contains("RMG_OBSERVER_V2|")) return entry
+              val summary = Czg3ExternalTelemetryParser.parse(entry.log)
+              val inferredStage = when {
+                  summary.fopsReached -> ExploitStage.AttemptingRace
+                  summary.p0Succeeded -> ExploitStage.ValidatingPrimitive
+                  summary.maxSupervisorAttempt > 0 -> ExploitStage.ResolvingKernelState
+                  else -> null
+              }
+              val stage = laterExploitStage(entry.stage, inferredStage)
+              val elapsed = maxOf(entry.exploitElapsedMillis ?: 0L, summary.exploitElapsedMillis ?: 0L)
+                  .takeIf { it > 0L } ?: entry.exploitElapsedMillis
+              val attemptCount = maxOf(entry.attemptCount, summary.maxSupervisorAttempt)
+              val checkpoint = entry.lastPrepCheckpoint ?: summary.lastCheckpoint
+              val checkpointUptime = entry.lastPrepCheckpointUptimeMillis ?: summary.lastCheckpointUptimeMillis
+              val canRecordInferredTiming = inferredStage != null &&
+                  (entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
+              val timing = if (canRecordInferredTiming && elapsed != null) {
+                  StageTiming(inferredStage, elapsed, attemptCount.takeIf { it > 0 })
+              } else {
+                  null
+              }
+              return entry.copy(
+                  stage = stage,
+                  attemptCount = attemptCount,
+                  exploitElapsedMillis = elapsed,
+                  lastPrepCheckpoint = checkpoint,
+                  lastPrepCheckpointUptimeMillis = checkpointUptime,
+                  stageTimings = if (timing != null && entry.stageTimings.lastOrNull() != timing) entry.stageTimings + timing else entry.stageTimings,
+              )
+          }
+
+          internal fun externalObserverAnalysisReport(log: String): String {
+              if (!log.contains("RMG_OBSERVER_V2|")) return ""
+              val value = Czg3ExternalTelemetryParser.parse(log)
+              return buildString {
+                  appendLine("external_observer_analysis:")
+                  appendLine("attached=${value.observerAttached}")
+                  appendLine("target_pid=${value.observerTargetPid ?: "unknown"}")
+                  appendLine("observer_scope=${value.observerScope ?: "unknown"}")
+                  appendLine("observer_start_uptime_ms=${value.observerStartUptimeMillis ?: "unknown"}")
+                  appendLine("observer_stop_uptime_ms=${value.observerStopUptimeMillis ?: "unknown"}")
+                  appendLine("observer_elapsed_ms=${value.exploitElapsedMillis ?: "unknown"}")
+                  appendLine("dropped_events=${value.observerDroppedEvents ?: "unknown"}")
+                  appendLine("process_samples=${value.processSamples}")
+                  appendLine("trace_complete=${value.traceComplete}")
+                  appendLine("process_coverage_complete=${value.processCoverageComplete ?: "not_applicable"}")
+                  appendLine("process_coverage_reason=${value.processCoverageReason}")
+                  appendLine("critical_slide_pid=${value.criticalSlidePid ?: "none"}")
+                  value.roleMetrics.forEach { (role, metrics) ->
+                      appendLine("role_${role}_expected_pids=${metrics.expectedPids}")
+                      appendLine("role_${role}_sampled_pids=${metrics.sampledPids}")
+                      appendLine("role_${role}_samples=${metrics.processSamples}")
+                      appendLine("role_${role}_cpu_changes=${metrics.cpuChangesObserved ?: "unavailable"}")
+                      appendLine("role_${role}_runtime_delta_ns=${metrics.runtimeDeltaNanos ?: "unavailable"}")
+                      appendLine("role_${role}_wait_delta_ns=${metrics.waitDeltaNanos ?: "unavailable"}")
+                      appendLine("role_${role}_slices_delta=${metrics.slicesDelta ?: "unavailable"}")
+                  }
+                  appendLine("max_supervisor_attempt=${value.maxSupervisorAttempt}")
+                  appendLine("p0_succeeded=${value.p0Succeeded}")
+                  appendLine("fops_reached=${value.fopsReached}")
+                  appendLine("fops_triggered=${value.fopsTriggered ?: "unknown"}")
+                  appendLine("unsafe_stop=${value.unsafeStop}")
+                  appendLine("last_checkpoint=${value.lastCheckpoint ?: "none"}")
+                  appendLine("last_checkpoint_uptime_ms=${value.lastCheckpointUptimeMillis ?: "unknown"}")
+                  appendLine("last_pselect_duration_us=${value.lastPselectDurationMicros ?: "unknown"}")
+                  appendLine("fops_effective_consume_us=${value.fopsEffectiveConsumeMicros ?: "unknown"}")
+                  appendLine("target_cpu_changes_observed=${value.targetCpuChangesObserved ?: "unavailable"}")
+                  appendLine("target_runtime_delta_ns=${value.targetRuntimeDeltaNanos ?: "unavailable"}")
+                  appendLine("target_wait_delta_ns=${value.targetWaitDeltaNanos ?: "unavailable"}")
+                  appendLine("target_slices_delta=${value.targetSlicesDelta ?: "unavailable"}")
+              }
+          }
+
+          internal const val CZG3_PROFILE_ID_FOR_DIAGNOSTICS = "pa3q-S938BXXSBCZG3"
+          '''.replace('\n          ', '\n').lstrip())
+
+          replace_once('app/src/main/java/dev/busung/s25uroot/RaceTelemetry.kt',
+          '''        val traceComplete = value.observerAttached && value.observerDroppedEvents == 0L && value.observerStopUptimeMillis != null
+                  return buildString {''',
+          '''        val traceComplete = value.traceComplete
+                  return buildString {''')
+
+          replace_once('app/src/main/java/dev/busung/s25uroot/RaceTelemetry.kt',
+          '''            appendLine("observer_target_pid=${value.observerTargetPid ?: "unknown"}")
+                      appendLine("process_samples=${value.processSamples}")
+                      appendLine("target_cpu_changes_observed=${value.targetCpuChangesObserved ?: "unavailable"}")''',
+          '''            appendLine("observer_target_pid=${value.observerTargetPid ?: "unknown"}")
+                      appendLine("observer_scope=${value.observerScope ?: "unknown"}")
+                      appendLine("process_samples=${value.processSamples}")
+                      appendLine("process_coverage_complete=${value.processCoverageComplete ?: "not_applicable"}")
+                      appendLine("process_coverage_reason=${value.processCoverageReason}")
+                      appendLine("critical_slide_pid=${value.criticalSlidePid ?: "none"}")
+                      value.roleMetrics.forEach { (role, metrics) ->
+                          appendLine("process_role_$role expected=${metrics.expectedPids} sampled=${metrics.sampledPids} samples=${metrics.processSamples} cpu_changes=${metrics.cpuChangesObserved ?: "unavailable"} runtime_delta_ns=${metrics.runtimeDeltaNanos ?: "unavailable"} wait_delta_ns=${metrics.waitDeltaNanos ?: "unavailable"} slices_delta=${metrics.slicesDelta ?: "unavailable"}")
+                      }
+                      appendLine("target_cpu_changes_observed=${value.targetCpuChangesObserved ?: "unavailable"}")''')
+
+          replace_once('app/src/main/java/dev/busung/s25uroot/PreparationTelemetry.kt',
+          '''        val traceComplete = summary.observerAttached && summary.observerDroppedEvents == 0L && summary.observerStopUptimeMillis != null''',
+          '''        val traceComplete = summary.traceComplete''')
+
+          test = Path('app/src/test/java/dev/busung/s25uroot/Czg3ExternalTelemetryTest.kt')
+          old_test = test.read_text()
+          insert_before = '''    @Test
+              fun externalReportsMarkUnavailableRoleTimingsExplicitlyAndIgnoreMarkerCopies() {'''
+          addition = r'''    @Test
+              fun standaloneTraceRequiresSupervisorAttemptAndCriticalSlideCoverage() {
+                  val complete = """
+                      RMG_OBSERVER_V2|event=controller_start|available=true|transport=standalone|scope=process_tree_system
+                      RMG_OBSERVER_V2|event=start|t_ms=120000|observer_pid=10
+                      RMG_OBSERVER_V2|event=attach|t_ms=120010|pid=100|stat_access=1
+                      RMG_OBSERVER_V2|event=pid_discovered|t_ms=120010|role=helper|pid=100|source=marker
+                      [+] preload supervisor pid=101 attempts=24 base_delay=20000 p0_timeout=45 timeout=120
+                      [+] exploit attempt=1/24 pid=102 delay=25000 p0_offset=scan
+                      [+] slide child context stack_writer=pselect pid=103 uid=10524
+                      RMG_OBSERVER_V2|event=pid_discovered|t_ms=120020|role=supervisor|pid=101|source=marker
+                      RMG_OBSERVER_V2|event=pid_discovered|t_ms=120030|role=attempt|pid=102|source=marker
+                      RMG_OBSERVER_V2|event=pid_discovered|t_ms=120040|role=slide_child|pid=103|source=marker
+                      RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=100|ppid=1|comm=helper|state=S|cpu=NA|threads=1|utime=0|stime=0|runtime_ns=10|wait_ns=5|slices=1|role=helper
+                      RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=101|ppid=100|comm=supervisor|state=S|cpu=2|threads=1|utime=0|stime=0|runtime_ns=20|wait_ns=8|slices=2|role=supervisor
+                      RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=102|ppid=101|comm=attempt|state=R|cpu=3|threads=1|utime=0|stime=0|runtime_ns=100|wait_ns=10|slices=3|role=attempt
+                      RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=200|wait_ns=20|slices=4|role=slide_child
+                      RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=102|ppid=101|comm=attempt|state=R|cpu=5|threads=1|utime=0|stime=0|runtime_ns=500|wait_ns=30|slices=8|role=attempt
+                      RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=900|wait_ns=40|slices=9|role=slide_child
+                      RMG_OBSERVER_V2|event=marker|t_ms=120040|name=attempt_begin|line=[+] exploit attempt=1/24 pid=102
+                      RMG_OBSERVER_V2|event=stop|t_ms=120200|dropped=0|bytes=1000
+                  """.trimIndent()
+                  val value = Czg3ExternalTelemetryParser.parse(complete)
+                  assertTrue(value.traceComplete)
+                  assertEquals(true, value.processCoverageComplete)
+                  assertEquals("complete", value.processCoverageReason)
+                  assertEquals(103L, value.criticalSlidePid)
+                  assertEquals(null, value.roleMetrics.getValue("helper").cpuChangesObserved)
+                  assertEquals(1, value.roleMetrics.getValue("attempt").cpuChangesObserved)
+                  assertEquals(400L, value.roleMetrics.getValue("attempt").runtimeDeltaNanos)
+                  assertEquals(700L, value.roleMetrics.getValue("slide_child").runtimeDeltaNanos)
+
+                  val missingAttemptSample = complete.lines()
+                      .filterNot { it.contains("|pid=102|ppid=") }
+                      .joinToString("\n")
+                  val incomplete = Czg3ExternalTelemetryParser.parse(missingAttemptSample)
+                  assertFalse(incomplete.traceComplete)
+                  assertEquals(false, incomplete.processCoverageComplete)
+                  assertTrue(incomplete.processCoverageReason.contains("attempt_sample"))
+              }
+
+              @Test
+              fun remoteMarkerScopeDoesNotRequireLocalProcessAttach() {
+                  val remote = """
+                      RMG_OBSERVER_V2|event=controller_start|available=true|transport=shizuku|scope=system_remote_markers
+                      RMG_OBSERVER_V2|event=start|t_ms=100|observer_pid=10
+                      RMG_OBSERVER_V2|event=marker|t_ms=120|name=attempt_begin|line=[+] exploit attempt=1/24 pid=200
+                      RMG_OBSERVER_V2|event=stop|t_ms=200|dropped=0|bytes=100
+                  """.trimIndent()
+                  val value = Czg3ExternalTelemetryParser.parse(remote)
+                  assertTrue(value.traceComplete)
+                  assertEquals(null, value.processCoverageComplete)
+                  assertEquals("not_applicable_remote_markers", value.processCoverageReason)
+              }
+
+          '''
+          if insert_before not in old_test:
+              raise SystemExit('Czg3ExternalTelemetryTest insertion point missing')
+          test.write_text(old_test.replace(insert_before, addition + insert_before, 1))
+
+          observer_test = 'app/src/test/java/dev/busung/s25uroot/ExploitObserverTest.kt'
+          replace_once(observer_test,
+          '''    @Test
+              fun markerParserDoesNotMisclassifyFailedAttemptAsAttemptBegin() {''',
+          '''    @Test
+              fun markerParserCarriesProcessDiscoveryMarkersForRemoteScope() {
+                  val log = "[+] preload supervisor pid=41 attempts=24\\n[+] slide child context stack_writer=pselect pid=42 uid=10524\\n"
+                  val batch = ExploitObserverMarkerParser.parseNewLines(log, 0)
+                  assertEquals(2, batch.lines.size)
+                  assertTrue(batch.lines[0].contains("preload supervisor pid=41"))
+                  assertTrue(batch.lines[1].contains("slide child context"))
+              }
+
+              @Test
+              fun markerParserDoesNotMisclassifyFailedAttemptAsAttemptBegin() {''')
+          PY
+
+      - name: Validate native and Android build
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --build-cache \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleRelease \
+            -PreleaseVersionCode=10039 \
+            -PreleaseVersionName=0.3.39
+
+      - name: Commit validated source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/cpp/external_observer.c \
+                  app/src/main/java/dev/busung/s25uroot/ExploitObserver.kt \
+                  app/src/main/java/dev/busung/s25uroot/Czg3ExternalTelemetry.kt \
+                  app/src/main/java/dev/busung/s25uroot/RaceTelemetry.kt \
+                  app/src/main/java/dev/busung/s25uroot/PreparationTelemetry.kt \
+                  app/src/test/java/dev/busung/s25uroot/Czg3ExternalTelemetryTest.kt \
+                  app/src/test/java/dev/busung/s25uroot/ExploitObserverTest.kt
+          git diff --cached --check
+          git commit -m 'Fix External Observer v2 process coverage'
+          git push origin HEAD:fix/czg3-observer-process-coverage
