@@ -553,8 +553,11 @@ static size_t collect_observed_processes(
     if (tracked[i].pid <= 0 || pid_in_list(pids, count, tracked[i].pid)) continue;
     unsigned long long current = 0;
     if (!read_proc_starttime(tracked[i].pid, &current) ||
-        current != tracked[i].starttime_ticks)
+        current != tracked[i].starttime_ticks) {
+      observer_forget_tracked_identity(
+          tracked[i].pid, tracked[i].starttime_ticks);
       continue;
+    }
     pids[count++] = tracked[i].pid;
   }
   for (size_t index = 0; index < count && count < capacity; ++index) {
