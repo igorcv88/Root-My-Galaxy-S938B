@@ -139,19 +139,19 @@ class Czg3ExternalTelemetryTest {
             RMG_OBSERVER_V2|event=controller_start|available=true|transport=standalone|scope=process_tree_system
             RMG_OBSERVER_V2|event=start|t_ms=120000|observer_pid=10
             RMG_OBSERVER_V2|event=attach|t_ms=120010|pid=100|stat_access=1
-            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120010|role=helper|pid=100|source=marker
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120010|role=helper|pid=100|starttime_ticks=1001|identity_ok=1|source=marker
             [+] preload supervisor pid=101 attempts=24 base_delay=20000 p0_timeout=45 timeout=120
             [+] exploit attempt=1/24 pid=102 delay=25000 p0_offset=scan
             [+] slide child context stack_writer=pselect pid=103 uid=10524
-            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120020|role=supervisor|pid=101|source=marker
-            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120030|role=attempt|pid=102|source=marker
-            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120040|role=slide_child|pid=103|source=marker
-            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=100|ppid=1|comm=helper|state=S|cpu=NA|threads=1|utime=0|stime=0|runtime_ns=10|wait_ns=5|slices=1|role=helper
-            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=101|ppid=100|comm=supervisor|state=S|cpu=2|threads=1|utime=0|stime=0|runtime_ns=20|wait_ns=8|slices=2|role=supervisor
-            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=102|ppid=101|comm=attempt|state=R|cpu=3|threads=1|utime=0|stime=0|runtime_ns=100|wait_ns=10|slices=3|role=attempt
-            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=200|wait_ns=20|slices=4|role=slide_child
-            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=102|ppid=101|comm=attempt|state=R|cpu=5|threads=1|utime=0|stime=0|runtime_ns=500|wait_ns=30|slices=8|role=attempt
-            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=103|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=900|wait_ns=40|slices=9|role=slide_child
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120020|role=supervisor|pid=101|starttime_ticks=1002|identity_ok=1|source=marker
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120030|role=attempt|pid=102|starttime_ticks=1003|identity_ok=1|source=marker
+            RMG_OBSERVER_V2|event=pid_discovered|t_ms=120040|role=slide_child|pid=103|starttime_ticks=1004|identity_ok=1|source=marker
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=100|starttime_ticks=1001|ppid=1|comm=helper|state=S|cpu=NA|threads=1|utime=0|stime=0|runtime_ns=10|wait_ns=5|slices=1|role=helper
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=101|starttime_ticks=1002|ppid=100|comm=supervisor|state=S|cpu=2|threads=1|utime=0|stime=0|runtime_ns=20|wait_ns=8|slices=2|role=supervisor
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=102|starttime_ticks=1003|ppid=101|comm=attempt|state=R|cpu=3|threads=1|utime=0|stime=0|runtime_ns=100|wait_ns=10|slices=3|role=attempt
+            RMG_OBSERVER_V2|event=proc|t_ms=120050|pid=103|starttime_ticks=1004|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=200|wait_ns=20|slices=4|role=slide_child
+            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=102|starttime_ticks=1003|ppid=101|comm=attempt|state=R|cpu=5|threads=1|utime=0|stime=0|runtime_ns=500|wait_ns=30|slices=8|role=attempt
+            RMG_OBSERVER_V2|event=proc|t_ms=120100|pid=103|starttime_ticks=1004|ppid=102|comm=slide|state=R|cpu=4|threads=3|utime=0|stime=0|runtime_ns=900|wait_ns=40|slices=9|role=slide_child
             RMG_OBSERVER_V2|event=marker|t_ms=120040|name=attempt_begin|line=[+] exploit attempt=1/24 pid=102
             RMG_OBSERVER_V2|event=stop|t_ms=120200|dropped=0|bytes=1000
         """.trimIndent()
@@ -166,12 +166,40 @@ class Czg3ExternalTelemetryTest {
         assertEquals(700L, value.roleMetrics.getValue("slide_child").runtimeDeltaNanos)
 
         val missingAttemptSample = complete.lines()
-            .filterNot { it.contains("|pid=102|ppid=") }
+            .filterNot { it.contains("|pid=102|starttime_ticks=1003|ppid=") }
             .joinToString("\n")
         val incomplete = Czg3ExternalTelemetryParser.parse(missingAttemptSample)
         assertFalse(incomplete.traceComplete)
         assertEquals(false, incomplete.processCoverageComplete)
         assertTrue(incomplete.processCoverageReason.contains("attempt_sample"))
+
+        val preDiscoveryOnly = complete.lines()
+            .filterNot { it.contains("|pid=102|starttime_ticks=1003|ppid=") }
+            .toMutableList()
+        val discoveryIndex = preDiscoveryOnly.indexOfFirst { it.contains("role=attempt|pid=102") }
+        preDiscoveryOnly.add(
+            discoveryIndex,
+            "RMG_OBSERVER_V2|event=proc|t_ms=120025|pid=102|starttime_ticks=1003|ppid=101|comm=attempt|state=R|cpu=3|threads=1|utime=0|stime=0|runtime_ns=50|wait_ns=5|slices=1|role=tree",
+        )
+        val preDiscovery = Czg3ExternalTelemetryParser.parse(preDiscoveryOnly.joinToString("\n"))
+        assertFalse(preDiscovery.traceComplete)
+        assertTrue(preDiscovery.processCoverageReason.contains("attempt_sample"))
+
+        val reusedPid = complete.replace(
+            "|pid=102|starttime_ticks=1003|ppid=",
+            "|pid=102|starttime_ticks=9003|ppid=",
+        )
+        val reused = Czg3ExternalTelemetryParser.parse(reusedPid)
+        assertFalse(reused.traceComplete)
+        assertTrue(reused.processCoverageReason.contains("attempt_sample"))
+
+        val missingIdentity = complete.replace(
+            "role=attempt|pid=102|starttime_ticks=1003|identity_ok=1",
+            "role=attempt|pid=102|starttime_ticks=NA|identity_ok=0",
+        )
+        val unidentified = Czg3ExternalTelemetryParser.parse(missingIdentity)
+        assertFalse(unidentified.traceComplete)
+        assertTrue(unidentified.processCoverageReason.contains("attempt_identity"))
     }
 
     @Test

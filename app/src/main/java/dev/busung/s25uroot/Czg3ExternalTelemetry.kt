@@ -46,9 +46,7 @@ internal object Czg3ExternalTelemetryParser {
     private val nativeAttach = Regex("""RMG_OBSERVER_V2\|event=attach\|t_ms=(\d+)\|pid=(\d+)\|stat_access=(\d+)""")
     private val controllerScope = Regex("""RMG_OBSERVER_V2\|event=controller_start\|[^\n]*\|scope=([^|\n]+)""")
     private val marker = Regex("""RMG_OBSERVER_V2\|event=marker\|t_ms=(\d+)\|name=([a-z0-9_]+)\|""")
-    private val discovered = Regex("""RMG_OBSERVER_V2\|event=pid_discovered\|t_ms=\d+\|role=([a-z_]+)\|pid=(\d+)""")
-    private val rawSupervisorPid = Regex("""preload supervisor pid=(\d+)""")
-    private val rawAttemptPid = Regex("""\[\+\] exploit attempt=\d+/\d+[^\n]*\bpid=(\d+)""")
+    private val discovered = Regex("""RMG_OBSERVER_V2\|event=pid_discovered\|t_ms=(\d+)\|role=([a-z_]+)\|pid=(\d+)\|starttime_ticks=([^|\n]+)\|identity_ok=(\d+)""")
     private val rawSlidePid = Regex("""slide child context[^\n]*\bpid=(\d+)""")
     private val procLine = Regex("""RMG_OBSERVER_V2\|event=proc\|([^\n]+)""")
     private val pselect = Regex("""slide pselect returned[^\n]*elapsed_usec=(\d+)""")
@@ -58,8 +56,8 @@ internal object Czg3ExternalTelemetryParser {
 
     fun parse(log: String): Czg3ExternalRunSummary {
         val maxAttempt = attempt.findAll(log)
-  .mapNotNull { it.groupValues[1].toIntOrNull() }
-  .maxOrNull() ?: 0
+            .mapNotNull { it.groupValues[1].toIntOrNull() }
+            .maxOrNull() ?: 0
         val start = observerStart.find(log)?.groupValues?.get(1)?.toLongOrNull()
         val stopMatch = observerStop.findAll(log).lastOrNull()
         val stop = stopMatch?.groupValues?.get(1)?.toLongOrNull()
@@ -71,183 +69,209 @@ internal object Czg3ExternalTelemetryParser {
         val attached = native?.groupValues?.get(3) == "1"
 
         val markers = marker.findAll(log).mapNotNull { match ->
-  val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
-  time to match.groupValues[2]
+            val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
+            time to match.groupValues[2]
         }.toList()
 
-        val expected = linkedMapOf<String, LinkedHashSet<Long>>()
-        fun addExpected(role: String, pid: Long?) {
-  if (pid == null || pid <= 0L) return
-  expected.getOrPut(role, ::LinkedHashSet).add(pid)
+        val discoveries = discovered.findAll(log).mapNotNull { match ->
+            val time = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
+            val role = match.groupValues[2]
+            val pid = match.groupValues[3].toLongOrNull() ?: return@mapNotNull null
+            val identityOk = match.groupValues[5] == "1"
+            val starttime = match.groupValues[4].toLongOrNull()?.takeIf { identityOk && it > 0L }
+            DiscoveredProcess(role, pid, starttime, time)
+        }.toList()
+        val expectedByRole = roles.associateWith { role ->
+            discoveries.filter { it.role == role && it.starttimeTicks != null }
         }
-        if (attached) addExpected("helper", targetPid)
-        discovered.findAll(log).forEach { match ->
-  addExpected(match.groupValues[1], match.groupValues[2].toLongOrNull())
-        }
-        rawSupervisorPid.findAll(log).forEach { addExpected("supervisor", it.groupValues[1].toLongOrNull()) }
-        rawAttemptPid.findAll(log).forEach { addExpected("attempt", it.groupValues[1].toLongOrNull()) }
-        rawSlidePid.findAll(log).forEach { addExpected("slide_child", it.groupValues[1].toLongOrNull()) }
-        val expectedRoleByPid = linkedMapOf<Long, String>()
-        roles.forEach { role -> expected[role].orEmpty().forEach { expectedRoleByPid[it] = role } }
 
         val procSamples = procLine.findAll(log).mapNotNull { match ->
-  val fields = parseFields(match.groupValues[1])
-  val pid = fields["pid"]?.toLongOrNull() ?: return@mapNotNull null
-  val role = fields["role"]?.takeIf { it in roles }
-      ?: expectedRoleByPid[pid]
-      ?: if (pid == targetPid) "helper" else "tree"
-  ProcessSample(
-      timeMillis = fields["t_ms"]?.toLongOrNull() ?: 0L,
-      pid = pid,
-      role = role,
-      cpu = fields["cpu"]?.toIntOrNull()?.takeIf { it >= 0 },
-      runtimeNanos = fields["runtime_ns"]?.toLongOrNull(),
-      waitNanos = fields["wait_ns"]?.toLongOrNull(),
-      slices = fields["slices"]?.toLongOrNull(),
-  )
+            val fields = parseFields(match.groupValues[1])
+            val pid = fields["pid"]?.toLongOrNull() ?: return@mapNotNull null
+            val explicitRole = fields["role"]?.takeIf { it in roles }
+            val role = explicitRole ?: if (scope != "process_tree_system" && pid == targetPid) "helper" else "tree"
+            ProcessSample(
+                timeMillis = fields["t_ms"]?.toLongOrNull() ?: 0L,
+                pid = pid,
+                starttimeTicks = fields["starttime_ticks"]?.toLongOrNull(),
+                role = role,
+                cpu = fields["cpu"]?.toIntOrNull()?.takeIf { it >= 0 },
+                runtimeNanos = fields["runtime_ns"]?.toLongOrNull(),
+                waitNanos = fields["wait_ns"]?.toLongOrNull(),
+                slices = fields["slices"]?.toLongOrNull(),
+            )
         }.toList()
 
+        fun isCovered(expected: DiscoveredProcess): Boolean {
+            val starttime = expected.starttimeTicks ?: return false
+            return procSamples.any { sample ->
+                sample.role == expected.role &&
+                    sample.pid == expected.pid &&
+                    sample.starttimeTicks == starttime &&
+                    sample.timeMillis >= expected.discoveredMillis
+            }
+        }
+
         val roleMetrics = roles.associateWith { role ->
-  buildRoleMetrics(role, expected[role].orEmpty(), procSamples)
+            buildRoleMetrics(role, expectedByRole.getValue(role), procSamples)
         }
         val helperMetrics = roleMetrics.getValue("helper")
-        val criticalSlidePid = expected["slide_child"]?.lastOrNull()
-        val sampledPids = procSamples.map(ProcessSample::pid).toSet()
+        val criticalSlide = expectedByRole.getValue("slide_child").maxByOrNull(DiscoveredProcess::discoveredMillis)
+        val slideObserved = rawSlidePid.containsMatchIn(log) ||
+            discoveries.any { it.role == "slide_child" } ||
+            markers.any { it.second == "slide_child" }
 
         val coverageProblems = mutableListOf<String>()
         if (scope == "process_tree_system") {
-  if (!attached) coverageProblems += "helper_attach"
-  val helperExpected = expected["helper"].orEmpty()
-  if (helperExpected.isEmpty() || !sampledPids.containsAll(helperExpected)) coverageProblems += "helper_sample"
-  val supervisorExpected = expected["supervisor"].orEmpty()
-  if (supervisorExpected.isEmpty() || !sampledPids.containsAll(supervisorExpected)) coverageProblems += "supervisor_sample"
-  val attemptExpected = expected["attempt"].orEmpty()
-  if (attemptExpected.isEmpty() || !sampledPids.containsAll(attemptExpected)) coverageProblems += "attempt_sample"
-  if (criticalSlidePid != null && criticalSlidePid !in sampledPids) coverageProblems += "critical_slide_sample"
+            if (!attached) coverageProblems += "helper_attach"
+            fun requireRole(role: String, required: Boolean) {
+                if (!required) return
+                val all = discoveries.filter { it.role == role }
+                if (all.isEmpty()) {
+                    coverageProblems += "${role}_discovery"
+                    return
+                }
+                if (all.any { it.starttimeTicks == null }) coverageProblems += "${role}_identity"
+                val verified = all.filter { it.starttimeTicks != null }
+                if (verified.isEmpty() || verified.any { !isCovered(it) })
+                    coverageProblems += "${role}_sample"
+            }
+            requireRole("helper", true)
+            requireRole("supervisor", true)
+            requireRole("attempt", true)
+            requireRole("slide_child", slideObserved)
         }
         val processCoverage = when (scope) {
-  "process_tree_system" -> coverageProblems.isEmpty()
-  "system_remote_markers" -> null
-  else -> null
+            "process_tree_system" -> coverageProblems.isEmpty()
+            "system_remote_markers" -> null
+            else -> null
         }
         val coverageReason = when {
-  scope == "system_remote_markers" -> "not_applicable_remote_markers"
-  scope != "process_tree_system" -> "scope_unknown"
-  coverageProblems.isEmpty() -> "complete"
-  else -> coverageProblems.joinToString(",")
+            scope == "system_remote_markers" -> "not_applicable_remote_markers"
+            scope != "process_tree_system" -> "scope_unknown"
+            coverageProblems.isEmpty() -> "complete"
+            else -> coverageProblems.distinct().joinToString(",")
         }
         val sessionComplete = stop != null && dropped == 0L
         val traceComplete = when (scope) {
-  "process_tree_system" -> sessionComplete && processCoverage == true
-  "system_remote_markers" -> sessionComplete && markers.isNotEmpty()
-  else -> sessionComplete && attached
+            "process_tree_system" -> sessionComplete && processCoverage == true
+            "system_remote_markers" -> sessionComplete && markers.isNotEmpty()
+            else -> sessionComplete && attached
         }
 
         val p0Success = log.contains("slide-kaslr-ok") || markers.any { it.second == "p0_success" }
         val fopsReached = log.contains("durable log checkpoint stage=fops-page-held") ||
-  log.contains("app fops slide route") ||
-  markers.any { it.second == "fops_page_held" || it.second == "fops_route" }
+            log.contains("app fops slide route") ||
+            markers.any { it.second == "fops_page_held" || it.second == "fops_route" }
         val trigger = fopsTrigger.findAll(log).lastOrNull()
-  ?.groupValues?.get(1)?.toIntOrNull()?.let { it != 0 }
+            ?.groupValues?.get(1)?.toIntOrNull()?.let { it != 0 }
         val unsafe = log.contains("writer route outcome is mutation-uncertain", ignoreCase = true) ||
-  markers.any { it.second == "unsafe_stop" }
+            markers.any { it.second == "unsafe_stop" }
 
         val checkpoint = when {
-  fopsReached -> "fops/page-held"
-  p0Success -> "p0/slide-kaslr-ok"
-  log.contains("p0 pipe oracle prepared") -> "p0/oracle-ready"
-  else -> null
+            fopsReached -> "fops/page-held"
+            p0Success -> "p0/slide-kaslr-ok"
+            log.contains("p0 pipe oracle prepared") -> "p0/oracle-ready"
+            else -> null
         }
         val checkpointTime = when (checkpoint) {
-  "fops/page-held" -> markers.lastOrNull { it.second == "fops_page_held" || it.second == "fops_route" }?.first
-  "p0/slide-kaslr-ok" -> markers.lastOrNull { it.second == "p0_success" }?.first
-  "p0/oracle-ready" -> markers.lastOrNull { it.second == "p0_oracle_ready" }?.first
-  else -> null
+            "fops/page-held" -> markers.lastOrNull { it.second == "fops_page_held" || it.second == "fops_route" }?.first
+            "p0/slide-kaslr-ok" -> markers.lastOrNull { it.second == "p0_success" }?.first
+            "p0/oracle-ready" -> markers.lastOrNull { it.second == "p0_oracle_ready" }?.first
+            else -> null
         }
 
         return Czg3ExternalRunSummary(
-  maxSupervisorAttempt = maxAttempt,
-  observerStartUptimeMillis = start,
-  observerStopUptimeMillis = stop,
-  exploitElapsedMillis = if (start != null && stop != null && stop >= start) stop - start else null,
-  observerTargetPid = targetPid,
-  observerAttached = attached,
-  observerScope = scope,
-  observerDroppedEvents = dropped,
-  processSamples = procSamples.size,
-  traceComplete = traceComplete,
-  processCoverageComplete = processCoverage,
-  processCoverageReason = coverageReason,
-  criticalSlidePid = criticalSlidePid,
-  roleMetrics = roleMetrics,
-  p0Succeeded = p0Success,
-  fopsReached = fopsReached,
-  fopsTriggered = trigger,
-  unsafeStop = unsafe,
-  lastCheckpoint = checkpoint,
-  lastCheckpointUptimeMillis = checkpointTime,
-  lastPselectDurationMicros = pselect.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
-  fopsEffectiveConsumeMicros = fopsConsume.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
-  targetCpuChangesObserved = helperMetrics.cpuChangesObserved,
-  targetRuntimeDeltaNanos = helperMetrics.runtimeDeltaNanos,
-  targetWaitDeltaNanos = helperMetrics.waitDeltaNanos,
-  targetSlicesDelta = helperMetrics.slicesDelta,
+            maxSupervisorAttempt = maxAttempt,
+            observerStartUptimeMillis = start,
+            observerStopUptimeMillis = stop,
+            exploitElapsedMillis = if (start != null && stop != null && stop >= start) stop - start else null,
+            observerTargetPid = targetPid,
+            observerAttached = attached,
+            observerScope = scope,
+            observerDroppedEvents = dropped,
+            processSamples = procSamples.size,
+            traceComplete = traceComplete,
+            processCoverageComplete = processCoverage,
+            processCoverageReason = coverageReason,
+            criticalSlidePid = criticalSlide?.pid,
+            roleMetrics = roleMetrics,
+            p0Succeeded = p0Success,
+            fopsReached = fopsReached,
+            fopsTriggered = trigger,
+            unsafeStop = unsafe,
+            lastCheckpoint = checkpoint,
+            lastCheckpointUptimeMillis = checkpointTime,
+            lastPselectDurationMicros = pselect.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
+            fopsEffectiveConsumeMicros = fopsConsume.findAll(log).lastOrNull()?.groupValues?.get(1)?.toLongOrNull(),
+            targetCpuChangesObserved = helperMetrics.cpuChangesObserved,
+            targetRuntimeDeltaNanos = helperMetrics.runtimeDeltaNanos,
+            targetWaitDeltaNanos = helperMetrics.waitDeltaNanos,
+            targetSlicesDelta = helperMetrics.slicesDelta,
         )
     }
 
     private fun parseFields(body: String): Map<String, String> = body
         .split('|')
         .mapNotNull { field ->
-  val separator = field.indexOf('=')
-  if (separator <= 0) null else field.substring(0, separator) to field.substring(separator + 1)
+            val separator = field.indexOf('=')
+            if (separator <= 0) null else field.substring(0, separator) to field.substring(separator + 1)
         }
         .toMap()
 
     private fun buildRoleMetrics(
         role: String,
-        expectedPids: Set<Long>,
+        expected: List<DiscoveredProcess>,
         allSamples: List<ProcessSample>,
     ): Czg3ProcessRoleMetrics {
         val samples = allSamples.filter { it.role == role }.sortedBy(ProcessSample::timeMillis)
-        val byPid = samples.groupBy(ProcessSample::pid)
-        val sampledPids = samples.map(ProcessSample::pid).toSet()
+        val byIdentity = samples.groupBy { it.pid to (it.starttimeTicks ?: -1L) }
+        val sampledIdentities = samples.map { it.pid to (it.starttimeTicks ?: -1L) }.toSet()
         var cpuSeen = false
         var cpuChanges = 0
-        byPid.values.forEach { pidSamples ->
-  val cpus = pidSamples.mapNotNull(ProcessSample::cpu)
-  if (cpus.isNotEmpty()) cpuSeen = true
-  cpuChanges += cpus.zipWithNext().count { (a, b) -> a != b }
+        byIdentity.values.forEach { identitySamples ->
+            val cpus = identitySamples.mapNotNull(ProcessSample::cpu)
+            if (cpus.isNotEmpty()) cpuSeen = true
+            cpuChanges += cpus.zipWithNext().count { (a, b) -> a != b }
         }
 
         fun sumDelta(selector: (ProcessSample) -> Long?): Long? {
-  var any = false
-  var total = 0L
-  byPid.values.forEach { pidSamples ->
-      val values = pidSamples.mapNotNull(selector)
-      val first = values.firstOrNull()
-      val last = values.lastOrNull()
-      if (first != null && last != null && last >= first) {
-          total += last - first
-          any = true
-      }
-  }
-  return total.takeIf { any }
+            var any = false
+            var total = 0L
+            byIdentity.values.forEach { identitySamples ->
+                val values = identitySamples.mapNotNull(selector)
+                val first = values.firstOrNull()
+                val last = values.lastOrNull()
+                if (first != null && last != null && last >= first) {
+                    total += last - first
+                    any = true
+                }
+            }
+            return total.takeIf { any }
         }
 
         return Czg3ProcessRoleMetrics(
-  expectedPids = expectedPids.size,
-  sampledPids = sampledPids.size,
-  processSamples = samples.size,
-  cpuChangesObserved = cpuChanges.takeIf { cpuSeen },
-  runtimeDeltaNanos = sumDelta(ProcessSample::runtimeNanos),
-  waitDeltaNanos = sumDelta(ProcessSample::waitNanos),
-  slicesDelta = sumDelta(ProcessSample::slices),
+            expectedPids = expected.map { it.pid to it.starttimeTicks }.toSet().size,
+            sampledPids = sampledIdentities.size,
+            processSamples = samples.size,
+            cpuChangesObserved = cpuChanges.takeIf { cpuSeen },
+            runtimeDeltaNanos = sumDelta(ProcessSample::runtimeNanos),
+            waitDeltaNanos = sumDelta(ProcessSample::waitNanos),
+            slicesDelta = sumDelta(ProcessSample::slices),
         )
     }
+
+    private data class DiscoveredProcess(
+        val role: String,
+        val pid: Long,
+        val starttimeTicks: Long?,
+        val discoveredMillis: Long,
+    )
 
     private data class ProcessSample(
         val timeMillis: Long,
         val pid: Long,
+        val starttimeTicks: Long?,
         val role: String,
         val cpu: Int?,
         val runtimeNanos: Long?,
