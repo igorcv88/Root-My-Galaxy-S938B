@@ -55,7 +55,6 @@ internal class AutoRootRunner(
             bootToken,
             runId,
             runnerInvokedAt,
-            runnerInvocationContext,
             requestShizukuRunning,
             requestShizukuGranted,
         )
@@ -79,7 +78,6 @@ internal class AutoRootRunner(
         bootToken: String,
         runId: String,
         requestedAtUptimeMillis: Long,
-        requestContext: String,
         requestShizukuRunning: Boolean,
         requestShizukuGranted: Boolean,
     ) {
@@ -108,20 +106,21 @@ internal class AutoRootRunner(
         } else {
             null
         }
-        val launchWindow = if (externalObserverMode) {
-            ExploitRunControl.releaseImmediatelyForPayloadGate(requestedAtUptimeMillis)
-        } else {
-            ExploitRunControl.waitForLaunchWindow(
-                requestedAtUptimeMillis,
-                minimumUptimeSeconds,
-            )
-        }
+
+        // Match the successful manual standalone path: the Android side owns the
+        // minimum-uptime wait, and neither the helper nor External Observer exists
+        // during that boot allocator quiet window. RMG_BOOT_MIN_UPTIME_SEC remains
+        // in the payload environment as a fail-safe against an early Android-side
+        // release, but a normal CZG3 Auto Root launch should now enter the payload
+        // at or after the selected gate with payload_wait_ms=0.
+        val launchWindow = ExploitRunControl.waitForLaunchWindow(
+            requestedAtUptimeMillis,
+            minimumUptimeSeconds,
+        )
+        val releaseUptimeMillis = SystemClock.elapsedRealtime()
         onLog(
             ExploitRunControl.contextRecord(
-                requestContext.replace(
-                    "event=autoroot_runner_invocation",
-                    "event=autoroot_root_request",
-                ),
+                AndroidRunContext.snapshot(context, "autoroot_root_request", releaseUptimeMillis),
                 InvocationMode.AutoRoot,
                 minimumUptimeSeconds,
                 launchWindow.waited,
@@ -132,14 +131,7 @@ internal class AutoRootRunner(
             ),
         )
         val spawnUptimeMillis = SystemClock.elapsedRealtime()
-        val diagnosticElapsedStartUptimeMillis = if (externalObserverMode) {
-            ExploitRunControl.payloadGateWatchdogStartUptimeMillis(
-                processStartedAtUptimeMillis = spawnUptimeMillis,
-                minimumUptimeSeconds = minimumUptimeSeconds,
-            )
-        } else {
-            spawnUptimeMillis
-        }
+        val diagnosticElapsedStartUptimeMillis = spawnUptimeMillis
         onLog(
             ExploitRunControl.contextRecord(
                 AndroidRunContext.snapshot(context, "payload_launch", spawnUptimeMillis),
@@ -151,6 +143,12 @@ internal class AutoRootRunner(
                 false,
                 transport,
             ),
+        )
+        onLog(
+            "RMG_AUTOROOT_GATE_V1|request_uptime_ms=$requestedAtUptimeMillis|" +
+                "release_uptime_ms=${launchWindow.releasedAtUptimeMillis}|" +
+                "pre_spawn_uptime_ms=$spawnUptimeMillis|wait_ms=${launchWindow.actualWaitMillis}|" +
+                "observer_start=post_gate|payload_gate=fail_safe",
         )
         val environment = ExploitRunControl.environment(
             ExploitEnvironmentRequest(
@@ -277,14 +275,7 @@ internal class AutoRootRunner(
 
         try {
             val startedAt = SystemClock.elapsedRealtime()
-            val watchdogStartsAt = if (externalObserverMode) {
-                ExploitRunControl.payloadGateWatchdogStartUptimeMillis(
-                    processStartedAtUptimeMillis = startedAt,
-                    minimumUptimeSeconds = minimumUptimeSeconds,
-                )
-            } else {
-                startedAt
-            }
+            val watchdogStartsAt = startedAt
             var lastProgressAt = watchdogStartsAt
             var lastRawLog = ""
             while (process.isAlive) {
