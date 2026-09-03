@@ -338,8 +338,10 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
             }
         }
     }
+    val hasNativeAttemptAnchor =
+        inferredStage == ExploitStage.AttemptingRace && summary.firstAttemptUptimeMillis != null
     val canRecordInferredTiming = inferredStage != null &&
-        (entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
+        (hasNativeAttemptAnchor || entry.stage == null || entry.stage.ordinal <= inferredStage.ordinal)
     val inferredTimingElapsed = when (inferredStage) {
         ExploitStage.AttemptingRace -> {
             val stageUptime = summary.firstAttemptUptimeMillis
@@ -412,7 +414,12 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
                 if (firstRaceIndex >= 0) {
                     updated.add(firstRaceIndex, timing)
                 } else {
-                    updated += timing
+                    val firstPostExploitIndex = updated.indexOfFirst { it.stage in postExploitStages }
+                    if (firstPostExploitIndex >= 0) {
+                        updated.add(firstPostExploitIndex, timing)
+                    } else {
+                        updated += timing
+                    }
                 }
                 updated
             }
