@@ -111,4 +111,41 @@ class Czg3ExternalStageTimingTest {
         assertEquals(2, normalized.attemptCount)
     }
 
+    @Test
+    fun nativeAttemptAnchorSurvivesSuccessfulPostExploitStages() {
+        val log = """
+            RMG_BOOT_V1|configured_min_uptime_sec=120|payload_release_uptime_ms=120100|invocation_mode=manual_online
+            RMG_OBSERVER_V2|event=controller_start|available=true|transport=standalone|scope=process_tree_system
+            RMG_OBSERVER_V2|event=start|t_ms=120090|observer_pid=10
+            [+] exploit attempt=1/24 pid=200 delay=25000 p0_offset=scan
+            RMG_OBSERVER_V2|event=marker|t_ms=120125|name=attempt_begin|line=[+] exploit attempt=1/24 pid=200 delay=25000 p0_offset=scan
+            [*] app fops slide route parent=ffffff8000000000 target=ffffff802a64d7f0 effective_consume_usec=70000
+            RMG_OBSERVER_V2|event=marker|t_ms=132000|name=fops_page_held|line=[*] durable log checkpoint stage=fops-page-held
+            RMG_OBSERVER_V2|event=stop|t_ms=132124|dropped=0|bytes=1000
+        """.trimIndent()
+        val entry = InstallHistoryEntry(
+            id = "success-post-root-stages",
+            startedAtMillis = 1L,
+            completedAtMillis = 2L,
+            result = InstallRunResult.Succeeded,
+            log = log,
+            profileId = CZG3_PROFILE_ID_FOR_DIAGNOSTICS,
+            stage = ExploitStage.VerifyingKernelSu,
+            attemptCount = 1,
+            exploitElapsedMillis = 12_024L,
+            stageTimings = listOf(
+                StageTiming(ExploitStage.StagingKernelSu, 12_024L),
+                StageTiming(ExploitStage.LateLoadingKernelSu, 12_024L),
+                StageTiming(ExploitStage.VerifyingKernelSu, 12_024L),
+            ),
+        )
+
+        val normalized = normalizeCzg3ExternalHistory(entry)
+        val raceTiming = normalized.stageTimings.single { it.stage == ExploitStage.AttemptingRace }
+
+        assertEquals(ExploitStage.VerifyingKernelSu, normalized.stage)
+        assertEquals(12_024L, normalized.exploitElapsedMillis)
+        assertEquals(StageTiming(ExploitStage.AttemptingRace, 25L, 1), raceTiming)
+        assertEquals(4, normalized.stageTimings.size)
+    }
 }
