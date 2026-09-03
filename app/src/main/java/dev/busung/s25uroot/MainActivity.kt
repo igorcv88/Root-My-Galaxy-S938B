@@ -124,6 +124,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
@@ -154,8 +155,10 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -934,9 +937,11 @@ private fun HistoryPage(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val scope = rememberCoroutineScope()
     var selectedHistoryId by remember { mutableStateOf<String?>(null) }
     var selectionIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingDeleteIds by remember { mutableStateOf<Set<String>?>(null) }
+    var pendingExportIds by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     val selectedEntry = history.firstOrNull { it.id == selectedHistoryId }
     val selectableIds = history
         .filter { it.result != InstallRunResult.Running }
@@ -949,8 +954,35 @@ private fun HistoryPage(
     val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree(),
     ) { treeUri ->
-        if (treeUri != null && selectedEntries.isNotEmpty()) {
-            saveRunLogs(context, treeUri, selectedEntries)
+        if (treeUri == null) {
+            pendingExportIds = emptyList()
+        } else {
+            val exportEntries = history.filter { entry ->
+                entry.id in pendingExportIds && entry.result != InstallRunResult.Running
+            }
+            if (exportEntries.isEmpty()) {
+                pendingExportIds = emptyList()
+            } else {
+                scope.launch {
+                    val saved = withContext(Dispatchers.IO) {
+                        saveRunLogs(context, treeUri, exportEntries)
+                    }
+                    pendingExportIds = emptyList()
+                    Toast.makeText(
+                        context,
+                        if (saved == exportEntries.size) {
+                            context.getString(R.string.history_logs_saved, saved)
+                        } else {
+                            context.getString(
+                                R.string.history_logs_saved_partial,
+                                saved,
+                                exportEntries.size,
+                            )
+                        },
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
         }
     }
     BackHandler(enabled = selectedEntry != null || selecting) {
@@ -1013,7 +1045,10 @@ private fun HistoryPage(
                 },
                 onClearSelection = { selectionIds = emptySet() },
                 onEntryClick = { selectedHistoryId = it.id },
-                onSaveSelected = { exportSelectedLogsLauncher.launch(null) },
+                onSaveSelected = {
+                    pendingExportIds = selectedEntries.map { it.id }
+                    exportSelectedLogsLauncher.launch(null)
+                },
                 onDeleteSelected = { pendingDeleteIds = selectionIds },
             )
     } else {
@@ -1509,45 +1544,39 @@ private fun saveRunLogs(
     context: Context,
     treeUri: Uri,
     entries: List<InstallHistoryEntry>,
-) {
-    if (entries.isEmpty()) return
+): Int {
+    if (entries.isEmpty()) return 0
     val resolver = context.contentResolver
     val parentUri = runCatching {
         DocumentsContract.buildDocumentUriUsingTree(
             treeUri,
             DocumentsContract.getTreeDocumentId(treeUri),
         )
-    }.getOrNull()
+    }.getOrNull() ?: return 0
     var saved = 0
-    if (parentUri != null) {
-        entries.forEach { entry ->
-            val documentUri = runCatching {
-                DocumentsContract.createDocument(
-                    resolver,
-                    parentUri,
-                    "text/plain",
-                    runLogFileName(entry),
-                )
-            }.getOrNull()
-            if (documentUri != null) {
-                val wrote = runCatching {
-                    resolver.openOutputStream(documentUri, "w")?.use { output ->
-                        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
-                    } ?: error("open failed")
-                }.isSuccess
-                if (wrote) saved++
+    entries.forEach { entry ->
+        val documentUri = runCatching {
+            DocumentsContract.createDocument(
+                resolver,
+                parentUri,
+                "text/plain",
+                runLogFileName(entry),
+            )
+        }.getOrNull()
+        if (documentUri != null) {
+            val wrote = runCatching {
+                resolver.openOutputStream(documentUri, "w")?.use { output ->
+                    output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+                } ?: error("open failed")
+            }.isSuccess
+            if (wrote) {
+                saved++
+            } else {
+                runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }
             }
         }
     }
-    Toast.makeText(
-        context,
-        if (saved == entries.size) {
-            context.getString(R.string.history_logs_saved, saved)
-        } else {
-            context.getString(R.string.history_logs_saved_partial, saved, entries.size)
-        },
-        Toast.LENGTH_LONG,
-    ).show()
+    return saved
 }
 
 @Composable

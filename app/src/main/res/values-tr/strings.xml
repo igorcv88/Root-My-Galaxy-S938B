@@ -164,4 +164,7 @@
         <item quantity="other">Bu kayıtlar ve günlükleri kalıcı olarak silinecek.</item>
     </plurals>
     <string name="history_delete">Sil</string>
+    <string name="history_save_selected">Seçili günlükleri kaydet</string>
+    <string name="history_logs_saved">%1$d günlük kaydedildi</string>
+    <string name="history_logs_saved_partial">%2$d günlükten %1$d tanesi kaydedildi</string>
 </resources>

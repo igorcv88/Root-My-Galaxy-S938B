@@ -164,4 +164,7 @@
         <item quantity="other">Các lần chạy này và nhật ký của chúng sẽ bị xóa vĩnh viễn.</item>
     </plurals>
     <string name="history_delete">Xóa</string>
+    <string name="history_save_selected">Lưu nhật ký đã chọn</string>
+    <string name="history_logs_saved">Đã lưu %1$d nhật ký</string>
+    <string name="history_logs_saved_partial">Đã lưu %1$d/%2$d nhật ký</string>
 </resources>
