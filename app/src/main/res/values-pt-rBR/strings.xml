@@ -171,4 +171,7 @@
         <item quantity="other">Estas %1$d execuções e seus logs serão removidos permanentemente.</item>
     </plurals>
     <string name="history_delete">Excluir</string>
+    <string name="history_save_selected">Salvar logs selecionados</string>
+    <string name="history_logs_saved">%1$d logs salvos</string>
+    <string name="history_logs_saved_partial">%1$d de %2$d logs salvos</string>
 </resources>

@@ -190,4 +190,7 @@
         <item quantity="other">These %1$d runs and their logs will be permanently removed.</item>
     </plurals>
     <string name="autoroot_battery_optimization_required" translatable="false">Disable battery optimization for Root My Galaxy to enable Auto Root.</string>
+    <string name="history_save_selected">Save selected logs</string>
+    <string name="history_logs_saved">Saved %1$d logs</string>
+    <string name="history_logs_saved_partial">Saved %1$d of %2$d logs</string>
 </resources>
