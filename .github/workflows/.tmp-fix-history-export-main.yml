@@ -1,0 +1,159 @@
+name: Fix history export on main
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/.tmp-fix-history-export-main.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Apply review and lint fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  'import androidx.compose.runtime.rememberCoroutineScope\nimport androidx.compose.runtime.setValue\n',
+                  'import androidx.compose.runtime.rememberCoroutineScope\nimport androidx.compose.runtime.saveable.rememberSaveable\nimport androidx.compose.runtime.setValue\n',
+              ),
+              (
+                  'import kotlinx.coroutines.delay\nimport kotlinx.coroutines.launch\n',
+                  'import kotlinx.coroutines.Dispatchers\nimport kotlinx.coroutines.delay\nimport kotlinx.coroutines.launch\nimport kotlinx.coroutines.withContext\n',
+              ),
+              (
+                  '''    val context = LocalContext.current\n    val view = LocalView.current\n    var selectedHistoryId by remember { mutableStateOf<String?>(null) }\n    var selectionIds by remember { mutableStateOf<Set<String>>(emptySet()) }\n    var pendingDeleteIds by remember { mutableStateOf<Set<String>?>(null) }\n''',
+                  '''    val context = LocalContext.current\n    val view = LocalView.current\n    val scope = rememberCoroutineScope()\n    var selectedHistoryId by remember { mutableStateOf<String?>(null) }\n    var selectionIds by remember { mutableStateOf<Set<String>>(emptySet()) }\n    var pendingDeleteIds by remember { mutableStateOf<Set<String>?>(null) }\n    var pendingExportIds by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }\n''',
+              ),
+              (
+                  '''    val exportSelectedLogsLauncher = rememberLauncherForActivityResult(\n        ActivityResultContracts.OpenDocumentTree(),\n    ) { treeUri ->\n        if (treeUri != null && selectedEntries.isNotEmpty()) {\n            saveRunLogs(context, treeUri, selectedEntries)\n        }\n    }\n''',
+                  '''    val exportSelectedLogsLauncher = rememberLauncherForActivityResult(\n        ActivityResultContracts.OpenDocumentTree(),\n    ) { treeUri ->\n        if (treeUri == null) {\n            pendingExportIds = emptyList()\n        } else {\n            val exportEntries = history.filter { entry ->\n                entry.id in pendingExportIds && entry.result != InstallRunResult.Running\n            }\n            if (exportEntries.isEmpty()) {\n                pendingExportIds = emptyList()\n            } else {\n                scope.launch {\n                    val saved = withContext(Dispatchers.IO) {\n                        saveRunLogs(context, treeUri, exportEntries)\n                    }\n                    pendingExportIds = emptyList()\n                    Toast.makeText(\n                        context,\n                        if (saved == exportEntries.size) {\n                            context.getString(R.string.history_logs_saved, saved)\n                        } else {\n                            context.getString(\n                                R.string.history_logs_saved_partial,\n                                saved,\n                                exportEntries.size,\n                            )\n                        },\n                        Toast.LENGTH_LONG,\n                    ).show()\n                }\n            }\n        }\n    }\n''',
+              ),
+              (
+                  '                onSaveSelected = { exportSelectedLogsLauncher.launch(null) },\n',
+                  '''                onSaveSelected = {\n                    pendingExportIds = selectedEntries.map { it.id }\n                    exportSelectedLogsLauncher.launch(null)\n                },\n''',
+              ),
+              (
+                  '''private fun saveRunLogs(\n    context: Context,\n    treeUri: Uri,\n    entries: List<InstallHistoryEntry>,\n) {\n    if (entries.isEmpty()) return\n    val resolver = context.contentResolver\n    val parentUri = runCatching {\n        DocumentsContract.buildDocumentUriUsingTree(\n            treeUri,\n            DocumentsContract.getTreeDocumentId(treeUri),\n        )\n    }.getOrNull()\n    var saved = 0\n    if (parentUri != null) {\n        entries.forEach { entry ->\n            val documentUri = runCatching {\n                DocumentsContract.createDocument(\n                    resolver,\n                    parentUri,\n                    "text/plain",\n                    runLogFileName(entry),\n                )\n            }.getOrNull()\n            if (documentUri != null) {\n                val wrote = runCatching {\n                    resolver.openOutputStream(documentUri, "w")?.use { output ->\n                        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))\n                    } ?: error("open failed")\n                }.isSuccess\n                if (wrote) saved++\n            }\n        }\n    }\n    Toast.makeText(\n        context,\n        if (saved == entries.size) {\n            context.getString(R.string.history_logs_saved, saved)\n        } else {\n            context.getString(R.string.history_logs_saved_partial, saved, entries.size)\n        },\n        Toast.LENGTH_LONG,\n    ).show()\n}\n''',
+                  '''private fun saveRunLogs(\n    context: Context,\n    treeUri: Uri,\n    entries: List<InstallHistoryEntry>,\n): Int {\n    if (entries.isEmpty()) return 0\n    val resolver = context.contentResolver\n    val parentUri = runCatching {\n        DocumentsContract.buildDocumentUriUsingTree(\n            treeUri,\n            DocumentsContract.getTreeDocumentId(treeUri),\n        )\n    }.getOrNull() ?: return 0\n    var saved = 0\n    entries.forEach { entry ->\n        val documentUri = runCatching {\n            DocumentsContract.createDocument(\n                resolver,\n                parentUri,\n                "text/plain",\n                runLogFileName(entry),\n            )\n        }.getOrNull()\n        if (documentUri != null) {\n            val wrote = runCatching {\n                resolver.openOutputStream(documentUri, "w")?.use { output ->\n                    output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))\n                } ?: error("open failed")\n            }.isSuccess\n            if (wrote) {\n                saved++\n            } else {\n                runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }\n            }\n        }\n    }\n    return saved\n}\n''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'MainActivity replacement expected 1 match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+
+          translations = {
+              'values-fr': (
+                  'Enregistrer les journaux sélectionnés',
+                  '%1$d journaux enregistrés',
+                  '%1$d journaux sur %2$d enregistrés',
+              ),
+              'values-ja': (
+                  '選択したログを保存',
+                  '%1$d 件のログを保存しました',
+                  '%2$d 件中 %1$d 件のログを保存しました',
+              ),
+              'values-ko': (
+                  '선택한 로그 저장',
+                  '로그 %1$d개를 저장했습니다',
+                  '로그 %2$d개 중 %1$d개를 저장했습니다',
+              ),
+              'values-ru': (
+                  'Сохранить выбранные журналы',
+                  'Сохранено журналов: %1$d',
+                  'Сохранено журналов: %1$d из %2$d',
+              ),
+              'values-tr': (
+                  'Seçili günlükleri kaydet',
+                  '%1$d günlük kaydedildi',
+                  '%2$d günlükten %1$d tanesi kaydedildi',
+              ),
+              'values-uz': (
+                  'Tanlangan jurnallarni saqlash',
+                  '%1$d ta jurnal saqlandi',
+                  '%2$d ta jurnaldan %1$d tasi saqlandi',
+              ),
+              'values-vi': (
+                  'Lưu nhật ký đã chọn',
+                  'Đã lưu %1$d nhật ký',
+                  'Đã lưu %1$d/%2$d nhật ký',
+              ),
+              'values-zh-rCN': (
+                  '保存所选日志',
+                  '已保存 %1$d 个日志',
+                  '已保存 %2$d 个日志中的 %1$d 个',
+              ),
+              'values-zh-rTW': (
+                  '儲存所選記錄',
+                  '已儲存 %1$d 個記錄',
+                  '已儲存 %2$d 個記錄中的 %1$d 個',
+              ),
+          }
+
+          for directory, (save_selected, saved, partial) in translations.items():
+              strings = Path('app/src/main/res') / directory / 'strings.xml'
+              data = strings.read_text(encoding='utf-8')
+              keys = ('history_save_selected', 'history_logs_saved', 'history_logs_saved_partial')
+              present = [f'name="{key}"' in data for key in keys]
+              if any(present):
+                  if not all(present):
+                      raise SystemExit(f'Partial history export translation already present in {strings}')
+                  continue
+              block = (
+                  f'    <string name="history_save_selected">{save_selected}</string>\n'
+                  f'    <string name="history_logs_saved">{saved}</string>\n'
+                  f'    <string name="history_logs_saved_partial">{partial}</string>\n'
+              )
+              if data.count('</resources>') != 1:
+                  raise SystemExit(f'Unexpected resources terminator in {strings}')
+              strings.write_text(data.replace('</resources>', block + '</resources>'), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Validate unit tests, lint and release build
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease
+
+      - name: Commit fixes directly to main
+        run: |
+          set -euo pipefail
+          git config user.name "Root My Galaxy"
+          git config user.email "root-my-galaxy@users.noreply.github.com"
+          git rm .github/workflows/.tmp-fix-history-export-main.yml
+          git add app/src/main/java/dev/busung/s25uroot/MainActivity.kt
+          git add app/src/main/res/values-fr/strings.xml
+          git add app/src/main/res/values-ja/strings.xml
+          git add app/src/main/res/values-ko/strings.xml
+          git add app/src/main/res/values-ru/strings.xml
+          git add app/src/main/res/values-tr/strings.xml
+          git add app/src/main/res/values-uz/strings.xml
+          git add app/src/main/res/values-vi/strings.xml
+          git add app/src/main/res/values-zh-rCN/strings.xml
+          git add app/src/main/res/values-zh-rTW/strings.xml
+          git commit -m "Fix history log export reliability and translations"
+          git push origin HEAD:main
