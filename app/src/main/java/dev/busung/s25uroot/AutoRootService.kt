@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -33,6 +34,7 @@ class AutoRootService : Service() {
     private var watchdogJob: Job? = null
     private var serviceStartedAtUptimeMillis: Long = -1
     private var serviceStartedContext: String? = null
+    private var boundCzg3Mode = false
 
     @Volatile
     private var watchdogExpired = false
@@ -45,20 +47,37 @@ class AutoRootService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (runJob?.isActive == true) return START_NOT_STICKY
+        startExecution(startAsForeground = true)
+        return START_NOT_STICKY
+    }
 
-        // AutoRootBootReceiver starts this foreground service only after
-        // ACTION_BOOT_COMPLETED. Do not launch a second getprop polling loop here:
-        // that duplicate readiness gate can hang independently of the boot event.
-        val initial = buildNotification(getString(R.string.autoroot_checking_firmware), ongoing = true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                AUTO_ROOT_NOTIFICATION_ID,
-                initial,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
+    override fun onBind(intent: Intent?): IBinder? {
+        if (intent?.action != ACTION_RUN_BOUND_CZG3) return null
+        boundCzg3Mode = true
+        startExecution(startAsForeground = false)
+        return Binder()
+    }
+
+    private fun startExecution(startAsForeground: Boolean) {
+        if (runJob?.isActive == true) return
+
+        // Non-CZG3 targets still arrive through the boot receiver's immediate FGS
+        // start. Exact CZG3 arrives through a fresh bound process while the gate
+        // service remains the sole FGS, avoiding a delayed second-FGS launch after
+        // the BOOT_COMPLETED exemption has expired.
+        if (startAsForeground) {
+            val initial = buildNotification(getString(R.string.autoroot_checking_firmware), ongoing = true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    AUTO_ROOT_NOTIFICATION_ID,
+                    initial,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
+            }
         } else {
-            startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
+            updateNotification(getString(R.string.autoroot_checking_firmware))
         }
 
         watchdogExpired = false
@@ -84,10 +103,7 @@ class AutoRootService : Service() {
                 )
             }
         }
-        return START_NOT_STICKY
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         watchdogJob?.cancel()
@@ -215,6 +231,10 @@ class AutoRootService : Service() {
                     null
                 },
             ).also(historyStore::saveCheckpoint)
+            // From this point the normal durable History entry owns recovery. The
+            // pre-History gate sentinel can be removed without losing reboot/crash
+            // attribution if the executor disappears later.
+            if (boundCzg3Mode) Czg3AutoRootGateState.clear(this)
             persist(
                 serviceStartedContext
                     ?: AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis),
@@ -357,13 +377,24 @@ class AutoRootService : Service() {
 
     private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java).notify(
-            AUTO_ROOT_NOTIFICATION_ID,
+            if (boundCzg3Mode) CZG3_AUTO_ROOT_GATE_NOTIFICATION_ID else AUTO_ROOT_NOTIFICATION_ID,
             buildNotification(message, ongoing = true),
         )
     }
 
     private fun finishWithResult(message: String) {
-        getSystemService(NotificationManager::class.java).notify(
+        val manager = getSystemService(NotificationManager::class.java)
+        if (boundCzg3Mode) {
+            Czg3AutoRootGateState.clear(this)
+            manager.notify(
+                AUTO_ROOT_NOTIFICATION_ID,
+                buildNotification(message, ongoing = false),
+            )
+            stopService(Intent(this, Czg3AutoRootGateService::class.java))
+            stopSelf()
+            return
+        }
+        manager.notify(
             AUTO_ROOT_NOTIFICATION_ID,
             buildNotification(message, ongoing = false),
         )
@@ -372,6 +403,12 @@ class AutoRootService : Service() {
     }
 
     private fun stopWithoutResult() {
+        if (boundCzg3Mode) {
+            Czg3AutoRootGateState.clear(this)
+            stopService(Intent(this, Czg3AutoRootGateService::class.java))
+            stopSelf()
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -419,6 +456,8 @@ class AutoRootService : Service() {
     }
 
     companion object {
+        const val ACTION_RUN_BOUND_CZG3 = "dev.busung.s25uroot.action.RUN_BOUND_CZG3_AUTO_ROOT"
+
         private const val TAG = "RootMyGalaxyAutoRoot"
         private const val CHANNEL_ID = "auto_root_postboot"
         private const val STABILIZATION_DELAY_MILLIS = 45_000L
