@@ -141,11 +141,17 @@ class Czg3ExternalStageTimingTest {
         )
 
         val normalized = normalizeCzg3ExternalHistory(entry)
-        val raceTiming = normalized.stageTimings.single { it.stage == ExploitStage.AttemptingRace }
 
         assertEquals(ExploitStage.VerifyingKernelSu, normalized.stage)
         assertEquals(12_024L, normalized.exploitElapsedMillis)
-        assertEquals(StageTiming(ExploitStage.AttemptingRace, 25L, 1), raceTiming)
-        assertEquals(4, normalized.stageTimings.size)
+        assertEquals(
+            listOf(
+                StageTiming(ExploitStage.AttemptingRace, 25L, 1),
+                StageTiming(ExploitStage.StagingKernelSu, 12_024L),
+                StageTiming(ExploitStage.LateLoadingKernelSu, 12_024L),
+                StageTiming(ExploitStage.VerifyingKernelSu, 12_024L),
+            ),
+            normalized.stageTimings,
+        )
     }
 }
