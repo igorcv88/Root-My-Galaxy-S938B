@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
@@ -931,6 +932,7 @@ private fun HistoryPage(
     history: List<InstallHistoryEntry>,
     onDeleteEntries: (Set<String>) -> Unit,
 ) {
+    val context = LocalContext.current
     val view = LocalView.current
     var selectedHistoryId by remember { mutableStateOf<String?>(null) }
     var selectionIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -941,6 +943,16 @@ private fun HistoryPage(
         .map { it.id }
         .toSet()
     val selecting = selectionIds.isNotEmpty()
+    val selectedEntries = history.filter { entry ->
+        entry.id in selectionIds && entry.result != InstallRunResult.Running
+    }
+    val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        if (treeUri != null && selectedEntries.isNotEmpty()) {
+            saveRunLogs(context, treeUri, selectedEntries)
+        }
+    }
     BackHandler(enabled = selectedEntry != null || selecting) {
         if (selecting) {
             selectionIds = emptySet()
@@ -1001,6 +1013,7 @@ private fun HistoryPage(
                 },
                 onClearSelection = { selectionIds = emptySet() },
                 onEntryClick = { selectedHistoryId = it.id },
+                onSaveSelected = { exportSelectedLogsLauncher.launch(null) },
                 onDeleteSelected = { pendingDeleteIds = selectionIds },
             )
     } else {
@@ -1022,6 +1035,7 @@ private fun HistoryList(
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
     onEntryClick: (InstallHistoryEntry) -> Unit,
+    onSaveSelected: () -> Unit,
     onDeleteSelected: () -> Unit,
 ) {
     val view = LocalView.current
@@ -1057,6 +1071,15 @@ private fun HistoryList(
                         exit = fadeOut() + scaleOut(targetScale = 0.9f),
                     ) {
                         Row {
+                            IconButton(onClick = {
+                                clickHaptic(view)
+                                onSaveSelected()
+                            }) {
+                                Icon(
+                                    Icons.Rounded.Save,
+                                    contentDescription = stringResource(R.string.history_save_selected),
+                                )
+                            }
                             IconButton(onClick = {
                                 clickHaptic(view)
                                 onSelectAll()
@@ -1477,6 +1500,51 @@ private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
             context.getString(R.string.export_log_saved)
         } else {
             context.getString(R.string.export_log_failed)
+        },
+        Toast.LENGTH_LONG,
+    ).show()
+}
+
+private fun saveRunLogs(
+    context: Context,
+    treeUri: Uri,
+    entries: List<InstallHistoryEntry>,
+) {
+    if (entries.isEmpty()) return
+    val resolver = context.contentResolver
+    val parentUri = runCatching {
+        DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri),
+        )
+    }.getOrNull()
+    var saved = 0
+    if (parentUri != null) {
+        entries.forEach { entry ->
+            val documentUri = runCatching {
+                DocumentsContract.createDocument(
+                    resolver,
+                    parentUri,
+                    "text/plain",
+                    runLogFileName(entry),
+                )
+            }.getOrNull()
+            if (documentUri != null) {
+                val wrote = runCatching {
+                    resolver.openOutputStream(documentUri, "w")?.use { output ->
+                        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+                    } ?: error("open failed")
+                }.isSuccess
+                if (wrote) saved++
+            }
+        }
+    }
+    Toast.makeText(
+        context,
+        if (saved == entries.size) {
+            context.getString(R.string.history_logs_saved, saved)
+        } else {
+            context.getString(R.string.history_logs_saved_partial, saved, entries.size)
         },
         Toast.LENGTH_LONG,
     ).show()
