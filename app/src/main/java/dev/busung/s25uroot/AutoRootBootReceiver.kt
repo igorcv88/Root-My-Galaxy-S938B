@@ -23,7 +23,17 @@ class AutoRootBootReceiver : BroadcastReceiver() {
             return
         }
 
-        context.startForegroundService(Intent(context, AutoRootService::class.java))
+        // On the exact CZG3 target, keep the boot-time wait in a lightweight gate
+        // service and start the actual Auto Root executor only when the selected
+        // minimum uptime has arrived. The executor runs in a separate process, so
+        // the helper is spawned from a fresh foreground process instead of
+        // inheriting the long-lived boot service's demoted cgroup/uclamp state.
+        val service = if (isExactCzg3DiagnosticTarget(DeviceSnapshot.current())) {
+            Czg3AutoRootGateService::class.java
+        } else {
+            AutoRootService::class.java
+        }
+        context.startForegroundService(Intent(context, service))
     }
 }
 
@@ -31,9 +41,12 @@ class AutoRootActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_DISABLE_AUTO_ROOT) return
         AppPreferences.setAutoRootEnabled(context, false)
+        context.stopService(Intent(context, Czg3AutoRootGateService::class.java))
         context.stopService(Intent(context, AutoRootService::class.java))
         context.getSystemService(NotificationManager::class.java)
             .cancel(AUTO_ROOT_NOTIFICATION_ID)
+        context.getSystemService(NotificationManager::class.java)
+            .cancel(CZG3_AUTO_ROOT_GATE_NOTIFICATION_ID)
     }
 
     companion object {

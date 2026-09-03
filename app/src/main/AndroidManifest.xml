@@ -41,9 +41,19 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <service
+            android:name=".Czg3AutoRootGateService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":autoroot_gate">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="@string/autoroot_fgs_subtype" />
+        </service>
+        <service
             android:name=".AutoRootService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse"
+            android:process=":autoroot_exec">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="@string/autoroot_fgs_subtype" />
@@ -56,14 +66,16 @@
         <receiver
             android:name=".AutoRootBootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="false"
+            android:process=":autoroot_gate">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
         <receiver
             android:name=".AutoRootActionReceiver"
-            android:exported="false" />
+            android:exported="false"
+            android:process=":autoroot_gate" />
         <activity
             android:name=".InstallActivity"
             android:exported="false" />

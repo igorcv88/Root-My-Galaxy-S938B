@@ -6,6 +6,7 @@ import android.util.AtomicFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.UUID
 
 private val HISTORY_IO_LOCK = Any()
@@ -147,8 +148,19 @@ internal fun isRecoverableHistoryArtifactName(name: String): Boolean =
 
 class InstallHistoryStore(private val context: Context) {
     private val directory = File(context.filesDir, "install-history").apply { mkdirs() }
+    private val interprocessLockFile = File(directory, ".history.lock")
 
-    fun load(shouldContinue: () -> Boolean = { true }): List<InstallHistoryEntry> = synchronized(HISTORY_IO_LOCK) {
+    private inline fun <T> withHistoryIoLock(block: () -> T): T = synchronized(HISTORY_IO_LOCK) {
+        RandomAccessFile(interprocessLockFile, "rw").use { lockHandle ->
+            lockHandle.channel.use { channel ->
+                channel.lock().use {
+                    block()
+                }
+            }
+        }
+    }
+
+    fun load(shouldContinue: () -> Boolean = { true }): List<InstallHistoryEntry> = withHistoryIoLock {
         recoverQuarantinedEntriesLocked()
         val entries = ArrayList<InstallHistoryEntry>()
         for (file in directory.listFiles { candidate -> candidate.extension == "json" }.orEmpty()) {
@@ -163,7 +175,7 @@ class InstallHistoryStore(private val context: Context) {
         return load()
     }
 
-    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) = synchronized(HISTORY_IO_LOCK) {
+    fun recoverInterruptedRuns(currentBootId: String? = AutoRootSupport.currentBootToken()) = withHistoryIoLock {
         recoverQuarantinedEntriesLocked()
         val completedAtMillis = System.currentTimeMillis()
         directory.listFiles { file -> file.extension == "json" }.orEmpty()
@@ -200,11 +212,11 @@ class InstallHistoryStore(private val context: Context) {
         }
     }
 
-    fun saveCheckpoint(entry: InstallHistoryEntry) = synchronized(HISTORY_IO_LOCK) {
+    fun saveCheckpoint(entry: InstallHistoryEntry) = withHistoryIoLock {
         writeEntryLocked(entry)
     }
 
-    fun saveTerminal(entry: InstallHistoryEntry): InstallHistoryEntry = synchronized(HISTORY_IO_LOCK) {
+    fun saveTerminal(entry: InstallHistoryEntry): InstallHistoryEntry = withHistoryIoLock {
         saveTerminalLocked(entry)
     }
 
@@ -218,7 +230,7 @@ class InstallHistoryStore(private val context: Context) {
         return persisted
     }
 
-    fun delete(id: String) = synchronized(HISTORY_IO_LOCK) {
+    fun delete(id: String) = withHistoryIoLock {
         File(directory, "$id.json").delete()
     }
 
