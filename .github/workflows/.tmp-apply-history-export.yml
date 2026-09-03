@@ -1,0 +1,215 @@
+name: Apply selected history export patch
+
+on:
+  push:
+    branches:
+      - feat/history-export-selected-logs
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/history-export-selected-logs
+          fetch-depth: 0
+
+      - name: Apply app patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
+          text = path.read_text()
+
+          replacements = []
+          replacements.append((
+              'import android.os.Bundle\nimport android.view.HapticFeedbackConstants\n',
+              'import android.os.Bundle\nimport android.provider.DocumentsContract\nimport android.view.HapticFeedbackConstants\n',
+          ))
+          replacements.append((
+              '''    val view = LocalView.current
+              var selectedHistoryId by remember { mutableStateOf<String?>(null) }
+              '''.replace('              ', ''),
+              '''    val context = LocalContext.current
+              val view = LocalView.current
+              var selectedHistoryId by remember { mutableStateOf<String?>(null) }
+              '''.replace('              ', ''),
+          ))
+          replacements.append((
+              '''    val selecting = selectionIds.isNotEmpty()
+              BackHandler(enabled = selectedEntry != null || selecting) {
+              '''.replace('              ', ''),
+              '''    val selecting = selectionIds.isNotEmpty()
+              val selectedEntries = history.filter { entry ->
+                  entry.id in selectionIds && entry.result != InstallRunResult.Running
+              }
+              val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.OpenDocumentTree(),
+              ) { treeUri ->
+                  if (treeUri != null && selectedEntries.isNotEmpty()) {
+                      saveRunLogs(context, treeUri, selectedEntries)
+                  }
+              }
+              BackHandler(enabled = selectedEntry != null || selecting) {
+              '''.replace('              ', ''),
+          ))
+          replacements.append((
+              '''                onClearSelection = { selectionIds = emptySet() },
+                              onEntryClick = { selectedHistoryId = it.id },
+                              onDeleteSelected = { pendingDeleteIds = selectionIds },
+                          )
+              '''.replace('                              ', '                ').replace('                          ', '            '),
+              '''                onClearSelection = { selectionIds = emptySet() },
+                              onEntryClick = { selectedHistoryId = it.id },
+                              onSaveSelected = { exportSelectedLogsLauncher.launch(null) },
+                              onDeleteSelected = { pendingDeleteIds = selectionIds },
+                          )
+              '''.replace('                              ', '                ').replace('                          ', '            '),
+          ))
+          replacements.append((
+              '''    onClearSelection: () -> Unit,
+              onEntryClick: (InstallHistoryEntry) -> Unit,
+              onDeleteSelected: () -> Unit,
+              ) {
+              '''.replace('              ', ''),
+              '''    onClearSelection: () -> Unit,
+              onEntryClick: (InstallHistoryEntry) -> Unit,
+              onSaveSelected: () -> Unit,
+              onDeleteSelected: () -> Unit,
+              ) {
+              '''.replace('              ', ''),
+          ))
+          replacements.append((
+              '''                        Row {
+                                      IconButton(onClick = {
+                                          clickHaptic(view)
+                                          onSelectAll()
+                                      }) {
+              '''.replace('                                      ', '                            ').replace('                        ', '                        '),
+              '''                        Row {
+                                      IconButton(onClick = {
+                                          clickHaptic(view)
+                                          onSaveSelected()
+                                      }) {
+                                          Icon(
+                                              Icons.Rounded.Save,
+                                              contentDescription = stringResource(R.string.history_save_selected),
+                                          )
+                                      }
+                                      IconButton(onClick = {
+                                          clickHaptic(view)
+                                          onSelectAll()
+                                      }) {
+              '''.replace('                                      ', '                            ').replace('                        ', '                        '),
+          ))
+
+          for index, (old, new) in enumerate(replacements, 1):
+              if text.count(old) != 1:
+                  raise SystemExit(f'MainActivity replacement {index} matched {text.count(old)} times')
+              text = text.replace(old, new, 1)
+
+          helper_anchor = '''private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
+              val content = diagnosticReport(entry)
+              val saved = runCatching {
+                  context.contentResolver.openOutputStream(uri)?.use { output ->
+                      output.write(content.toByteArray(Charsets.UTF_8))
+                  } ?: error("open failed")
+                  true
+              }.getOrDefault(false)
+              Toast.makeText(
+                  context,
+                  if (saved) {
+                      context.getString(R.string.export_log_saved)
+                  } else {
+                      context.getString(R.string.export_log_failed)
+                  },
+                  Toast.LENGTH_LONG,
+              ).show()
+          }
+          '''.replace('              ', '')
+          helper_new = helper_anchor + '''
+          private fun saveRunLogs(
+              context: Context,
+              treeUri: Uri,
+              entries: List<InstallHistoryEntry>,
+          ) {
+              if (entries.isEmpty()) return
+              val resolver = context.contentResolver
+              val parentUri = runCatching {
+                  DocumentsContract.buildDocumentUriUsingTree(
+                      treeUri,
+                      DocumentsContract.getTreeDocumentId(treeUri),
+                  )
+              }.getOrNull()
+              var saved = 0
+              if (parentUri != null) {
+                  entries.forEach { entry ->
+                      val documentUri = runCatching {
+                          DocumentsContract.createDocument(
+                              resolver,
+                              parentUri,
+                              "text/plain",
+                              runLogFileName(entry),
+                          )
+                      }.getOrNull()
+                      if (documentUri != null) {
+                          val wrote = runCatching {
+                              resolver.openOutputStream(documentUri, "w")?.use { output ->
+                                  output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+                              } ?: error("open failed")
+                          }.isSuccess
+                          if (wrote) saved++
+                      }
+                  }
+              }
+              Toast.makeText(
+                  context,
+                  if (saved == entries.size) {
+                      context.getString(R.string.history_logs_saved, saved)
+                  } else {
+                      context.getString(R.string.history_logs_saved_partial, saved, entries.size)
+                  },
+                  Toast.LENGTH_LONG,
+              ).show()
+          }
+          '''.replace('          ', '')
+          if text.count(helper_anchor) != 1:
+              raise SystemExit('saveRunLog helper anchor not found exactly once')
+          text = text.replace(helper_anchor, helper_new, 1)
+          path.write_text(text)
+
+          additions = {
+              Path('app/src/main/res/values/strings.xml'): '''    <string name="history_save_selected">Save selected logs</string>\n    <string name="history_logs_saved">Saved %1$d logs</string>\n    <string name="history_logs_saved_partial">Saved %1$d of %2$d logs</string>\n''',
+              Path('app/src/main/res/values-pt-rBR/strings.xml'): '''    <string name="history_save_selected">Salvar logs selecionados</string>\n    <string name="history_logs_saved">%1$d logs salvos</string>\n    <string name="history_logs_saved_partial">%1$d de %2$d logs salvos</string>\n''',
+          }
+          for strings, addition in additions.items():
+              current = strings.read_text()
+              if 'name="history_save_selected"' in current:
+                  raise SystemExit(f'{strings}: selected export strings already exist')
+              if current.count('</resources>') != 1:
+                  raise SystemExit(f'{strings}: bad resources terminator')
+              strings.write_text(current.replace('</resources>', addition + '</resources>', 1))
+          PY
+          git diff --check
+
+      - name: Validate app
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Commit validated feature
+        run: |
+          set -euo pipefail
+          git config user.name "Root My Galaxy"
+          git config user.email "root-my-galaxy@users.noreply.github.com"
+          git rm .github/workflows/.tmp-apply-history-export.yml
+          git add app/src/main/java/dev/busung/s25uroot/MainActivity.kt
+          git add app/src/main/res/values/strings.xml
+          git add app/src/main/res/values-pt-rBR/strings.xml
+          git commit -m "Add export for selected history logs"
+          git push origin HEAD:feat/history-export-selected-logs
