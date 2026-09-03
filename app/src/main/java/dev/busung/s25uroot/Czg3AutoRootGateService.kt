@@ -322,7 +322,7 @@ internal object Czg3AutoRootGateState {
             entry.bootId == record.bootId && entry.invocationMode == InvocationMode.AutoRoot.wireValue
         }
         if (!alreadyRepresented) {
-            val crash = PstoreCollector.collect(usedShizuku = false)
+            val crash = PstoreCollector.collect(false)
             val entry = historyStore.create(bootId = record.bootId, usedShizuku = false).copy(
                 startedAtMillis = record.startedAtMillis,
                 completedAtMillis = System.currentTimeMillis(),
