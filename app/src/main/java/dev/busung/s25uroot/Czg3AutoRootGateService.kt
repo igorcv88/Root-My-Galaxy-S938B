@@ -4,8 +4,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -30,17 +32,38 @@ internal const val CZG3_AUTO_ROOT_GATE_NOTIFICATION_ID = 43500
 /**
  * Lightweight boot coordinator for the exact CZG3 target.
  *
- * The coordinator owns only the minimum-uptime wait. The actual AutoRootService
- * is started at the gate in a fresh :autoroot_exec process so its helper does not
- * inherit the scheduling/cgroup state of a foreground service that has been alive
- * since BOOT_COMPLETED. No exploit timing, retry, observer, or fail-closed policy
- * is changed here.
+ * The coordinator owns only the minimum-uptime wait. At the gate it binds a fresh
+ * :autoroot_exec process while this service remains the sole foreground service.
+ * That avoids a delayed startForegroundService() call after the BOOT_COMPLETED
+ * exemption has expired, while still preventing the exploit helper from inheriting
+ * the long-lived boot coordinator's process state. No exploit timing, retry,
+ * observer, or fail-closed policy is changed here.
  */
 class Czg3AutoRootGateService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var gateJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var handedOff = false
+    private var executorBound = false
+    private var shuttingDown = false
+
+    private val executorConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            Log.i(TAG, "RMG_AUTOROOT_COORD_GATE_V1|event=executor_connected|executor=fresh_bound_process")
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            handleExecutorBindingLoss("service_disconnected")
+        }
+
+        override fun onBindingDied(name: ComponentName?) {
+            handleExecutorBindingLoss("binding_died")
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            handleExecutorBindingLoss("null_binding")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -69,8 +92,7 @@ class Czg3AutoRootGateService : Service() {
             } catch (error: Throwable) {
                 Log.e(TAG, "CZG3 Auto Root gate failed", error)
                 Czg3AutoRootGateState.clear(this@Czg3AutoRootGateService)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                stopWithoutResult()
             }
         }
         return START_NOT_STICKY
@@ -79,8 +101,13 @@ class Czg3AutoRootGateService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        shuttingDown = true
         gateJob?.cancel()
         gateJob = null
+        if (executorBound) {
+            runCatching { unbindService(executorConnection) }
+            executorBound = false
+        }
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         scope.cancel()
@@ -132,7 +159,7 @@ class Czg3AutoRootGateService : Service() {
         Log.i(
             TAG,
             "RMG_AUTOROOT_COORD_GATE_V1|event=start|request_uptime_ms=$requestedAtUptimeMillis|" +
-                "target_uptime_ms=$targetUptimeMillis|wait_ms=$waitMillis|executor=fresh_process",
+                "target_uptime_ms=$targetUptimeMillis|wait_ms=$waitMillis|executor=fresh_bound_process",
         )
 
         val powerManager = getSystemService(PowerManager::class.java)
@@ -174,11 +201,34 @@ class Czg3AutoRootGateService : Service() {
             TAG,
             "RMG_AUTOROOT_COORD_GATE_V1|event=release|request_uptime_ms=$requestedAtUptimeMillis|" +
                 "release_uptime_ms=$releaseUptimeMillis|wait_ms=${releaseUptimeMillis - requestedAtUptimeMillis}|" +
-                "executor=fresh_process",
+                "executor=fresh_bound_process",
         )
 
-        startForegroundService(Intent(this, AutoRootService::class.java))
-        stopWithoutResult(clearState = false)
+        val executorIntent = Intent(this, AutoRootService::class.java)
+            .setAction(AutoRootService.ACTION_RUN_BOUND_CZG3)
+        require(bindService(executorIntent, executorConnection, Context.BIND_AUTO_CREATE)) {
+            "Unable to bind CZG3 Auto Root executor"
+        }
+        executorBound = true
+        // Stay foreground and bound until the executor finishes. AutoRootService
+        // updates this notification and stops this gate when its terminal state is
+        // durable. This avoids any delayed second-FGS start restriction.
+    }
+
+    private fun handleExecutorBindingLoss(reason: String) {
+        if (shuttingDown) return
+        Log.e(TAG, "CZG3 Auto Root executor binding lost: $reason")
+        scope.launch {
+            val bootToken = AutoRootSupport.currentBootToken()
+            if (bootToken != null) {
+                Czg3AutoRootGateState.recoverExecutorDisconnect(
+                    context = this@Czg3AutoRootGateService,
+                    currentBootId = bootToken,
+                    reason = reason,
+                )
+            }
+            stopWithoutResult(clearState = false)
+        }
     }
 
     private fun stopWithoutResult(clearState: Boolean = true) {
@@ -315,27 +365,59 @@ internal object Czg3AutoRootGateState {
     fun recoverPreviousBootIfNeeded(context: Context, currentBootId: String) {
         val record = read(context) ?: return
         if (record.bootId == currentBootId) return
+        recoverRecord(
+            context = context,
+            record = record,
+            currentBootId = currentBootId,
+            unexpectedReboot = true,
+            reason = "unexpected_reboot",
+        )
+    }
 
+    fun recoverExecutorDisconnect(context: Context, currentBootId: String, reason: String) {
+        val record = read(context) ?: return
+        if (record.bootId != currentBootId) {
+            recoverPreviousBootIfNeeded(context, currentBootId)
+            return
+        }
+        recoverRecord(
+            context = context,
+            record = record,
+            currentBootId = currentBootId,
+            unexpectedReboot = false,
+            reason = reason,
+        )
+    }
+
+    private fun recoverRecord(
+        context: Context,
+        record: Record,
+        currentBootId: String,
+        unexpectedReboot: Boolean,
+        reason: String,
+    ) {
         val historyStore = InstallHistoryStore(context)
         historyStore.recoverInterruptedRuns(currentBootId)
         val alreadyRepresented = historyStore.load().any { entry ->
             entry.bootId == record.bootId && entry.invocationMode == InvocationMode.AutoRoot.wireValue
         }
         if (!alreadyRepresented) {
-            val crash = PstoreCollector.collect(false)
+            val crash = if (unexpectedReboot) PstoreCollector.collect(false) else null
+            val result = if (unexpectedReboot) InstallRunResult.UnexpectedReboot else InstallRunResult.Failed
             val entry = historyStore.create(bootId = record.bootId, usedShizuku = false).copy(
                 startedAtMillis = record.startedAtMillis,
                 completedAtMillis = System.currentTimeMillis(),
-                result = InstallRunResult.UnexpectedReboot,
+                result = result,
                 log = buildString {
                     append(Instant.ofEpochMilli(record.startedAtMillis))
                     append(" RMG_AUTOROOT_COORD_GATE_V1|event=start|request_uptime_ms=")
                     append(record.startedAtUptimeMillis)
                     append("|target_uptime_ms=")
                     append(record.selectedMinUptimeSeconds.toLong() * 1_000L)
-                    append("|executor=fresh_process|handed_off=")
+                    append("|executor=fresh_bound_process|handed_off=")
                     append(if (record.handedOff) 1 else 0)
-                    append("\n[-] Previous CZG3 Auto Root gate/executor handoff ended during an unexpected reboot")
+                    append("\n[-] CZG3 Auto Root gate/executor ended before a normal History entry: ")
+                    append(reason)
                 },
                 profileId = record.profileId,
                 usedShizuku = false,
@@ -346,9 +428,9 @@ internal object Czg3AutoRootGateState {
                 payloadSize = record.payloadSize,
                 invocationMode = InvocationMode.AutoRoot.wireValue,
                 selectedMinUptimeSeconds = record.selectedMinUptimeSeconds,
-                unexpectedReboot = true,
-                crashRecordStatus = crash.status,
-                crashRecord = crash.content,
+                unexpectedReboot = unexpectedReboot,
+                crashRecordStatus = crash?.status,
+                crashRecord = crash?.content,
             )
             historyStore.saveTerminal(entry)
         }
