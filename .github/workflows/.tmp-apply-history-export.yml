@@ -22,164 +22,155 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 match, found {count}')
+              return text.replace(old, new, 1)
+
           path = Path('app/src/main/java/dev/busung/s25uroot/MainActivity.kt')
           text = path.read_text()
-
-          replacements = []
-          replacements.append((
+          text = replace_once(
+              text,
               'import android.os.Bundle\nimport android.view.HapticFeedbackConstants\n',
               'import android.os.Bundle\nimport android.provider.DocumentsContract\nimport android.view.HapticFeedbackConstants\n',
-          ))
-          replacements.append((
-              '''    val view = LocalView.current
-              var selectedHistoryId by remember { mutableStateOf<String?>(null) }
-              '''.replace('              ', ''),
-              '''    val context = LocalContext.current
-              val view = LocalView.current
-              var selectedHistoryId by remember { mutableStateOf<String?>(null) }
-              '''.replace('              ', ''),
-          ))
-          replacements.append((
-              '''    val selecting = selectionIds.isNotEmpty()
-              BackHandler(enabled = selectedEntry != null || selecting) {
-              '''.replace('              ', ''),
-              '''    val selecting = selectionIds.isNotEmpty()
-              val selectedEntries = history.filter { entry ->
-                  entry.id in selectionIds && entry.result != InstallRunResult.Running
-              }
-              val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
-                  ActivityResultContracts.OpenDocumentTree(),
-              ) { treeUri ->
-                  if (treeUri != null && selectedEntries.isNotEmpty()) {
-                      saveRunLogs(context, treeUri, selectedEntries)
-                  }
-              }
-              BackHandler(enabled = selectedEntry != null || selecting) {
-              '''.replace('              ', ''),
-          ))
-          replacements.append((
-              '''                onClearSelection = { selectionIds = emptySet() },
-                              onEntryClick = { selectedHistoryId = it.id },
-                              onDeleteSelected = { pendingDeleteIds = selectionIds },
-                          )
-              '''.replace('                              ', '                ').replace('                          ', '            '),
-              '''                onClearSelection = { selectionIds = emptySet() },
-                              onEntryClick = { selectedHistoryId = it.id },
-                              onSaveSelected = { exportSelectedLogsLauncher.launch(null) },
-                              onDeleteSelected = { pendingDeleteIds = selectionIds },
-                          )
-              '''.replace('                              ', '                ').replace('                          ', '            '),
-          ))
-          replacements.append((
-              '''    onClearSelection: () -> Unit,
-              onEntryClick: (InstallHistoryEntry) -> Unit,
-              onDeleteSelected: () -> Unit,
-              ) {
-              '''.replace('              ', ''),
-              '''    onClearSelection: () -> Unit,
-              onEntryClick: (InstallHistoryEntry) -> Unit,
-              onSaveSelected: () -> Unit,
-              onDeleteSelected: () -> Unit,
-              ) {
-              '''.replace('              ', ''),
-          ))
-          replacements.append((
-              '''                        Row {
-                                      IconButton(onClick = {
-                                          clickHaptic(view)
-                                          onSelectAll()
-                                      }) {
-              '''.replace('                                      ', '                            ').replace('                        ', '                        '),
-              '''                        Row {
-                                      IconButton(onClick = {
-                                          clickHaptic(view)
-                                          onSaveSelected()
-                                      }) {
-                                          Icon(
-                                              Icons.Rounded.Save,
-                                              contentDescription = stringResource(R.string.history_save_selected),
-                                          )
-                                      }
-                                      IconButton(onClick = {
-                                          clickHaptic(view)
-                                          onSelectAll()
-                                      }) {
-              '''.replace('                                      ', '                            ').replace('                        ', '                        '),
-          ))
+              'DocumentsContract import',
+          )
 
-          for index, (old, new) in enumerate(replacements, 1):
-              if text.count(old) != 1:
-                  raise SystemExit(f'MainActivity replacement {index} matched {text.count(old)} times')
-              text = text.replace(old, new, 1)
+          page_start = text.index('@Composable\nprivate fun HistoryPage(')
+          list_start = text.index('\n@Composable\nprivate fun HistoryList(', page_start)
+          page = text[page_start:list_start]
+          page = replace_once(
+              page,
+              '    val view = LocalView.current\n',
+              '    val context = LocalContext.current\n    val view = LocalView.current\n',
+              'HistoryPage context',
+          )
+          page = replace_once(
+              page,
+              '    val selecting = selectionIds.isNotEmpty()\n    BackHandler(enabled = selectedEntry != null || selecting) {\n',
+              '''    val selecting = selectionIds.isNotEmpty()
+    val selectedEntries = history.filter { entry ->
+        entry.id in selectionIds && entry.result != InstallRunResult.Running
+    }
+    val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        if (treeUri != null && selectedEntries.isNotEmpty()) {
+            saveRunLogs(context, treeUri, selectedEntries)
+        }
+    }
+    BackHandler(enabled = selectedEntry != null || selecting) {
+''',
+              'HistoryPage launcher',
+          )
+          page = replace_once(
+              page,
+              '''                onClearSelection = { selectionIds = emptySet() },
+                onEntryClick = { selectedHistoryId = it.id },
+                onDeleteSelected = { pendingDeleteIds = selectionIds },
+''',
+              '''                onClearSelection = { selectionIds = emptySet() },
+                onEntryClick = { selectedHistoryId = it.id },
+                onSaveSelected = { exportSelectedLogsLauncher.launch(null) },
+                onDeleteSelected = { pendingDeleteIds = selectionIds },
+''',
+              'HistoryList call',
+          )
+          text = text[:page_start] + page + text[list_start:]
 
-          helper_anchor = '''private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
-              val content = diagnosticReport(entry)
-              val saved = runCatching {
-                  context.contentResolver.openOutputStream(uri)?.use { output ->
-                      output.write(content.toByteArray(Charsets.UTF_8))
-                  } ?: error("open failed")
-                  true
-              }.getOrDefault(false)
-              Toast.makeText(
-                  context,
-                  if (saved) {
-                      context.getString(R.string.export_log_saved)
-                  } else {
-                      context.getString(R.string.export_log_failed)
-                  },
-                  Toast.LENGTH_LONG,
-              ).show()
-          }
-          '''.replace('              ', '')
-          helper_new = helper_anchor + '''
-          private fun saveRunLogs(
-              context: Context,
-              treeUri: Uri,
-              entries: List<InstallHistoryEntry>,
-          ) {
-              if (entries.isEmpty()) return
-              val resolver = context.contentResolver
-              val parentUri = runCatching {
-                  DocumentsContract.buildDocumentUriUsingTree(
-                      treeUri,
-                      DocumentsContract.getTreeDocumentId(treeUri),
-                  )
-              }.getOrNull()
-              var saved = 0
-              if (parentUri != null) {
-                  entries.forEach { entry ->
-                      val documentUri = runCatching {
-                          DocumentsContract.createDocument(
-                              resolver,
-                              parentUri,
-                              "text/plain",
-                              runLogFileName(entry),
-                          )
-                      }.getOrNull()
-                      if (documentUri != null) {
-                          val wrote = runCatching {
-                              resolver.openOutputStream(documentUri, "w")?.use { output ->
-                                  output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
-                              } ?: error("open failed")
-                          }.isSuccess
-                          if (wrote) saved++
-                      }
-                  }
-              }
-              Toast.makeText(
-                  context,
-                  if (saved == entries.size) {
-                      context.getString(R.string.history_logs_saved, saved)
-                  } else {
-                      context.getString(R.string.history_logs_saved_partial, saved, entries.size)
-                  },
-                  Toast.LENGTH_LONG,
-              ).show()
-          }
-          '''.replace('          ', '')
-          if text.count(helper_anchor) != 1:
-              raise SystemExit('saveRunLog helper anchor not found exactly once')
-          text = text.replace(helper_anchor, helper_new, 1)
+          list_start = text.index('@Composable\nprivate fun HistoryList(')
+          list_end = text.index('\n@Composable\nprivate fun EmptyHistoryCard(', list_start)
+          history_list = text[list_start:list_end]
+          history_list = replace_once(
+              history_list,
+              '''    onClearSelection: () -> Unit,
+    onEntryClick: (InstallHistoryEntry) -> Unit,
+    onDeleteSelected: () -> Unit,
+''',
+              '''    onClearSelection: () -> Unit,
+    onEntryClick: (InstallHistoryEntry) -> Unit,
+    onSaveSelected: () -> Unit,
+    onDeleteSelected: () -> Unit,
+''',
+              'HistoryList signature',
+          )
+          history_list = replace_once(
+              history_list,
+              '''                        Row {
+                            IconButton(onClick = {
+                                clickHaptic(view)
+                                onSelectAll()
+                            }) {
+''',
+              '''                        Row {
+                            IconButton(onClick = {
+                                clickHaptic(view)
+                                onSaveSelected()
+                            }) {
+                                Icon(
+                                    Icons.Rounded.Save,
+                                    contentDescription = stringResource(R.string.history_save_selected),
+                                )
+                            }
+                            IconButton(onClick = {
+                                clickHaptic(view)
+                                onSelectAll()
+                            }) {
+''',
+              'selection save button',
+          )
+          text = text[:list_start] + history_list + text[list_end:]
+
+          helper_marker = '\n\n@Composable\nprivate fun DiagnosticStatisticsCard('
+          helper_pos = text.index(helper_marker)
+          batch_helper = '''
+
+private fun saveRunLogs(
+    context: Context,
+    treeUri: Uri,
+    entries: List<InstallHistoryEntry>,
+) {
+    if (entries.isEmpty()) return
+    val resolver = context.contentResolver
+    val parentUri = runCatching {
+        DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri),
+        )
+    }.getOrNull()
+    var saved = 0
+    if (parentUri != null) {
+        entries.forEach { entry ->
+            val documentUri = runCatching {
+                DocumentsContract.createDocument(
+                    resolver,
+                    parentUri,
+                    "text/plain",
+                    runLogFileName(entry),
+                )
+            }.getOrNull()
+            if (documentUri != null) {
+                val wrote = runCatching {
+                    resolver.openOutputStream(documentUri, "w")?.use { output ->
+                        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+                    } ?: error("open failed")
+                }.isSuccess
+                if (wrote) saved++
+            }
+        }
+    }
+    Toast.makeText(
+        context,
+        if (saved == entries.size) {
+            context.getString(R.string.history_logs_saved, saved)
+        } else {
+            context.getString(R.string.history_logs_saved_partial, saved, entries.size)
+        },
+        Toast.LENGTH_LONG,
+    ).show()
+}'''
+          text = text[:helper_pos] + batch_helper + text[helper_pos:]
           path.write_text(text)
 
           additions = {
