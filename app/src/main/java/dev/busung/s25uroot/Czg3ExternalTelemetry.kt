@@ -414,7 +414,12 @@ internal fun normalizeCzg3ExternalHistory(entry: InstallHistoryEntry): InstallHi
                 if (firstRaceIndex >= 0) {
                     updated.add(firstRaceIndex, timing)
                 } else {
-                    updated += timing
+                    val firstPostExploitIndex = updated.indexOfFirst { it.stage in postExploitStages }
+                    if (firstPostExploitIndex >= 0) {
+                        updated.add(firstPostExploitIndex, timing)
+                    } else {
+                        updated += timing
+                    }
                 }
                 updated
             }
