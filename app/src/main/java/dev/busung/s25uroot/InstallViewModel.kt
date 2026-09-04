@@ -90,6 +90,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val mutableState = MutableStateFlow(InstallUiState())
     private val mutableHistory = MutableStateFlow<List<InstallHistoryEntry>>(emptyList())
     private val mutableTargetCatalog = MutableStateFlow(TargetCatalogUiState())
+    private val discoveryGate = InstallDiscoveryGate()
     private var discoveryJob: Job? = null
     private var historyJob: Job? = null
     private var historyMutationJob: Job? = null
@@ -113,33 +114,48 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     fun refresh() {
         if (installJob?.isActive == true) return
+        val discoveryToken = discoveryGate.begin()
         discoveryJob?.cancel()
         discoveryJob = viewModelScope.launch(Dispatchers.IO) {
-            val probe = NativeProbe.run()
-            if (detectInstalled()) {
-                mutableState.value = InstallUiState(
-                    phase = InstallPhase.Installed,
-                    message = app.getString(R.string.status_ksu_active),
-                    probeOutput = probe,
-                    log = probe,
-                )
-                return@launch
-            }
+            var probe = ""
             try {
+                probe = NativeProbe.run()
+                currentCoroutineContext().ensureActive()
+                if (detectInstalled()) {
+                    currentCoroutineContext().ensureActive()
+                    discoveryGate.publishIfCurrent(discoveryToken) {
+                        mutableState.value = InstallUiState(
+                            phase = InstallPhase.Installed,
+                            message = app.getString(R.string.status_ksu_active),
+                            probeOutput = probe,
+                            log = probe,
+                        )
+                    }
+                    return@launch
+                }
+
                 val profile = repository.resolveTarget(DeviceSnapshot.current())
-                mutableState.value = InstallUiState(
-                    phase = InstallPhase.Ready,
-                    message = app.getString(R.string.status_not_installed),
-                    probeOutput = probe,
-                    log = "$probe\n${app.getString(R.string.log_profile, profile.profileId)}",
-                )
+                currentCoroutineContext().ensureActive()
+                discoveryGate.publishIfCurrent(discoveryToken) {
+                    mutableState.value = InstallUiState(
+                        phase = InstallPhase.Ready,
+                        message = app.getString(R.string.status_not_installed),
+                        probeOutput = probe,
+                        log = "$probe\n${app.getString(R.string.log_profile, profile.profileId)}",
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Throwable) {
-                mutableState.value = InstallUiState(
-                    phase = InstallPhase.Failed,
-                    message = app.getString(R.string.status_support_failed),
-                    probeOutput = probe,
-                    log = "$probe\n[-] ${error.message ?: error.javaClass.simpleName}",
-                )
+                currentCoroutineContext().ensureActive()
+                discoveryGate.publishIfCurrent(discoveryToken) {
+                    mutableState.value = InstallUiState(
+                        phase = InstallPhase.Failed,
+                        message = app.getString(R.string.status_support_failed),
+                        probeOutput = probe,
+                        log = "$probe\n[-] ${error.message ?: error.javaClass.simpleName}".trim(),
+                    )
+                }
             }
         }
     }
@@ -197,7 +213,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     fun install(profileId: String? = null) {
         if (installJob?.isActive == true || mutableState.value.phase == InstallPhase.Installed) return
+        discoveryGate.invalidate()
         discoveryJob?.cancel()
+        discoveryJob = null
         cancelHistoryLoad()
         rootRequestedAtUptimeMillis = SystemClock.elapsedRealtime()
         rootRequestContext = AndroidRunContext.snapshot(
@@ -213,6 +231,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 probeOutput = mutableState.value.probeOutput,
             )
             historyStore.recoverInterruptedRuns()
+            currentCoroutineContext().ensureActive()
             startHistory()
             // Freeze the transport for the whole run so a mid-run preference
             // change cannot mix Shizuku and standalone execution between the
@@ -235,11 +254,13 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     repository.resolveTarget(profileId)
                 }
+                currentCoroutineContext().ensureActive()
                 appendLog(app.getString(R.string.log_profile, profile.profileId))
                 updateHistoryProfile(profile.profileId)
 
                 setPhase(InstallPhase.Downloading, app.getString(R.string.status_downloading_payload))
                 val payloads = repository.download(profile) { appendLog("[*] $it") }
+                currentCoroutineContext().ensureActive()
                 appendLog(app.getString(R.string.log_download_verified))
                 updateHistory { it.copy(payloadSha256 = profile.exploit.sha256, payloadSize = profile.exploit.size) }
 
@@ -267,6 +288,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
                 appendLog(app.getString(R.string.log_install_complete))
                 finishHistory(InstallRunResult.Succeeded)
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Throwable) {
                 if (error is ExploitRunException) {
                     updateHistory { it.copy(failureClass = error.failureClass, safety = error.safety, outcome = ExploitOutcome.Failed) }
@@ -278,6 +301,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 activeRunShizuku = null
             }
         }
+        // launch() returns an active Job before the assignment above completes. If a
+        // refresh call raced through that tiny assignment window on another thread,
+        // invalidate and cancel it once more now that installJob is visible.
+        discoveryGate.invalidate()
+        discoveryJob?.cancel()
+        discoveryJob = null
     }
 
     private suspend fun executeExploit(
