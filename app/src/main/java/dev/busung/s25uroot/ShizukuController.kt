@@ -8,6 +8,7 @@ import java.io.OutputStream
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import moe.shizuku.server.IRemoteProcess
 import moe.shizuku.server.IShizukuService
 import rikka.shizuku.Shizuku
@@ -24,6 +25,7 @@ data class ShizukuPassiveState(
 
 object ShizukuController {
     private const val PERMISSION_REQUEST_CODE = 0x5352
+    private const val PERMISSION_REQUEST_TIMEOUT_MILLIS = 30_000L
     private val FILE_MODE_PATTERN = Regex("[0-7]{3,4}")
     private val stateLock = Any()
 
@@ -178,36 +180,49 @@ object ShizukuController {
         }
     }
 
-    suspend fun requestPermission(): Boolean {
+    /**
+     * Permission callbacks are normally immediate once the user answers, but a lost
+     * Binder callback must not leave the install coroutine suspended forever. After the
+     * bounded wait, actively refresh the Binder permission state once so a granted
+     * permission is still accepted even if only the callback was lost.
+     */
+    suspend fun requestPermission(timeoutMillis: Long = PERMISSION_REQUEST_TIMEOUT_MILLIS): Boolean {
         val state = refreshActiveState()
         if (state.permissionGranted == true) return true
         if (!state.binderAlive) return false
-        return suspendCancellableCoroutine { continuation ->
-            lateinit var listener: Shizuku.OnRequestPermissionResultListener
-            listener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
-                if (requestCode == PERMISSION_REQUEST_CODE) {
-                    Shizuku.removeRequestPermissionResultListener(listener)
-                    val granted = grantResult == PackageManager.PERMISSION_GRANTED
-                    val now = SystemClock.elapsedRealtime()
-                    synchronized(stateLock) {
-                        passiveState = passiveState.copy(
-                            permissionGranted = granted,
-                            permissionObservedUptimeMillis = now,
-                        )
-                    }
-                    continuation.resume(granted)
+
+        val callbackResult = withTimeoutOrNull(timeoutMillis.coerceAtLeast(1L)) {
+            awaitPermissionResult()
+        }
+        if (callbackResult != null) return callbackResult
+        return refreshActiveState().permissionGranted == true
+    }
+
+    private suspend fun awaitPermissionResult(): Boolean = suspendCancellableCoroutine { continuation ->
+        lateinit var listener: Shizuku.OnRequestPermissionResultListener
+        listener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode == PERMISSION_REQUEST_CODE) {
+                Shizuku.removeRequestPermissionResultListener(listener)
+                val granted = grantResult == PackageManager.PERMISSION_GRANTED
+                val now = SystemClock.elapsedRealtime()
+                synchronized(stateLock) {
+                    passiveState = passiveState.copy(
+                        permissionGranted = granted,
+                        permissionObservedUptimeMillis = now,
+                    )
                 }
+                continuation.resume(granted)
             }
-            Shizuku.addRequestPermissionResultListener(listener)
-            continuation.invokeOnCancellation {
-                Shizuku.removeRequestPermissionResultListener(listener)
-            }
-            try {
-                Shizuku.requestPermission(PERMISSION_REQUEST_CODE)
-            } catch (error: Throwable) {
-                Shizuku.removeRequestPermissionResultListener(listener)
-                continuation.resumeWithException(error)
-            }
+        }
+        Shizuku.addRequestPermissionResultListener(listener)
+        continuation.invokeOnCancellation {
+            Shizuku.removeRequestPermissionResultListener(listener)
+        }
+        try {
+            Shizuku.requestPermission(PERMISSION_REQUEST_CODE)
+        } catch (error: Throwable) {
+            Shizuku.removeRequestPermissionResultListener(listener)
+            continuation.resumeWithException(error)
         }
     }
 
