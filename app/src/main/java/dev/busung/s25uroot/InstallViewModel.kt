@@ -196,7 +196,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (mutableTargetCatalog.value.loading) return
         viewModelScope.launch(Dispatchers.IO) {
             mutableTargetCatalog.value = TargetCatalogUiState(loading = true)
-            val nextState = try {
+            mutableTargetCatalog.value = try {
                 TargetCatalogUiState(
                     profiles = repository.loadTargets().sortedWith(
                         compareBy(
@@ -205,13 +205,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                         ),
                     ),
                 )
-            } catch (error: CancellationException) {
-                throw error
             } catch (error: Throwable) {
                 TargetCatalogUiState(error = error.message ?: error.javaClass.simpleName)
             }
-            currentCoroutineContext().ensureActive()
-            mutableTargetCatalog.value = nextState
         }
     }
 
@@ -305,6 +301,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 activeRunShizuku = null
             }
         }
+        // launch() returns an active Job before the assignment above completes. If a
+        // refresh call raced through that tiny assignment window on another thread,
+        // invalidate and cancel it once more now that installJob is visible.
+        discoveryGate.invalidate()
+        discoveryJob?.cancel()
+        discoveryJob = null
     }
 
     private suspend fun executeExploit(
