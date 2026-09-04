@@ -12,6 +12,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import moe.shizuku.server.IRemoteProcess
 import moe.shizuku.server.IShizukuService
 import rikka.shizuku.Shizuku
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 data class ShizukuPassiveState(
     val binderAlive: Boolean = false,
@@ -209,7 +211,7 @@ object ShizukuController {
                         permissionObservedUptimeMillis = now,
                     )
                 }
-                continuation.tryResume(granted)?.let(continuation::completeResume)
+                continuation.resume(granted)
             }
         }
         Shizuku.addRequestPermissionResultListener(listener)
@@ -220,7 +222,7 @@ object ShizukuController {
             Shizuku.requestPermission(PERMISSION_REQUEST_CODE)
         } catch (error: Throwable) {
             Shizuku.removeRequestPermissionResultListener(listener)
-            continuation.tryResumeWithException(error)?.let(continuation::completeResume)
+            continuation.resumeWithException(error)
         }
     }
 
