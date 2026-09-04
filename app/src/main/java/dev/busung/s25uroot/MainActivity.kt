@@ -164,6 +164,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.zip.Deflater
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MainActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -493,51 +496,51 @@ private fun RootApp(
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
     ) { padding ->
         when (selectedPage) {
-                AppPage.Overview -> OverviewPage(
-                    padding = padding,
-                    device = device,
-                    installState = installState,
-                    updateStatus = updateStatus,
-                    updateCardDismissed = updateCardDismissed,
-                    onDismissUpdateCard = { updateCardDismissed = true },
-                    onStartDownload = startDownload,
-                    onInstall = {
-                        selectedProfile = null
-                        if (advancedMode) {
-                            showTargetPicker = true
-                            installViewModel.loadTargetCatalog()
-                        } else {
-                            showInstallConfirmation = true
-                        }
-                    },
-                )
-                AppPage.History -> HistoryPage(
-                    padding,
-                    history,
-                    onDeleteEntries = installViewModel::deleteHistoryEntries,
-                )
-                AppPage.Settings -> SettingsPage(
-                    padding = padding,
-                    accentColor = accentColor,
-                    themeMode = themeMode,
-                    advancedMode = advancedMode,
-                    shizukuMode = shizukuMode,
-                    showCzg3Diagnostics = device.model == "SM-S938B" &&
-                        device.device == "pa3q" &&
-                        device.buildId == "BP4A.251205.006.S938BXXSBCZG3" &&
-                        device.kernelRelease ==
-                        "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
-                    czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
-                    updateStatus = updateStatus,
-                    onCheckForUpdate = checkForUpdate,
-                    onStartDownload = startDownload,
-                    onAccentColorChanged = onAccentColorChanged,
-                    onThemeModeChanged = onThemeModeChanged,
-                    onAdvancedModeChanged = onAdvancedModeChanged,
-                    onShizukuModeChanged = onShizukuModeChanged,
-                    onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
-                )
-            }
+            AppPage.Overview -> OverviewPage(
+                padding = padding,
+                device = device,
+                installState = installState,
+                updateStatus = updateStatus,
+                updateCardDismissed = updateCardDismissed,
+                onDismissUpdateCard = { updateCardDismissed = true },
+                onStartDownload = startDownload,
+                onInstall = {
+                    selectedProfile = null
+                    if (advancedMode) {
+                        showTargetPicker = true
+                        installViewModel.loadTargetCatalog()
+                    } else {
+                        showInstallConfirmation = true
+                    }
+                },
+            )
+            AppPage.History -> HistoryPage(
+                padding,
+                history,
+                onDeleteEntries = installViewModel::deleteHistoryEntries,
+            )
+            AppPage.Settings -> SettingsPage(
+                padding = padding,
+                accentColor = accentColor,
+                themeMode = themeMode,
+                advancedMode = advancedMode,
+                shizukuMode = shizukuMode,
+                showCzg3Diagnostics = device.model == "SM-S938B" &&
+                    device.device == "pa3q" &&
+                    device.buildId == "BP4A.251205.006.S938BXXSBCZG3" &&
+                    device.kernelRelease ==
+                    "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
+                czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
+                updateStatus = updateStatus,
+                onCheckForUpdate = checkForUpdate,
+                onStartDownload = startDownload,
+                onAccentColorChanged = onAccentColorChanged,
+                onThemeModeChanged = onThemeModeChanged,
+                onAdvancedModeChanged = onAdvancedModeChanged,
+                onShizukuModeChanged = onShizukuModeChanged,
+                onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
+            )
+        }
     }
 }
 
@@ -613,10 +616,7 @@ private fun OverviewPage(
                 )
             }
         }
-        if (
-            !updateCardDismissed &&
-            updateStatus.info != null
-        ) {
+        if (!updateCardDismissed && updateStatus.info != null) {
             item {
                 UpdateCard(
                     status = updateStatus,
@@ -952,9 +952,10 @@ private fun HistoryPage(
         entry.id in selectionIds && entry.result != InstallRunResult.Running
     }
     val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree(),
-    ) { treeUri ->
-        if (treeUri == null) {
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val zipUri = result.data?.data
+        if (zipUri == null) {
             pendingExportIds = emptyList()
         } else {
             val exportEntries = history.filter { entry ->
@@ -965,7 +966,7 @@ private fun HistoryPage(
             } else {
                 scope.launch {
                     val saved = withContext(Dispatchers.IO) {
-                        saveRunLogs(context, treeUri, exportEntries)
+                        saveRunLogsZip(context, zipUri, exportEntries)
                     }
                     pendingExportIds = emptyList()
                     Toast.makeText(
@@ -973,11 +974,7 @@ private fun HistoryPage(
                         if (saved == exportEntries.size) {
                             context.getString(R.string.history_logs_saved, saved)
                         } else {
-                            context.getString(
-                                R.string.history_logs_saved_partial,
-                                saved,
-                                exportEntries.size,
-                            )
+                            context.getString(R.string.export_log_failed)
                         },
                         Toast.LENGTH_LONG,
                     ).show()
@@ -1024,33 +1021,39 @@ private fun HistoryPage(
     }
 
     if (selectedEntry == null) {
-            HistoryList(
-                padding = padding,
-                history = history,
-                selectionIds = selectionIds,
-                selectableIds = selectableIds,
-                onToggleSelection = { id ->
-                    selectionIds = if (id in selectionIds) {
-                        selectionIds - id
-                    } else {
-                        selectionIds + id
-                    }
-                },
-                onSelectAll = {
-                    selectionIds = if (selectionIds.size == selectableIds.size) {
-                        emptySet()
-                    } else {
-                        selectableIds
-                    }
-                },
-                onClearSelection = { selectionIds = emptySet() },
-                onEntryClick = { selectedHistoryId = it.id },
-                onSaveSelected = {
-                    pendingExportIds = selectedEntries.map { it.id }
-                    exportSelectedLogsLauncher.launch(null)
-                },
-                onDeleteSelected = { pendingDeleteIds = selectionIds },
-            )
+        HistoryList(
+            padding = padding,
+            history = history,
+            selectionIds = selectionIds,
+            selectableIds = selectableIds,
+            onToggleSelection = { id ->
+                selectionIds = if (id in selectionIds) {
+                    selectionIds - id
+                } else {
+                    selectionIds + id
+                }
+            },
+            onSelectAll = {
+                selectionIds = if (selectionIds.size == selectableIds.size) {
+                    emptySet()
+                } else {
+                    selectableIds
+                }
+            },
+            onClearSelection = { selectionIds = emptySet() },
+            onEntryClick = { selectedHistoryId = it.id },
+            onSaveSelected = {
+                pendingExportIds = selectedEntries.map { it.id }
+                exportSelectedLogsLauncher.launch(
+                    Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_TITLE, runLogsZipFileName())
+                    },
+                )
+            },
+            onDeleteSelected = { pendingDeleteIds = selectionIds },
+        )
     } else {
         HistoryDetail(
             padding = padding,
@@ -1297,11 +1300,23 @@ private fun HistoryDetail(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val scope = rememberCoroutineScope()
     val logChunks = remember(entry.log) { historyLogChunks(entry.log) }
     val exportLogLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        result.data?.data?.let { uri -> saveRunLog(context, uri, entry) }
+        result.data?.data?.let { uri ->
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) {
+                    saveRunLog(context, uri, entry)
+                }
+                Toast.makeText(
+                    context,
+                    if (saved) R.string.export_log_saved else R.string.export_log_failed,
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(padding),
@@ -1521,63 +1536,62 @@ private fun runLogFileName(entry: InstallHistoryEntry): String =
         SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(entry.startedAtMillis)) +
         "-${entry.result.name.lowercase(Locale.US)}.log"
 
-private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
-    val content = diagnosticReport(entry)
-    val saved = runCatching {
-        context.contentResolver.openOutputStream(uri)?.use { output ->
-            output.write(content.toByteArray(Charsets.UTF_8))
-        } ?: error("open failed")
-        true
-    }.getOrDefault(false)
-    Toast.makeText(
-        context,
-        if (saved) {
-            context.getString(R.string.export_log_saved)
-        } else {
-            context.getString(R.string.export_log_failed)
-        },
-        Toast.LENGTH_LONG,
-    ).show()
-}
+private fun runLogsZipFileName(): String =
+    "RootMyGalaxy-logs-" +
+        SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) +
+        ".zip"
 
-private fun saveRunLogs(
+private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry): Boolean = runCatching {
+    context.contentResolver.openOutputStream(uri, "w")?.buffered(HISTORY_EXPORT_BUFFER_BYTES)?.use { output ->
+        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+    } ?: error("open failed")
+    true
+}.getOrDefault(false)
+
+private fun saveRunLogsZip(
     context: Context,
-    treeUri: Uri,
+    uri: Uri,
     entries: List<InstallHistoryEntry>,
 ): Int {
     if (entries.isEmpty()) return 0
     val resolver = context.contentResolver
-    val parentUri = runCatching {
-        DocumentsContract.buildDocumentUriUsingTree(
-            treeUri,
-            DocumentsContract.getTreeDocumentId(treeUri),
-        )
-    }.getOrNull() ?: return 0
     var saved = 0
-    entries.forEach { entry ->
-        val documentUri = runCatching {
-            DocumentsContract.createDocument(
-                resolver,
-                parentUri,
-                "text/plain",
-                runLogFileName(entry),
-            )
-        }.getOrNull()
-        if (documentUri != null) {
-            val wrote = runCatching {
-                resolver.openOutputStream(documentUri, "w")?.use { output ->
-                    output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
-                } ?: error("open failed")
-            }.isSuccess
-            if (wrote) {
-                saved++
-            } else {
-                runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }
+    val wrote = runCatching {
+        resolver.openOutputStream(uri, "w")?.buffered(HISTORY_EXPORT_BUFFER_BYTES)?.use { output ->
+            ZipOutputStream(output).use { zip ->
+                zip.setLevel(Deflater.BEST_SPEED)
+                val usedNames = mutableSetOf<String>()
+                entries.forEach { entry ->
+                    val original = runLogFileName(entry)
+                    var name = original
+                    if (!usedNames.add(name)) {
+                        val base = original.removeSuffix(".log")
+                        name = "$base-${entry.id.take(8)}.log"
+                        var suffix = 2
+                        while (!usedNames.add(name)) {
+                            name = "$base-${entry.id.take(8)}-$suffix.log"
+                            suffix++
+                        }
+                    }
+                    zip.putNextEntry(ZipEntry(name))
+                    try {
+                        zip.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
+                        saved++
+                    } finally {
+                        zip.closeEntry()
+                    }
+                }
             }
-        }
+        } ?: error("open failed")
+    }.isSuccess
+    if (!wrote) {
+        runCatching { DocumentsContract.deleteDocument(resolver, uri) }
+        return 0
     }
     return saved
 }
+
+private const val HISTORY_EXPORT_BUFFER_BYTES = 64 * 1024
 
 @Composable
 private fun DiagnosticStatisticsCard(stats: DiagnosticAggregate) {
