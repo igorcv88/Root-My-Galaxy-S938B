@@ -18,9 +18,11 @@ internal object AutoRootSupport {
             .takeIf(String::isNotBlank)
     }.getOrNull()
 
-    fun hasVerifiedInstall(context: Context): Boolean =
-        context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
+    fun hasVerifiedInstall(context: Context): Boolean {
+        val receipt = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
             .getBoolean(RECEIPT_VERIFIED, false)
+        return receipt && KnownGoodPayloadStore.hasValid(context)
+    }
 
     fun verifiedBootToken(context: Context): String? {
         val preferences = context.getSharedPreferences(INSTALL_RECEIPT, Context.MODE_PRIVATE)
@@ -51,27 +53,9 @@ internal object AutoRootSupport {
             .commit()
     }
 
-    fun loadVerifiedLocalPayloads(context: Context): VerifiedPayloads {
-        val manifestBytes = context.resources.openRawResource(R.raw.autoroot_target_v3).use { it.readBytes() }
-        val manifest = SupportManifest.parse(manifestBytes)
-        require(manifest.targets.size == 1) { context.getString(R.string.autoroot_profile_invalid) }
-        val profile = manifest.targets.single()
-        require(profile.exactMatch != null) { context.getString(R.string.autoroot_profile_invalid) }
-        require(profile.matches(DeviceSnapshot.current())) {
-            context.getString(R.string.autoroot_unsupported_firmware)
-        }
-
-        val directory = File(context.filesDir, "payloads/${profile.profileId}")
-        val exploit = File(directory, "cve-2026-43499-app.so")
-        val kernelSu = File(directory, "ksud-s25u-kdp")
-        require(fileMatchesArtifact(exploit, profile.exploit)) {
-            context.getString(R.string.autoroot_cached_payload_invalid, exploit.name)
-        }
-        require(fileMatchesArtifact(kernelSu, profile.kernelSu.artifact)) {
-            context.getString(R.string.autoroot_cached_payload_invalid, kernelSu.name)
-        }
-        return VerifiedPayloads(profile, exploit, kernelSu)
-    }
+    /** Auto Root is deliberately network-free and always consumes known-good cache. */
+    fun loadVerifiedLocalPayloads(context: Context): VerifiedPayloads =
+        KnownGoodPayloadStore.load(context)
 }
 
 internal fun shouldRunForBoot(currentBootToken: String, verifiedBootToken: String?): Boolean {
