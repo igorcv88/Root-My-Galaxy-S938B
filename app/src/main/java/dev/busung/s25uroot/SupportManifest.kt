@@ -20,6 +20,8 @@ data class KernelSuArtifact(
     val managerPackage: String = "me.weishu.kernelsu",
 )
 
+enum class PayloadSource { Online, Offline }
+
 data class ExactTargetMatch(
     val manufacturer: String,
     val model: String,
@@ -55,24 +57,48 @@ data class TargetProfile(
     val exactMatch: ExactTargetMatch?,
     val exploit: RemoteArtifact,
     val kernelSu: KernelSuArtifact,
+    val source: PayloadSource = PayloadSource.Online,
 ) {
     init {
         require(models.isNotEmpty()) { "Payload must support at least one model" }
         require(kernelVersions.isNotEmpty()) { "Payload must support at least one kernel version" }
     }
 
-    val manufacturer: String get() = exactMatch?.manufacturer.orEmpty()
-    val model: String get() = exactMatch?.model ?: models.firstOrNull().orEmpty()
-    val device: String get() = exactMatch?.device.orEmpty()
-    val kernelRelease: String get() = exactMatch?.kernelRelease.orEmpty()
-    val kernelBuildVersion: String get() = exactMatch?.kernelVersionInfo.orEmpty()
-    val buildDisplay: String get() = exactMatch?.buildDisplay.orEmpty()
-    val buildFingerprint: String get() = exactMatch?.buildFingerprint.orEmpty()
-    val sdk: Int get() = exactMatch?.sdk ?: -1
-    val abi: String get() = exactMatch?.abi.orEmpty()
-    val pageSize: Long get() = exactMatch?.pageSize ?: -1L
-    val supportedModels: String get() = models.joinToString()
-    val supportedKernelVersions: String get() = kernelVersions.joinToString()
+    val manufacturer: String
+        get() = exactMatch?.manufacturer.orEmpty()
+
+    val model: String
+        get() = exactMatch?.model ?: models.firstOrNull().orEmpty()
+
+    val device: String
+        get() = exactMatch?.device.orEmpty()
+
+    val kernelRelease: String
+        get() = exactMatch?.kernelRelease.orEmpty()
+
+    val kernelBuildVersion: String
+        get() = exactMatch?.kernelVersionInfo.orEmpty()
+
+    val buildDisplay: String
+        get() = exactMatch?.buildDisplay.orEmpty()
+
+    val buildFingerprint: String
+        get() = exactMatch?.buildFingerprint.orEmpty()
+
+    val sdk: Int
+        get() = exactMatch?.sdk ?: -1
+
+    val abi: String
+        get() = exactMatch?.abi.orEmpty()
+
+    val pageSize: Long
+        get() = exactMatch?.pageSize ?: -1L
+
+    val supportedModels: String
+        get() = models.joinToString()
+
+    val supportedKernelVersions: String
+        get() = kernelVersions.joinToString()
 
     fun matchesDevice(snapshot: DeviceSnapshot): Boolean =
         models.any { it.equals(snapshot.model, ignoreCase = true) }
@@ -87,6 +113,11 @@ data class TargetProfile(
                 it.machine == snapshot.machine
         } == true
 
+    /**
+     * Automatic selection is intentionally fail-closed. Generic v3 payloads can
+     * still appear in Advanced mode, but they are never selected automatically
+     * unless the controlled feed supplies a complete exactMatch identity.
+     */
     fun matches(snapshot: DeviceSnapshot): Boolean = exactMatch?.matches(snapshot) == true
 }
 
@@ -151,17 +182,17 @@ data class SupportManifest(
             }
             return SupportManifest(schemaVersion, payloads)
         }
+
+        private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
+            url = getString("url"),
+            size = getLong("size"),
+            sha256 = getString("sha256").lowercase(),
+        )
+
+        private fun JSONArray.strings(): Set<String> = buildSet {
+            for (index in 0 until length()) add(getString(index))
+        }
     }
-}
-
-private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
-    url = getString("url"),
-    size = getLong("size"),
-    sha256 = getString("sha256").lowercase(),
-)
-
-private fun JSONArray.strings(): Set<String> = buildSet {
-    for (index in 0 until length()) add(getString(index))
 }
 
 private fun TargetProfile.toJsonObject(): JSONObject = JSONObject()
