@@ -118,10 +118,6 @@ class AutoRootExecutorService : Service() {
                 log = currentHistory.log + "\n[*] profile=${payloads.profile.profileId}",
             )
 
-            require(AutoRootSupport.claimAttempt(this, bootToken)) {
-                getString(R.string.autoroot_already_attempted)
-            }
-
             var lastRunnerSnapshot = ""
             val runner = AutoRootRunner(
                 context = this,
