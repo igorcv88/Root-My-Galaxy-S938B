@@ -125,7 +125,6 @@ class AutoRootExecutorService : Service() {
             var lastRunnerSnapshot = ""
             val runner = AutoRootRunner(
                 context = this,
-                useShizuku = false,
                 onStage = { stage ->
                     val messageRes = when (stage) {
                         AutoRootStage.PreparingExploit -> R.string.autoroot_preparing_exploit
@@ -152,7 +151,7 @@ class AutoRootExecutorService : Service() {
                     appendHistory(delta)
                 },
             )
-            runner.run(payloads, bootToken)
+            runner.run(payloads)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
             appendHistory("[+] Auto Root completed")
