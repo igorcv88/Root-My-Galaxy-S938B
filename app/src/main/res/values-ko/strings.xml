@@ -62,7 +62,4 @@
         <item quantity="other">이 실행들과 로그가 영구적으로 삭제됩니다.</item>
     </plurals>
     <string name="history_delete">삭제</string>
-    <string name="history_save_selected">선택한 로그 저장</string>
-    <string name="history_logs_saved">로그 %1$d개를 저장했습니다</string>
-    <string name="history_logs_saved_partial">로그 %2$d개 중 %1$d개를 저장했습니다</string>
 </resources>

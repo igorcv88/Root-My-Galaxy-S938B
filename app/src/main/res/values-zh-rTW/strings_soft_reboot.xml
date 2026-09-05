@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">Root 後軟重啟</string>
-    <string name="soft_reboot_description">Root 成功後重新啟動 Android 使用者空間，以便在不完整重新啟動核心的情況下初始化 KernelSU 服務與模組。</string>
-    <string name="soft_reboot_starting">正在為 KernelSU 重新啟動 Android 使用者空間</string>
-    <string name="soft_reboot_failed">無法啟動軟重啟：%1$s</string>
-</resources>

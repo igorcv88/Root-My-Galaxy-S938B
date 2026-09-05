@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">Khởi động lại mềm sau khi root</string>
-    <string name="soft_reboot_description">Khởi động lại không gian người dùng Android sau khi root thành công để khởi tạo các dịch vụ và mô-đun KernelSU mà không cần khởi động lại toàn bộ kernel.</string>
-    <string name="soft_reboot_starting">Đang khởi động lại không gian người dùng Android cho KernelSU</string>
-    <string name="soft_reboot_failed">Không thể bắt đầu khởi động lại mềm: %1$s</string>
-</resources>

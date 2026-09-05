@@ -2,12 +2,9 @@ package dev.busung.s25uroot
 
 import android.content.Context
 import android.content.Intent
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.DocumentsContract
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
@@ -19,6 +16,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -65,7 +63,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -120,11 +117,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
@@ -155,18 +150,13 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
-import java.util.zip.Deflater
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 class MainActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -175,7 +165,8 @@ class MainActivity : ComponentActivity() {
     private var themeMode by mutableStateOf(AppThemeMode.System)
     private var advancedMode by mutableStateOf(false)
     private var shizukuMode by mutableStateOf(false)
-    private var czg3BootMinUptimeSeconds by mutableIntStateOf(DiagnosticUptime.DEFAULT_SECONDS)
+    private var softRebootAfterRoot by mutableStateOf(false)
+    private var czg3BootMinUptimeSeconds by mutableStateOf(DiagnosticUptime.DEFAULT_SECONDS)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,6 +176,7 @@ class MainActivity : ComponentActivity() {
         themeMode = AppPreferences.themeMode(this)
         advancedMode = AppPreferences.advancedMode(this)
         shizukuMode = AppPreferences.shizukuMode(this)
+        softRebootAfterRoot = AppPreferences.softRebootAfterRoot(this)
         czg3BootMinUptimeSeconds = AppPreferences.czg3BootMinUptimeSeconds(this)
         setContent {
             RootMyGalaxyTheme(accentColor = accentColor, themeMode = themeMode) {
@@ -194,6 +186,7 @@ class MainActivity : ComponentActivity() {
                     themeMode = themeMode,
                     advancedMode = advancedMode,
                     shizukuMode = shizukuMode,
+                    softRebootAfterRoot = softRebootAfterRoot,
                     czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
                     onAccentColorChanged = { color ->
                         AppPreferences.setAccentColor(this, color)
@@ -210,6 +203,10 @@ class MainActivity : ComponentActivity() {
                     onShizukuModeChanged = { enabled ->
                         AppPreferences.setShizukuMode(this, enabled)
                         shizukuMode = enabled
+                    },
+                    onSoftRebootAfterRootChanged = { enabled ->
+                        AppPreferences.setSoftRebootAfterRoot(this, enabled)
+                        softRebootAfterRoot = enabled
                     },
                     onCzg3BootMinUptimeChanged = { seconds ->
                         AppPreferences.setCzg3BootMinUptimeSeconds(this, seconds)
@@ -262,7 +259,7 @@ private val languageOptions = listOf(
 )
 
 private const val KERNEL_SU_MANAGER_URL =
-    "https://github.com/tiann/KernelSU/releases/download/v3.2.5/KernelSU_v3.2.5_32525-release.apk"
+    "https://github.com/tiann/KernelSU/releases/download/v3.3.0/KernelSU_v3.3.0_32601-release.apk"
 private const val KERNEL_SU_MANAGER_PACKAGE = "me.weishu.kernelsu"
 private const val KERNEL_SU_HOME_URL = "https://kernelsu.org/"
 private const val SHIZUKU_MANAGER_PACKAGE = "moe.shizuku.manager"
@@ -296,11 +293,13 @@ private fun RootApp(
     themeMode: AppThemeMode,
     advancedMode: Boolean,
     shizukuMode: Boolean,
+    softRebootAfterRoot: Boolean,
     czg3BootMinUptimeSeconds: Int,
     onAccentColorChanged: (AccentColor) -> Unit,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onShizukuModeChanged: (Boolean) -> Unit,
+    onSoftRebootAfterRootChanged: (Boolean) -> Unit,
     onCzg3BootMinUptimeChanged: (Int) -> Unit,
     openInstaller: (String?) -> Unit,
 ) {
@@ -479,11 +478,6 @@ private fun RootApp(
                         selected = selectedPage == page,
                         onClick = {
                             clickHaptic(view)
-                            if (page == AppPage.History) {
-                                installViewModel.loadHistory()
-                            } else if (selectedPage == AppPage.History) {
-                                installViewModel.cancelHistoryLoad()
-                            }
                             selectedPage = page
                         },
                         modifier = Modifier.padding(top = 4.dp),
@@ -495,51 +489,51 @@ private fun RootApp(
         },
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
     ) { padding ->
-        when (selectedPage) {
-            AppPage.Overview -> OverviewPage(
-                padding = padding,
-                device = device,
-                installState = installState,
-                updateStatus = updateStatus,
-                updateCardDismissed = updateCardDismissed,
-                onDismissUpdateCard = { updateCardDismissed = true },
-                onStartDownload = startDownload,
-                onInstall = {
-                    selectedProfile = null
-                    if (advancedMode) {
-                        showTargetPicker = true
-                        installViewModel.loadTargetCatalog()
-                    } else {
-                        showInstallConfirmation = true
-                    }
-                },
-            )
-            AppPage.History -> HistoryPage(
-                padding,
-                history,
-                onDeleteEntries = installViewModel::deleteHistoryEntries,
-            )
-            AppPage.Settings -> SettingsPage(
-                padding = padding,
-                accentColor = accentColor,
-                themeMode = themeMode,
-                advancedMode = advancedMode,
-                shizukuMode = shizukuMode,
-                showCzg3Diagnostics = device.model == "SM-S938B" &&
-                    device.device == "pa3q" &&
-                    device.buildId == "BP4A.251205.006.S938BXXSBCZG3" &&
-                    device.kernelRelease ==
-                    "6.6.98-android15-8-pd6ff1cd-abogkiS938BXXSBCZG3-4k",
-                czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
-                updateStatus = updateStatus,
-                onCheckForUpdate = checkForUpdate,
-                onStartDownload = startDownload,
-                onAccentColorChanged = onAccentColorChanged,
-                onThemeModeChanged = onThemeModeChanged,
-                onAdvancedModeChanged = onAdvancedModeChanged,
-                onShizukuModeChanged = onShizukuModeChanged,
-                onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
-            )
+        AnimatedContent(targetState = selectedPage, label = "page") { page ->
+            when (page) {
+                AppPage.Overview -> OverviewPage(
+                    padding = padding,
+                    device = device,
+                    installState = installState,
+                    updateStatus = updateStatus,
+                    updateCardDismissed = updateCardDismissed,
+                    onDismissUpdateCard = { updateCardDismissed = true },
+                    onStartDownload = startDownload,
+                    onInstall = {
+                        selectedProfile = null
+                        if (advancedMode) {
+                            showTargetPicker = true
+                            installViewModel.loadTargetCatalog()
+                        } else {
+                            showInstallConfirmation = true
+                        }
+                    },
+                )
+                AppPage.History -> HistoryPage(
+                    padding,
+                    history,
+                    onDeleteEntries = installViewModel::deleteHistoryEntries,
+                )
+                AppPage.Settings -> SettingsPage(
+                    padding = padding,
+                    device = device,
+                    accentColor = accentColor,
+                    themeMode = themeMode,
+                    advancedMode = advancedMode,
+                    shizukuMode = shizukuMode,
+                    softRebootAfterRoot = softRebootAfterRoot,
+                    czg3BootMinUptimeSeconds = czg3BootMinUptimeSeconds,
+                    updateStatus = updateStatus,
+                    onCheckForUpdate = checkForUpdate,
+                    onStartDownload = startDownload,
+                    onAccentColorChanged = onAccentColorChanged,
+                    onThemeModeChanged = onThemeModeChanged,
+                    onAdvancedModeChanged = onAdvancedModeChanged,
+                    onShizukuModeChanged = onShizukuModeChanged,
+                    onSoftRebootAfterRootChanged = onSoftRebootAfterRootChanged,
+                    onCzg3BootMinUptimeChanged = onCzg3BootMinUptimeChanged,
+                )
+            }
         }
     }
 }
@@ -616,7 +610,10 @@ private fun OverviewPage(
                 )
             }
         }
-        if (!updateCardDismissed && updateStatus.info != null) {
+        if (
+            !updateCardDismissed &&
+            updateStatus.info != null
+        ) {
             item {
                 UpdateCard(
                     status = updateStatus,
@@ -935,53 +932,16 @@ private fun HistoryPage(
     history: List<InstallHistoryEntry>,
     onDeleteEntries: (Set<String>) -> Unit,
 ) {
-    val context = LocalContext.current
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
     var selectedHistoryId by remember { mutableStateOf<String?>(null) }
     var selectionIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingDeleteIds by remember { mutableStateOf<Set<String>?>(null) }
-    var pendingExportIds by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     val selectedEntry = history.firstOrNull { it.id == selectedHistoryId }
     val selectableIds = history
         .filter { it.result != InstallRunResult.Running }
         .map { it.id }
         .toSet()
     val selecting = selectionIds.isNotEmpty()
-    val selectedEntries = history.filter { entry ->
-        entry.id in selectionIds && entry.result != InstallRunResult.Running
-    }
-    val exportSelectedLogsLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        val zipUri = result.data?.data
-        if (zipUri == null) {
-            pendingExportIds = emptyList()
-        } else {
-            val exportEntries = history.filter { entry ->
-                entry.id in pendingExportIds && entry.result != InstallRunResult.Running
-            }
-            if (exportEntries.isEmpty()) {
-                pendingExportIds = emptyList()
-            } else {
-                scope.launch {
-                    val saved = withContext(Dispatchers.IO) {
-                        saveRunLogsZip(context, zipUri, exportEntries)
-                    }
-                    pendingExportIds = emptyList()
-                    Toast.makeText(
-                        context,
-                        if (saved == exportEntries.size) {
-                            context.getString(R.string.history_logs_saved, saved)
-                        } else {
-                            context.getString(R.string.export_log_failed)
-                        },
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
-        }
-    }
     BackHandler(enabled = selectedEntry != null || selecting) {
         if (selecting) {
             selectionIds = emptySet()
@@ -1020,46 +980,42 @@ private fun HistoryPage(
         )
     }
 
-    if (selectedEntry == null) {
-        HistoryList(
-            padding = padding,
-            history = history,
-            selectionIds = selectionIds,
-            selectableIds = selectableIds,
-            onToggleSelection = { id ->
-                selectionIds = if (id in selectionIds) {
-                    selectionIds - id
-                } else {
-                    selectionIds + id
-                }
-            },
-            onSelectAll = {
-                selectionIds = if (selectionIds.size == selectableIds.size) {
-                    emptySet()
-                } else {
-                    selectableIds
-                }
-            },
-            onClearSelection = { selectionIds = emptySet() },
-            onEntryClick = { selectedHistoryId = it.id },
-            onSaveSelected = {
-                pendingExportIds = selectedEntries.map { it.id }
-                exportSelectedLogsLauncher.launch(
-                    Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "application/zip"
-                        putExtra(Intent.EXTRA_TITLE, runLogsZipFileName())
-                    },
-                )
-            },
-            onDeleteSelected = { pendingDeleteIds = selectionIds },
-        )
-    } else {
-        HistoryDetail(
-            padding = padding,
-            entry = selectedEntry,
-            onBack = { selectedHistoryId = null },
-        )
+    AnimatedContent(
+        targetState = selectedEntry,
+        contentKey = { it?.id ?: "history-list" },
+        label = "history-detail",
+    ) { entry ->
+        if (entry == null) {
+            HistoryList(
+                padding = padding,
+                history = history,
+                selectionIds = selectionIds,
+                selectableIds = selectableIds,
+                onToggleSelection = { id ->
+                    selectionIds = if (id in selectionIds) {
+                        selectionIds - id
+                    } else {
+                        selectionIds + id
+                    }
+                },
+                onSelectAll = {
+                    selectionIds = if (selectionIds.size == selectableIds.size) {
+                        emptySet()
+                    } else {
+                        selectableIds
+                    }
+                },
+                onClearSelection = { selectionIds = emptySet() },
+                onEntryClick = { selectedHistoryId = it.id },
+                onDeleteSelected = { pendingDeleteIds = selectionIds },
+            )
+        } else {
+            HistoryDetail(
+                padding = padding,
+                entry = entry,
+                onBack = { selectedHistoryId = null },
+            )
+        }
     }
 }
 
@@ -1073,7 +1029,6 @@ private fun HistoryList(
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
     onEntryClick: (InstallHistoryEntry) -> Unit,
-    onSaveSelected: () -> Unit,
     onDeleteSelected: () -> Unit,
 ) {
     val view = LocalView.current
@@ -1111,15 +1066,6 @@ private fun HistoryList(
                         Row {
                             IconButton(onClick = {
                                 clickHaptic(view)
-                                onSaveSelected()
-                            }) {
-                                Icon(
-                                    Icons.Rounded.Save,
-                                    contentDescription = stringResource(R.string.history_save_selected),
-                                )
-                            }
-                            IconButton(onClick = {
-                                clickHaptic(view)
                                 onSelectAll()
                             }) {
                                 Icon(
@@ -1143,7 +1089,6 @@ private fun HistoryList(
             if (history.isEmpty()) {
                 item { EmptyHistoryCard() }
             } else {
-                item { DiagnosticStatisticsCard(aggregateDiagnostics(history)) }
                 itemsIndexed(history, key = { _, entry -> entry.id }) { _, entry ->
                     HistoryEntryCard(
                         entry = entry,
@@ -1300,23 +1245,10 @@ private fun HistoryDetail(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val scope = rememberCoroutineScope()
-    val logChunks = remember(entry.log) { historyLogChunks(entry.log) }
     val exportLogLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        result.data?.data?.let { uri ->
-            scope.launch {
-                val saved = withContext(Dispatchers.IO) {
-                    saveRunLog(context, uri, entry)
-                }
-                Toast.makeText(
-                    context,
-                    if (saved) R.string.export_log_saved else R.string.export_log_failed,
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
+        result.data?.data?.let { uri -> saveRunLog(context, uri, entry) }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(padding),
@@ -1352,15 +1284,6 @@ private fun HistoryDetail(
                 }) {
                     Icon(Icons.Rounded.Save, contentDescription = stringResource(R.string.export_log))
                 }
-                IconButton(onClick = {
-                    clickHaptic(view)
-                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                        ClipData.newPlainText("Root My Galaxy diagnostics", diagnosticReport(entry)),
-                    )
-                    Toast.makeText(context, R.string.diagnostic_copied, Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(Icons.Rounded.ContentCopy, contentDescription = stringResource(R.string.copy_diagnostic))
-                }
             }
         }
         item { HistoryResultCard(entry) }
@@ -1372,69 +1295,16 @@ private fun HistoryDetail(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 ),
             ) {
-                if (logChunks.isEmpty()) {
-                    Text(
-                        text = stringResource(R.string.history_log_empty),
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
-                        contentPadding = PaddingValues(16.dp),
-                    ) {
-                        items(logChunks) { chunk ->
-                            Text(
-                                text = chunk,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                }
+                Text(
+                    text = entry.log.ifBlank { stringResource(R.string.history_log_empty) },
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
         }
     }
-}
-
-internal const val HISTORY_LOG_RENDER_CHUNK_CHARS = 4_096
-
-internal fun historyLogChunks(
-    log: String,
-    maxChunkChars: Int = HISTORY_LOG_RENDER_CHUNK_CHARS,
-): List<String> {
-    require(maxChunkChars > 0)
-    if (log.isEmpty()) return emptyList()
-
-    val chunks = ArrayList<String>((log.length + maxChunkChars - 1) / maxChunkChars)
-    var start = 0
-    while (start < log.length) {
-        val hardEnd = minOf(start + maxChunkChars, log.length)
-        var end = hardEnd
-        if (hardEnd < log.length) {
-            val newline = log.lastIndexOf('\n', hardEnd - 1)
-            if (newline >= start + maxChunkChars / 2) {
-                end = newline + 1
-            }
-        }
-        if (
-            end < log.length &&
-            end > start &&
-            Character.isHighSurrogate(log[end - 1]) &&
-            Character.isLowSurrogate(log[end])
-        ) {
-            end--
-        }
-        if (end <= start) {
-            end = minOf(hardEnd + 1, log.length)
-        }
-        chunks += log.substring(start, end)
-        start = end
-    }
-    return chunks
 }
 
 @Composable
@@ -1495,7 +1365,6 @@ private fun historyResultLabel(result: InstallRunResult): String = stringResourc
         InstallRunResult.Running -> R.string.history_running
         InstallRunResult.Succeeded -> R.string.history_succeeded
         InstallRunResult.Failed -> R.string.history_failed
-        InstallRunResult.UnexpectedReboot -> R.string.history_unexpected_reboot
     },
 )
 
@@ -1503,7 +1372,6 @@ private fun historyResultIcon(result: InstallRunResult): ImageVector = when (res
     InstallRunResult.Running -> Icons.Rounded.Schedule
     InstallRunResult.Succeeded -> Icons.Rounded.CheckCircle
     InstallRunResult.Failed -> Icons.Rounded.Error
-    InstallRunResult.UnexpectedReboot -> Icons.Rounded.Warning
 }
 
 @Composable
@@ -1511,7 +1379,6 @@ private fun historyResultContainerColor(result: InstallRunResult): Color = when 
     InstallRunResult.Running -> MaterialTheme.colorScheme.tertiaryContainer
     InstallRunResult.Succeeded -> MaterialTheme.colorScheme.primaryContainer
     InstallRunResult.Failed -> MaterialTheme.colorScheme.errorContainer
-    InstallRunResult.UnexpectedReboot -> MaterialTheme.colorScheme.errorContainer
 }
 
 @Composable
@@ -1519,7 +1386,6 @@ private fun historyResultContentColor(result: InstallRunResult): Color = when (r
     InstallRunResult.Running -> MaterialTheme.colorScheme.onTertiaryContainer
     InstallRunResult.Succeeded -> MaterialTheme.colorScheme.onPrimaryContainer
     InstallRunResult.Failed -> MaterialTheme.colorScheme.onErrorContainer
-    InstallRunResult.UnexpectedReboot -> MaterialTheme.colorScheme.onErrorContainer
 }
 
 @Composable
@@ -1536,118 +1402,34 @@ private fun runLogFileName(entry: InstallHistoryEntry): String =
         SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(entry.startedAtMillis)) +
         "-${entry.result.name.lowercase(Locale.US)}.log"
 
-private fun runLogsZipFileName(): String =
-    "RootMyGalaxy-logs-" +
-        SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) +
-        ".zip"
-
-private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry): Boolean = runCatching {
-    context.contentResolver.openOutputStream(uri, "w")?.buffered(HISTORY_EXPORT_BUFFER_BYTES)?.use { output ->
-        output.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
-    } ?: error("open failed")
-    true
-}.getOrDefault(false)
-
-private fun saveRunLogsZip(
-    context: Context,
-    uri: Uri,
-    entries: List<InstallHistoryEntry>,
-): Int {
-    if (entries.isEmpty()) return 0
-    val resolver = context.contentResolver
-    var saved = 0
-    val wrote = runCatching {
-        resolver.openOutputStream(uri, "w")?.buffered(HISTORY_EXPORT_BUFFER_BYTES)?.use { output ->
-            ZipOutputStream(output).use { zip ->
-                zip.setLevel(Deflater.BEST_SPEED)
-                val usedNames = mutableSetOf<String>()
-                entries.forEach { entry ->
-                    val original = runLogFileName(entry)
-                    var name = original
-                    if (!usedNames.add(name)) {
-                        val base = original.removeSuffix(".log")
-                        name = "$base-${entry.id.take(8)}.log"
-                        var suffix = 2
-                        while (!usedNames.add(name)) {
-                            name = "$base-${entry.id.take(8)}-$suffix.log"
-                            suffix++
-                        }
-                    }
-                    zip.putNextEntry(ZipEntry(name))
-                    try {
-                        zip.write(diagnosticReport(entry).toByteArray(Charsets.UTF_8))
-                        saved++
-                    } finally {
-                        zip.closeEntry()
-                    }
-                }
-            }
+private fun saveRunLog(context: Context, uri: Uri, entry: InstallHistoryEntry) {
+    val content = entry.log.ifBlank { context.getString(R.string.history_log_empty) }
+    val saved = runCatching {
+        context.contentResolver.openOutputStream(uri)?.use { output ->
+            output.write(content.toByteArray(Charsets.UTF_8))
         } ?: error("open failed")
-    }.isSuccess
-    if (!wrote) {
-        runCatching { DocumentsContract.deleteDocument(resolver, uri) }
-        return 0
-    }
-    return saved
-}
-
-private const val HISTORY_EXPORT_BUFFER_BYTES = 64 * 1024
-
-@Composable
-private fun DiagnosticStatisticsCard(stats: DiagnosticAggregate) {
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.diagnostic_statistics), style = MaterialTheme.typography.titleMedium)
-            Text(stringResource(R.string.diagnostic_success_rate, stats.successfulRuns, stats.totalRuns, stats.successRate * 100.0))
-            stats.medianAcquisitionMillis?.let { Text(stringResource(R.string.diagnostic_latency, it / 1000.0, (stats.p90AcquisitionMillis ?: it) / 1000.0)) }
-            stats.medianAttemptCount?.let { Text(stringResource(R.string.diagnostic_attempts, it)) }
-            stats.uptimeBuckets.filterValues { it.first > 0 }.forEach { (bucket, counts) ->
-                Text(stringResource(R.string.diagnostic_uptime_bucket, bucket, counts.second, counts.first), style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-private fun diagnosticReport(entry: InstallHistoryEntry): String = buildString {
-    appendLine("Root My Galaxy diagnostic report")
-    appendLine("run_id=${entry.id}")
-    appendLine("result=${entry.result}")
-    appendLine("boot_id=${entry.bootId.orEmpty()}")
-    appendLine("started_at_ms=${entry.startedAtMillis}")
-    appendLine("uptime_at_start_ms=${entry.startedAtUptimeMillis ?: "unknown"}")
-    appendLine("profile=${entry.profileId.orEmpty()}")
-    appendLine("app_version=${entry.appVersion.orEmpty()}")
-    appendLine("payload_sha256=${entry.payloadSha256.orEmpty()}")
-    appendLine("payload_size=${entry.payloadSize ?: "unknown"}")
-    appendLine("transport=${if (entry.usedShizuku) "shizuku" else "standalone"}")
-    appendLine("invocation_mode=${entry.invocationMode ?: "unknown"}")
-    appendLine("selected_min_uptime_sec=${entry.selectedMinUptimeSeconds ?: "unknown"}")
-    appendLine("last_prep_checkpoint=${entry.lastPrepCheckpoint ?: "none"}")
-    appendLine("last_prep_checkpoint_uptime_ms=${entry.lastPrepCheckpointUptimeMillis ?: "unknown"}")
-    appendLine("attempts=${entry.attemptCount}")
-    appendLine("exploit_elapsed_ms=${entry.exploitElapsedMillis ?: "unknown"}")
-    appendLine("failure_class=${entry.failureClass ?: "none"}")
-    appendLine("safety=${entry.safety ?: "unknown"}")
-    appendLine("unexpected_reboot=${entry.unexpectedReboot}")
-    appendLine("kernel_crash_record=${entry.crashRecordStatus ?: "not_checked"}")
-    appendLine("device_identity=${entry.deviceIdentity.orEmpty()}")
-    appendLine("stage_timings:")
-    entry.stageTimings.forEach { appendLine("  ${it.elapsedMillis}ms stage=${it.stage} attempt=${it.attempt ?: "-"}") }
-    entry.crashRecord?.let { appendLine("crash_record:\n$it") }
-    append(raceAnalysisReport(entry.log))
-    append(preparationAnalysisReport(entry.log))
-    appendLine("log:")
-    append(entry.log)
+        true
+    }.getOrDefault(false)
+    Toast.makeText(
+        context,
+        if (saved) {
+            context.getString(R.string.export_log_saved)
+        } else {
+            context.getString(R.string.export_log_failed)
+        },
+        Toast.LENGTH_LONG,
+    ).show()
 }
 
 @Composable
 private fun SettingsPage(
     padding: PaddingValues,
+    device: DeviceSnapshot,
     accentColor: AccentColor,
     themeMode: AppThemeMode,
     advancedMode: Boolean,
     shizukuMode: Boolean,
-    showCzg3Diagnostics: Boolean,
+    softRebootAfterRoot: Boolean,
     czg3BootMinUptimeSeconds: Int,
     updateStatus: UpdateStatus,
     onCheckForUpdate: () -> Unit,
@@ -1656,6 +1438,7 @@ private fun SettingsPage(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onAdvancedModeChanged: (Boolean) -> Unit,
     onShizukuModeChanged: (Boolean) -> Unit,
+    onSoftRebootAfterRootChanged: (Boolean) -> Unit,
     onCzg3BootMinUptimeChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
@@ -1663,14 +1446,15 @@ private fun SettingsPage(
     val scope = rememberCoroutineScope()
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showUptimeDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showShizukuMissingDialog by remember { mutableStateOf(false) }
     var languageMenuTop by remember { mutableStateOf(32.dp) }
     var colorMenuTop by remember { mutableStateOf(32.dp) }
-    var showUptimeDialog by remember { mutableStateOf(false) }
     var uptimeMenuTop by remember { mutableStateOf(32.dp) }
     val density = LocalDensity.current
     val currentLanguageTag = AppPreferences.languageTag(context)
+    val exactCzg3 = remember(device) { isExactCzg3(device) }
 
     if (showShizukuMissingDialog) {
         AlertDialog(
@@ -1733,9 +1517,9 @@ private fun SettingsPage(
         SideChoiceMenu(
             choices = DiagnosticUptime.allowedSeconds.map { seconds ->
                 if (seconds == DiagnosticUptime.DEFAULT_SECONDS) {
-                    context.getString(R.string.diagnostic_uptime_default)
+                    stringResource(R.string.diagnostic_uptime_default)
                 } else {
-                    context.getString(R.string.diagnostic_uptime_seconds, seconds)
+                    stringResource(R.string.diagnostic_uptime_seconds, seconds)
                 }
             },
             selectedIndex = DiagnosticUptime.allowedSeconds.indexOf(czg3BootMinUptimeSeconds)
@@ -1828,23 +1612,38 @@ private fun SettingsPage(
                 )
             }
         }
-        if (showCzg3Diagnostics) {
-            item {
-                SettingsCard(
-                    modifier = Modifier.onGloballyPositioned { coordinates ->
-                        uptimeMenuTop = with(density) { coordinates.positionInWindow().y.toDp() }
-                    },
-                    icon = Icons.Rounded.Schedule,
-                    title = stringResource(R.string.diagnostic_boot_uptime_title),
-                    description = stringResource(R.string.diagnostic_boot_uptime_description),
-                    value = if (czg3BootMinUptimeSeconds == DiagnosticUptime.DEFAULT_SECONDS) {
-                        stringResource(R.string.diagnostic_uptime_default)
-                    } else {
-                        stringResource(R.string.diagnostic_uptime_seconds, czg3BootMinUptimeSeconds)
-                    },
-                    onClick = {
+        item { SectionLabel(stringResource(R.string.root_runtime_settings)) }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (exactCzg3) {
+                    SettingsCard(
+                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                            uptimeMenuTop = with(density) { coordinates.positionInWindow().y.toDp() }
+                        },
+                        icon = Icons.Rounded.Schedule,
+                        title = stringResource(R.string.diagnostic_boot_uptime_title),
+                        description = stringResource(R.string.diagnostic_boot_uptime_description),
+                        value = if (czg3BootMinUptimeSeconds == DiagnosticUptime.DEFAULT_SECONDS) {
+                            stringResource(R.string.diagnostic_uptime_default)
+                        } else {
+                            stringResource(R.string.diagnostic_uptime_seconds, czg3BootMinUptimeSeconds)
+                        },
+                        position = SettingsCardPosition.Top,
+                        onClick = {
+                            clickHaptic(view)
+                            showUptimeDialog = true
+                        },
+                    )
+                }
+                SettingsSwitchCard(
+                    icon = Icons.Rounded.SystemUpdate,
+                    title = stringResource(R.string.soft_reboot_title),
+                    description = stringResource(R.string.soft_reboot_description),
+                    checked = softRebootAfterRoot,
+                    position = if (exactCzg3) SettingsCardPosition.Bottom else SettingsCardPosition.GroupedSingle,
+                    onCheckedChange = {
                         clickHaptic(view)
-                        showUptimeDialog = true
+                        onSoftRebootAfterRootChanged(it)
                     },
                 )
             }

@@ -1,13 +1,9 @@
 package dev.busung.s25uroot
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowManager
@@ -20,6 +16,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +42,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -55,7 +55,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
+import kotlinx.coroutines.delay
 
 class InstallActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -89,55 +89,15 @@ class InstallActivity : ComponentActivity() {
                 themeMode = AppPreferences.themeMode(this),
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
-                val history by installViewModel.history.collectAsStateWithLifecycle()
                 var autoRootEnabled by remember {
                     mutableStateOf(AppPreferences.autoRootEnabled(this@InstallActivity))
-                }
-                var softRebootEnabled by remember {
-                    mutableStateOf(AppPreferences.softRebootAfterRoot(this@InstallActivity))
-                }
-                var softRebootTriggered by rememberSaveable { mutableStateOf(false) }
-                var installSessionStartedAt by rememberSaveable {
-                    mutableStateOf(if (startInstall) System.currentTimeMillis() else 0L)
-                }
-                val batteryOptimizationLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult(),
-                ) {
-                    val exempt = getSystemService(PowerManager::class.java)
-                        .isIgnoringBatteryOptimizations(packageName)
-                    AppPreferences.setAutoRootEnabled(this@InstallActivity, exempt)
-                    autoRootEnabled = exempt
-                    if (!exempt) {
-                        Toast.makeText(
-                            this@InstallActivity,
-                            getString(R.string.autoroot_battery_optimization_required),
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
-                }
-                val requestBatteryOptimizationExemption: () -> Unit = {
-                    val powerManager = getSystemService(PowerManager::class.java)
-                    if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
-                        autoRootEnabled = true
-                    } else {
-                        val packageUri = Uri.parse("package:$packageName")
-                        runCatching {
-                            batteryOptimizationLauncher.launch(
-                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri),
-                            )
-                        }.onFailure {
-                            batteryOptimizationLauncher.launch(
-                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
-                            )
-                        }
-                    }
                 }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
                     if (granted) {
-                        requestBatteryOptimizationExemption()
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
+                        autoRootEnabled = true
                     } else {
                         AppPreferences.setAutoRootEnabled(this@InstallActivity, false)
                         autoRootEnabled = false
@@ -164,56 +124,21 @@ class InstallActivity : ComponentActivity() {
                             Manifest.permission.POST_NOTIFICATIONS,
                         ) == PackageManager.PERMISSION_GRANTED
                     ) {
-                        requestBatteryOptimizationExemption()
+                        AppPreferences.setAutoRootEnabled(this@InstallActivity, true)
+                        autoRootEnabled = true
                     } else {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
-                val setSoftReboot: (Boolean) -> Unit = { enabled ->
-                    AppPreferences.setSoftRebootAfterRoot(this@InstallActivity, enabled)
-                    softRebootEnabled = enabled
-                    if (!enabled) softRebootTriggered = false
-                }
-
                 BackHandler(enabled = installState.busy) {}
                 LaunchedEffect(startInstall, profileId) {
                     if (startInstall) installViewModel.install(profileId)
-                }
-                LaunchedEffect(installState.phase, history, softRebootEnabled, installSessionStartedAt) {
-                    val latestRun = history.firstOrNull()
-                    val persistedSuccess = installSessionStartedAt > 0L &&
-                        latestRun?.result == InstallRunResult.Succeeded &&
-                        latestRun.completedAtMillis != null &&
-                        latestRun.startedAtMillis >= installSessionStartedAt
-                    if (
-                        installState.phase == InstallPhase.Installed &&
-                        persistedSuccess &&
-                        softRebootEnabled &&
-                        !softRebootTriggered
-                    ) {
-                        softRebootTriggered = true
-                        val result = KernelSuSoftReboot.request(this@InstallActivity)
-                        if (!result.started) {
-                            softRebootTriggered = false
-                            Toast.makeText(
-                                this@InstallActivity,
-                                getString(R.string.soft_reboot_failed, result.detail.take(160)),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
-                    }
                 }
                 InstallScreen(
                     installState = installState,
                     autoRootEnabled = autoRootEnabled,
                     onAutoRootEnabledChanged = setAutoRoot,
-                    softRebootEnabled = softRebootEnabled,
-                    onSoftRebootEnabledChanged = setSoftReboot,
-                    onRetry = {
-                        installSessionStartedAt = System.currentTimeMillis()
-                        softRebootTriggered = false
-                        installViewModel.install(profileId)
-                    },
+                    onRetry = { installViewModel.install(profileId) },
                     onClose = ::finish,
                 )
             }
@@ -254,12 +179,15 @@ private fun InstallScreen(
     installState: InstallUiState,
     autoRootEnabled: Boolean,
     onAutoRootEnabledChanged: (Boolean) -> Unit,
-    softRebootEnabled: Boolean,
-    onSoftRebootEnabledChanged: (Boolean) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
 ) {
+    val logScrollState = rememberScrollState()
     val view = LocalView.current
+    LaunchedEffect(installState.log) {
+        delay(40)
+        logScrollState.scrollTo(logScrollState.maxValue)
+    }
 
     Scaffold { padding ->
         Column(
@@ -292,16 +220,13 @@ private fun InstallScreen(
             InstallerLog(
                 output = installState.log,
                 modifier = Modifier.weight(1f),
+                scrollState = logScrollState,
             )
 
             if (installState.phase == InstallPhase.Installed) {
                 AutoRootOptInCard(
                     enabled = autoRootEnabled,
                     onEnabledChanged = onAutoRootEnabledChanged,
-                )
-                SoftRebootOptInCard(
-                    enabled = softRebootEnabled,
-                    onEnabledChanged = onSoftRebootEnabledChanged,
                 )
             }
 
@@ -388,48 +313,11 @@ private fun AutoRootOptInCard(
 }
 
 @Composable
-private fun SoftRebootOptInCard(
-    enabled: Boolean,
-    onEnabledChanged: (Boolean) -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-        ),
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.soft_reboot_title),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    text = stringResource(R.string.soft_reboot_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(
-                checked = enabled,
-                onCheckedChange = onEnabledChanged,
-            )
-        }
-    }
-}
-
-@Composable
 private fun InstallerStatusCard(installState: InstallUiState) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             containerColor = when (installState.phase) {
@@ -451,22 +339,23 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                when {
-                    installState.busy -> Icon(
-                        Icons.Rounded.Memory,
-                        contentDescription = null,
-                        modifier = Modifier.size(44.dp),
-                    )
-                    installState.phase == InstallPhase.Installed -> Icon(
-                        Icons.Rounded.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(44.dp),
-                    )
-                    else -> Icon(
-                        Icons.Rounded.Error,
-                        contentDescription = null,
-                        modifier = Modifier.size(44.dp),
-                    )
+                AnimatedContent(targetState = installState.phase, label = "install-status-icon") { phase ->
+                    when {
+                        installState.busy -> LoadingIndicator(
+                            modifier = Modifier.size(44.dp),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        phase == InstallPhase.Installed -> Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(44.dp),
+                        )
+                        else -> Icon(
+                            Icons.Rounded.Error,
+                            contentDescription = null,
+                            modifier = Modifier.size(44.dp),
+                        )
+                    }
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -479,6 +368,13 @@ private fun InstallerStatusCard(installState: InstallUiState) {
                     )
                 }
             }
+            LinearProgressIndicator(
+                progress = { installProgress(installState.phase) },
+                modifier = Modifier.fillMaxWidth(),
+                color = LocalContentColor.current,
+                trackColor = LocalContentColor.current.copy(alpha = 0.2f),
+                drawStopIndicator = {},
+            )
         }
     }
 }
@@ -535,6 +431,12 @@ private fun InstallerSteps(phase: InstallPhase) {
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
                         )
                     }
+                    if (stepState == 1 && phase !in setOf(InstallPhase.Failed, InstallPhase.Ready)) {
+                        LoadingIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
         }
@@ -545,9 +447,8 @@ private fun InstallerSteps(phase: InstallPhase) {
 private fun InstallerLog(
     output: String,
     modifier: Modifier,
+    scrollState: androidx.compose.foundation.ScrollState,
 ) {
-    val scrollState = rememberScrollState()
-    val visibleOutput = remember(output) { installerLogForDisplay(output) }
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -560,7 +461,7 @@ private fun InstallerLog(
         ) {
             Text(stringResource(R.string.install_live_progress), style = MaterialTheme.typography.titleMedium)
             Text(
-                text = visibleOutput.ifBlank { stringResource(R.string.install_preparing) },
+                text = output.ifBlank { stringResource(R.string.install_preparing) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -572,17 +473,6 @@ private fun InstallerLog(
             )
         }
     }
-}
-
-internal const val INSTALLER_LOG_RENDER_CHARS = 32_768
-
-internal fun installerLogForDisplay(
-    output: String,
-    maxChars: Int = INSTALLER_LOG_RENDER_CHARS,
-): String {
-    require(maxChars > 0)
-    if (output.length <= maxChars) return output
-    return "…\n" + output.takeLast(maxChars)
 }
 
 @Composable
@@ -597,6 +487,16 @@ private fun installPhaseDetail(phase: InstallPhase): String = stringResource(
         InstallPhase.Failed -> R.string.phase_failed
     },
 )
+
+private fun installProgress(phase: InstallPhase): Float = when (phase) {
+    InstallPhase.Checking -> 0.1f
+    InstallPhase.Ready -> 0f
+    InstallPhase.Downloading -> 0.3f
+    InstallPhase.Exploiting -> 0.6f
+    InstallPhase.LoadingKernelSu -> 0.85f
+    InstallPhase.Installed -> 1f
+    InstallPhase.Failed -> 0f
+}
 
 private fun stepState(phase: InstallPhase, stepIndex: Int): Int {
     if (phase == InstallPhase.Installed) return 2

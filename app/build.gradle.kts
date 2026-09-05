@@ -21,9 +21,6 @@ android {
         targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
-        // Legacy logging-only flag. There is now one canonical production CZG3
-        // payload, and that production payload includes race telemetry.
-        buildConfigField("boolean", "CZG3_DIAGNOSTIC_PAYLOAD", "false")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -38,7 +35,6 @@ android {
     }
 
     buildTypes {
-        getByName("debug")
         getByName("release") {
             isMinifyEnabled = false
         }
@@ -94,7 +90,6 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20251224")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")

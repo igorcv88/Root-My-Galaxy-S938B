@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">Мягкая перезагрузка после root</string>
-    <string name="soft_reboot_description">Перезапускает пользовательское пространство Android после успешного получения root, чтобы инициализировать службы и модули KernelSU без полной перезагрузки ядра.</string>
-    <string name="soft_reboot_starting">Перезапуск пользовательского пространства Android для KernelSU</string>
-    <string name="soft_reboot_failed">Не удалось запустить мягкую перезагрузку: %1$s</string>
-</resources>
