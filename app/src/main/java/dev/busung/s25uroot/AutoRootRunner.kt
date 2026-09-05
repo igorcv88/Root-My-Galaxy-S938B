@@ -39,6 +39,10 @@ internal class AutoRootRunner(
         onStage(AutoRootStage.LoadingKernelSu)
         stageKernelSu(payloads)
 
+        if (AppPreferences.softRebootAfterRoot(context)) {
+            KernelSuSoftReboot.arm(context, helperFile(), useShizuku)
+        }
+
         onStage(AutoRootStage.VerifyingRoot)
         val lateLoad = runHelper("--late-load")
         require(lateLoad.code == 0) {

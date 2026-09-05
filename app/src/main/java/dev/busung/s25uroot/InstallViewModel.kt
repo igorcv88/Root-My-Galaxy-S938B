@@ -371,6 +371,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             appendLog(app.getString(R.string.log_ksu_staged))
         }
 
+        if (AppPreferences.softRebootAfterRoot(app)) {
+            KernelSuSoftReboot.arm(app, helperFile(), shizukuEnabled())
+        }
+
         val lateLoad = runHelper("--late-load")
         require(lateLoad.code == 0) {
             app.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
