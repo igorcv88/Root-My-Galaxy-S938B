@@ -1,12 +1,12 @@
 package dev.busung.s25uroot
 
 import android.content.Context
+import android.os.Process
 import android.os.SystemClock
 import java.io.File
 import java.io.InputStream
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 internal enum class AutoRootStage {
     PreparingExploit,
@@ -17,30 +17,33 @@ internal enum class AutoRootStage {
 
 private data class AutoRootCommandResult(val code: Int, val output: String)
 
+/**
+ * Minimal Auto Root runner.
+ *
+ * There is deliberately no Shizuku branch here. Auto Root always executes the
+ * last-known-good payload through the standalone bootstrap helper.
+ */
 internal class AutoRootRunner(
     private val context: Context,
-    private val useShizuku: Boolean,
     private val onStage: (AutoRootStage) -> Unit,
     private val onLog: (String) -> Unit = {},
 ) {
-    suspend fun run(payloads: VerifiedPayloads, bootToken: String) {
-        if (useShizuku) {
-            require(ShizukuController.isRunning() && ShizukuController.isGranted()) {
-                context.getString(R.string.error_shizuku_unavailable)
-            }
+    suspend fun run(payloads: VerifiedPayloads) {
+        require(payloads.source == PayloadSource.Offline) {
+            "Auto Root requires the last-known-good offline payload"
         }
 
         onStage(AutoRootStage.PreparingExploit)
-        onLog("[*] profile=${payloads.profile.profileId} transport=${if (useShizuku) "shizuku" else "standalone"}")
+        onLog("[*] profile=${payloads.profile.profileId} transport=standalone source=offline")
 
         onStage(AutoRootStage.RunningExploit)
-        executeExploit(payloads.exploit, bootToken)
+        executeExploit(payloads.exploit)
 
         onStage(AutoRootStage.LoadingKernelSu)
         stageKernelSu(payloads)
 
         if (AppPreferences.softRebootAfterRoot(context)) {
-            KernelSuSoftReboot.arm(context, helperFile(), useShizuku)
+            KernelSuSoftReboot.arm(context, helperFile(), false)
         }
 
         onStage(AutoRootStage.VerifyingRoot)
@@ -52,47 +55,52 @@ internal class AutoRootRunner(
         onLog(context.getString(R.string.log_ksu_control_verified))
     }
 
-    private suspend fun executeExploit(payload: File, bootToken: String) {
-        val logFile = if (useShizuku) File(SHIZUKU_LOG_PATH) else File(context.filesDir, "autoroot-exploit.log")
-        if (useShizuku) {
-            ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
-        } else {
-            logFile.delete()
-        }
+    private suspend fun executeExploit(payload: File) {
+        val logFile = File(context.filesDir, "autoroot-exploit.log")
+        logFile.delete()
 
         val helper = helperFile()
-        if (!useShizuku) {
-            require(helper.canExecute()) { context.getString(R.string.error_helper_unavailable) }
+        require(helper.canExecute()) { context.getString(R.string.error_helper_unavailable) }
+
+        val processBuilder = ProcessBuilder(
+            helper.absolutePath,
+            "--run-payload",
+            payload.absolutePath,
+            helper.absolutePath,
+            logFile.absolutePath,
+        ).redirectErrorStream(true)
+        processBuilder.environment().apply {
+            put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
+            put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
+            put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
         }
 
-        val process = if (useShizuku) {
-            val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-            ShizukuController.exec(
-                arrayOf("/system/bin/sh", "-c", "true"),
-                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath),
-            )
-        } else {
-            val processBuilder = ProcessBuilder(
-                helper.absolutePath,
-                "--run-payload",
-                payload.absolutePath,
-                helper.absolutePath,
-                logFile.absolutePath,
-            ).redirectErrorStream(true)
-            processBuilder.environment().apply {
-                put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
-                put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
-                put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
-                cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
+        val originalThreadPriority = runCatching {
+            Process.getThreadPriority(Process.myTid())
+        }.getOrDefault(Process.THREAD_PRIORITY_DEFAULT)
+
+        // Raise only the fork/exec window so the child can inherit the best
+        // public app-side nice value. The parent is then lowered while it polls
+        // the log, avoiding competition with the exploit process itself.
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
+        val process = try {
+            processBuilder.start().also {
+                val lowered = runCatching {
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                }.isSuccess
+                if (!lowered) {
+                    runCatching { Process.setThreadPriority(originalThreadPriority) }
+                }
             }
-            processBuilder.start()
+        } catch (error: Throwable) {
+            runCatching { Process.setThreadPriority(originalThreadPriority) }
+            throw error
         }
 
         val captured = StringBuilder()
-        val readLog: () -> String = if (useShizuku) {
-            { drainProcessOutput(process, captured) }
-        } else {
-            { drainProcessOutput(process, captured); logFile.readTextIfPresent() }
+        fun readLog(): String {
+            drainProcessOutput(process, captured)
+            return logFile.readTextIfPresent()
         }
 
         try {
@@ -102,7 +110,6 @@ internal class AutoRootRunner(
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
-                    cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(rawLog)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
@@ -114,12 +121,11 @@ internal class AutoRootRunner(
                 require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
                     context.getString(R.string.error_exploit_timeout)
                 }
-                delay(if (useShizuku) SHIZUKU_LOG_POLL_INTERVAL else LOG_POLL_INTERVAL)
+                delay(LOG_POLL_INTERVAL)
             }
 
             val exitCode = process.waitFor()
             val rawLog = readLog()
-            cacheP0Offset(bootToken, rawLog)
             publishExploitLog(rawLog)
             val earlyOutput = captured.toString().trim()
             require(exitCode == 0) {
@@ -138,71 +144,29 @@ internal class AutoRootRunner(
                 delay(500.milliseconds)
                 if (process.isAlive) process.destroyForcibly()
             }
+            runCatching { Process.setThreadPriority(originalThreadPriority) }
         }
         onLog(context.getString(R.string.log_bootstrap_root))
     }
 
     private suspend fun stageKernelSu(payloads: VerifiedPayloads) {
-        if (useShizuku) {
-            shizukuStage(payloads.kernelSu, SHIZUKU_KSUD_PATH, "755")
-            shizukuStage(payloads.kernelSu, SHIZUKU_KSUD_STAGE_PATH, "755")
-        } else {
-            val source = shellQuote(payloads.kernelSu.absolutePath)
-            val stageCommand =
-                "/system/bin/cp $source $SHIZUKU_KSUD_PATH && " +
-                    "/system/bin/cp $source $SHIZUKU_KSUD_STAGE_PATH && " +
-                    "/system/bin/chmod 755 $SHIZUKU_KSUD_PATH $SHIZUKU_KSUD_STAGE_PATH"
-            val stage = runHelper("-c", stageCommand)
-            require(stage.code == 0) { context.getString(R.string.error_ksu_stage, stage.output) }
-        }
+        val source = shellQuote(payloads.kernelSu.absolutePath)
+        val stageCommand =
+            "/system/bin/cp $source $KSUD_PATH && " +
+                "/system/bin/cp $source $KSUD_STAGE_PATH && " +
+                "/system/bin/chmod 755 $KSUD_PATH $KSUD_STAGE_PATH"
+        val stage = runHelper("-c", stageCommand)
+        require(stage.code == 0) { context.getString(R.string.error_ksu_stage, stage.output) }
         onLog(context.getString(R.string.log_ksu_staged))
     }
 
-    private fun helperFile(): File =
-        if (useShizuku) {
-            shizukuStage(nativeHelperFile(), SHIZUKU_HELPER_PATH, "755")
-        } else {
-            nativeHelperFile()
-        }
-
-    private fun nativeHelperFile() = File(context.applicationInfo.nativeLibraryDir, "libcve43499root.so")
-
-    private fun shizukuStage(source: File, target: String, mode: String): File {
-        val staged = File(target)
-        if (stagedFileIsCurrent(staged, source)) return staged
-        try {
-            ShizukuController.writeFile(target, mode, source.inputStream())
-        } catch (error: Throwable) {
-            throw IllegalStateException(
-                context.getString(R.string.error_shizuku_stage, target, error.message.orEmpty()),
-                error,
-            )
-        }
-        return staged
-    }
-
-    private fun shizukuEnvironment(
-        bootToken: String,
-        payloadPath: String,
-        helperPath: String,
-    ): Array<String> = buildList {
-        add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
-        add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
-        add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
-        add("CVE43499_ROOT_HELPER=$helperPath")
-        add("LD_PRELOAD=$payloadPath")
-        cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
-    }.toTypedArray()
+    private fun helperFile() =
+        File(context.applicationInfo.nativeLibraryDir, "libcve43499root.so")
 
     private suspend fun runHelper(vararg arguments: String): AutoRootCommandResult {
-        val helper = helperFile()
-        val process = if (useShizuku) {
-            ShizukuController.exec(arrayOf(helper.absolutePath) + arguments)
-        } else {
-            ProcessBuilder(listOf(helper.absolutePath) + arguments)
-                .redirectErrorStream(true)
-                .start()
-        }
+        val process = ProcessBuilder(listOf(helperFile().absolutePath) + arguments)
+            .redirectErrorStream(true)
+            .start()
         val captured = StringBuilder()
         val startedAt = SystemClock.elapsedRealtime()
         try {
@@ -228,13 +192,12 @@ internal class AutoRootRunner(
         }
     }
 
-    private fun drainProcessOutput(process: Process, buffer: StringBuilder): String {
-        return try {
+    private fun drainProcessOutput(process: java.lang.Process, buffer: StringBuilder) {
+        try {
             drainStream(process.inputStream, buffer)
             drainStream(process.errorStream, buffer)
-            buffer.toString()
         } catch (_: Throwable) {
-            buffer.toString()
+            // The on-disk exploit log remains the source of truth for the payload.
         }
     }
 
@@ -252,27 +215,6 @@ internal class AutoRootRunner(
         if (clean.isNotBlank()) onLog(clean)
     }
 
-    private fun cachedP0Offset(bootToken: String): String? {
-        val stored = context.getSharedPreferences(P0_CACHE, Context.MODE_PRIVATE)
-        if (stored.getString(P0_CACHE_BOOT_TOKEN, null) != bootToken) return null
-        return stored.getString(P0_CACHE_OFFSET, null)
-    }
-
-    private fun cacheP0Offset(bootToken: String, log: String) {
-        val match = P0_OFFSET_PATTERN.findAll(log).lastOrNull() ?: return
-        val offset = match.groupValues[1].toLongOrNull(16) ?: return
-        if (offset !in 0..P0_OFFSET_MAX || offset and P0_OFFSET_MASK != 0L) return
-        val value = "0x${offset.toString(16)}"
-        val stored = context.getSharedPreferences(P0_CACHE, Context.MODE_PRIVATE)
-        if (stored.getString(P0_CACHE_BOOT_TOKEN, null) == bootToken &&
-            stored.getString(P0_CACHE_OFFSET, null) == value
-        ) return
-        stored.edit()
-            .putString(P0_CACHE_BOOT_TOKEN, bootToken)
-            .putString(P0_CACHE_OFFSET, value)
-            .apply()
-    }
-
     private fun shellQuote(value: String) = "'${value.replace("'", "'\\''")}'"
 
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
@@ -284,24 +226,11 @@ internal class AutoRootRunner(
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
-        private const val P0_CACHE = "p0_cache"
-        private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"
-        private const val P0_CACHE_OFFSET = "offset"
-        private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
-        private const val P0_OFFSET_MAX = 0x1f0000L
-        private const val P0_OFFSET_MASK = 0xffffL
-        private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"
-        private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
-        private const val SHIZUKU_PAYLOAD_PATH = "/data/local/tmp/ksu-payload"
-        private const val SHIZUKU_KSUD_PATH = "/data/local/tmp/ksud-s25u-kdp"
-        private const val SHIZUKU_KSUD_STAGE_PATH = "/data/local/tmp/.ksud-stage"
+        private const val KSUD_PATH = "/data/local/tmp/ksud-s25u-kdp"
+        private const val KSUD_STAGE_PATH = "/data/local/tmp/.ksud-stage"
         private val LOG_POLL_INTERVAL = 250.milliseconds
         private val HELPER_POLL_INTERVAL = 250.milliseconds
-        private val SHIZUKU_LOG_POLL_INTERVAL = 1.seconds
-        private val ANSI_ESCAPE = Regex("\\u001B\\[[0-?]*[ -/]*[@-~]")
-        private val P0_OFFSET_PATTERN = Regex(
-            "slide-kaslr-ok[^\\n]*slide=([0-9a-fA-F]{16})",
-        )
+        private val ANSI_ESCAPE = Regex("\u001B\\[[0-?]*[ -/]*[@-~]")
 
         private fun stripAnsi(value: String): String = ANSI_ESCAPE.replace(value, "").replace("\r", "")
     }

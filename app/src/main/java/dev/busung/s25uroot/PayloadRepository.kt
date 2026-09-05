@@ -14,6 +14,7 @@ data class VerifiedPayloads(
     val profile: TargetProfile,
     val exploit: File,
     val kernelSu: File,
+    val source: PayloadSource = PayloadSource.Online,
 )
 
 class PayloadRepository(private val context: Context) {
@@ -36,12 +37,32 @@ class PayloadRepository(private val context: Context) {
         .firstOrNull { it.matches(snapshot) }
         ?: error(context.getString(R.string.repo_no_profile))
 
-    fun resolveTarget(profileId: String): TargetProfile = loadTargets()
-        .firstOrNull { it.profileId == profileId }
-        ?: error(context.getString(R.string.repo_profile_missing, profileId))
+    fun resolveTarget(profileId: String): TargetProfile {
+        if (profileId.startsWith(OFFLINE_REQUEST_PREFIX)) {
+            val requestedProfileId = profileId
+                .removePrefix(OFFLINE_REQUEST_PREFIX)
+                .takeIf(String::isNotBlank)
+            return KnownGoodPayloadStore.load(context, requestedProfileId)
+                .profile
+                .copy(source = PayloadSource.Offline)
+        }
+        return loadTargets()
+            .firstOrNull { it.profileId == profileId }
+            ?: error(context.getString(R.string.repo_profile_missing, profileId))
+    }
 
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        val directory = File(context.filesDir, "payloads/${profile.profileId}").apply { mkdirs() }
+        if (profile.source == PayloadSource.Offline) {
+            onProgress("Payload source: last-known-good offline cache")
+            return KnownGoodPayloadStore.load(context, profile.profileId)
+        }
+
+        onProgress("Payload source: online support feed")
+        val directory = File(context.filesDir, "payloads/manual-online/${profile.profileId}")
+        directory.deleteRecursively()
+        require(directory.mkdirs() || directory.isDirectory) {
+            context.getString(R.string.repo_finalize_failed, directory.name)
+        }
         val exploit = downloadArtifact(
             profile.exploit,
             File(directory, "cve-2026-43499-app.so"),
@@ -56,7 +77,7 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
-        return VerifiedPayloads(profile, exploit, kernelSu)
+        return VerifiedPayloads(profile, exploit, kernelSu, PayloadSource.Online)
     }
 
     private fun downloadArtifact(
@@ -158,6 +179,7 @@ class PayloadRepository(private val context: Context) {
         }
 
     companion object {
+        private const val OFFLINE_REQUEST_PREFIX = "offline-cache:"
         private const val PAYLOAD_REPOSITORY = "igorcv88/Root-My-Galaxy-Payloads-S938B"
         private const val COMMIT_API_URL =
             "https://api.github.com/repos/$PAYLOAD_REPOSITORY/git/ref/heads/main"
@@ -166,5 +188,8 @@ class PayloadRepository(private val context: Context) {
         private const val MUTABLE_RAW_PREFIX = "$RAW_REPOSITORY/main/"
         private const val MAX_COMMIT_RESPONSE_BYTES = 16 * 1024
         private const val MAX_MANIFEST_BYTES = 256 * 1024
+
+        fun offlineRequest(profileId: String?): String =
+            OFFLINE_REQUEST_PREFIX + profileId.orEmpty()
     }
 }

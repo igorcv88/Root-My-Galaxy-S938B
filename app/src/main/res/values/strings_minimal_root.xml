@@ -9,4 +9,8 @@
     <string name="soft_reboot_description">Automatically restart Android userspace with KernelSU after root succeeds.</string>
     <string name="soft_reboot_starting">Starting KernelSU soft reboot</string>
     <string name="soft_reboot_failed">Root succeeded, but soft reboot did not start: %1$s</string>
+    <string name="manual_payload_source_title" translatable="false">Payload source</string>
+    <string name="manual_payload_source_description" translatable="false">Manual Online downloads and verifies the current payload. Manual Offline uses only the last-known-good payload from a successful Manual Online run.</string>
+    <string name="manual_online" translatable="false">Manual Online</string>
+    <string name="manual_offline" translatable="false">Manual Offline</string>
 </resources>
