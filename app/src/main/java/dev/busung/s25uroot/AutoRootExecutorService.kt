@@ -24,11 +24,9 @@ import kotlinx.coroutines.launch
  * Fresh process used only for the critical Auto Root execution window.
  *
  * The foreground gate binds this service at the configured launch uptime with
- * BIND_IMPORTANT | BIND_ABOVE_CLIENT. The service deliberately forces the
- * standalone transport so the boot path matches the manual path that is known
- * to work on CZG3. The dedicated executor thread requests Android's highest
- * public app-side display priority before spawning the helper; the standalone
- * child is created from that thread before the first suspension point.
+ * BIND_IMPORTANT | BIND_ABOVE_CLIENT. Auto Root is always offline and always
+ * standalone. The executor thread requests Android's highest public app-side
+ * display priority before spawning the standalone helper.
  */
 class AutoRootExecutorService : Service() {
     private val dispatcher: ExecutorCoroutineDispatcher =
@@ -67,9 +65,8 @@ class AutoRootExecutorService : Service() {
         val historyStore = InstallHistoryStore(this)
         var historyEntry: InstallHistoryEntry? = null
 
-        // Keep exploit output in memory while the race is active. Persisting an
-        // AtomicFile on every 250 ms log poll would add fsync/I/O to the critical
-        // window and would also duplicate the runner's cumulative log snapshots.
+        // No History disk writes while the exploit is active. We keep the runner's
+        // cumulative log in memory and persist once after normal success/failure.
         fun appendHistory(line: String?) {
             val current = historyEntry ?: return
             val clean = line?.trim().orEmpty()
@@ -89,9 +86,6 @@ class AutoRootExecutorService : Service() {
 
         try {
             require(AppPreferences.autoRootEnabled(this)) { "Auto Root was disabled before execution" }
-            require(AutoRootSupport.hasVerifiedInstall(this)) {
-                getString(R.string.autoroot_prior_install_required)
-            }
 
             val bootToken = AutoRootSupport.currentBootToken()
                 ?: error(getString(R.string.error_boot_id))
@@ -105,7 +99,13 @@ class AutoRootExecutorService : Service() {
                 return
             }
 
+            // The gate already performed the full known-good verification. Load
+            // the same private cache here and enforce the architectural invariant
+            // that Auto Root can never switch to an online or Shizuku path.
             val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
+            require(payloads.source == PayloadSource.Offline) {
+                "Auto Root requires the last-known-good offline payload"
+            }
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
                 getString(R.string.autoroot_already_attempted)
             }
@@ -113,11 +113,9 @@ class AutoRootExecutorService : Service() {
             historyEntry = historyStore.create().copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = false,
-                log = "[*] Auto Root started: fresh executor, standalone transport\n" +
+                log = "[*] Auto Root started: fresh executor, offline cache, standalone transport\n" +
                     "[*] profile=${payloads.profile.profileId}",
-            ).also(historyStore::save)
-
-            Log.i(TAG, "Auto Root executing in fresh process with forced standalone transport")
+            )
 
             var lastRunnerSnapshot = ""
             val runner = AutoRootRunner(
@@ -131,11 +129,14 @@ class AutoRootExecutorService : Service() {
                         AutoRootStage.VerifyingRoot -> R.string.autoroot_verifying_root
                     }
                     val message = getString(messageRes)
-                    updateNotification(message)
+                    // The gate already displays "running exploit". Avoid Binder
+                    // notification traffic immediately before/during the race.
+                    if (stage == AutoRootStage.LoadingKernelSu || stage == AutoRootStage.VerifyingRoot) {
+                        updateNotification(message)
+                    }
                     appendHistory("[*] $message")
                 },
                 onLog = { snapshot ->
-                    Log.i(TAG, snapshot)
                     val delta = if (
                         lastRunnerSnapshot.isNotEmpty() &&
                         snapshot.startsWith(lastRunnerSnapshot)
