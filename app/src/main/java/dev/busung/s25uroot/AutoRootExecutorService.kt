@@ -4,8 +4,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.os.Binder
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -25,8 +28,8 @@ import kotlinx.coroutines.launch
  *
  * The foreground gate binds this service at the configured launch uptime with
  * BIND_IMPORTANT | BIND_ABOVE_CLIENT. Auto Root is always offline and always
- * standalone. AutoRootRunner boosts only the child spawn window and lowers the
- * parent polling thread during the race.
+ * standalone. onBind() has no execution side effect: the gate must first connect
+ * and then send an explicit start command over Messenger.
  */
 class AutoRootExecutorService : Service() {
     private val dispatcher: ExecutorCoroutineDispatcher =
@@ -36,13 +39,21 @@ class AutoRootExecutorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var runJob: Job? = null
 
+    private val commandHandler = Handler(Looper.getMainLooper()) { message ->
+        when (message.what) {
+            MSG_START_AUTO_ROOT -> {
+                handleStartCommand(message)
+                true
+            }
+            else -> false
+        }
+    }
+    private val commandMessenger = Messenger(commandHandler)
+
     override fun onBind(intent: Intent?): IBinder? {
         if (intent?.action != ACTION_RUN_AUTO_ROOT) return null
-        if (runJob?.isActive != true) {
-            val bootToken = intent.getStringExtra(EXTRA_BOOT_TOKEN)
-            runJob = scope.launch { runAutoRoot(bootToken) }
-        }
-        return Binder()
+        Log.i(TAG, "Fresh Auto Root executor bound; awaiting explicit start command")
+        return commandMessenger.binder
     }
 
     override fun onDestroy() {
@@ -51,7 +62,26 @@ class AutoRootExecutorService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun runAutoRoot(expectedBootToken: String?) {
+    private fun handleStartCommand(message: Message) {
+        if (runJob != null) {
+            Log.w(TAG, "Ignoring duplicate Auto Root executor start command")
+            return
+        }
+
+        val bootToken = message.data.getString(EXTRA_BOOT_TOKEN)
+        if (bootToken.isNullOrBlank()) {
+            finishWithResult(getString(R.string.autoroot_failed, "executor received no boot token"))
+            return
+        }
+
+        // Visible proof that the fresh process not only connected, but accepted
+        // the launch command. The worker starts only after this point.
+        updateNotification(getString(R.string.autoroot_preparing_exploit))
+        Log.i(TAG, "Auto Root executor start command accepted")
+        runJob = scope.launch { runAutoRoot(bootToken) }
+    }
+
+    private suspend fun runAutoRoot(expectedBootToken: String) {
         val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "$packageName:AutoRootExecutor",
@@ -60,8 +90,8 @@ class AutoRootExecutorService : Service() {
 
         var historyEntry: InstallHistoryEntry? = null
 
-        // No History disk writes while the exploit is active. We keep the runner's
-        // cumulative log in memory and persist once after normal success/failure.
+        // No History disk writes while the exploit is active. The cumulative
+        // runner log stays in memory and is persisted only after success/failure.
         fun appendHistory(line: String?) {
             val current = historyEntry ?: return
             val clean = line?.trim().orEmpty()
@@ -76,8 +106,6 @@ class AutoRootExecutorService : Service() {
                 result = result,
             )
             historyEntry = updated
-            // History must never change the root outcome. Constructing the store
-            // and writing its AtomicFile are both deferred until the exploit is over.
             runCatching { InstallHistoryStore(this).save(updated) }
         }
 
@@ -86,7 +114,7 @@ class AutoRootExecutorService : Service() {
 
             val bootToken = AutoRootSupport.currentBootToken()
                 ?: error(getString(R.string.error_boot_id))
-            require(expectedBootToken == null || bootToken == expectedBootToken) {
+            require(bootToken == expectedBootToken) {
                 getString(R.string.autoroot_boot_changed)
             }
 
@@ -96,8 +124,6 @@ class AutoRootExecutorService : Service() {
                 return
             }
 
-            // Create only an in-memory record before any payload work. This makes
-            // preflight/cache failures visible in History without touching disk.
             historyEntry = InstallHistoryEntry(
                 id = UUID.randomUUID().toString(),
                 startedAtMillis = System.currentTimeMillis(),
@@ -128,11 +154,11 @@ class AutoRootExecutorService : Service() {
                         AutoRootStage.LoadingKernelSu -> R.string.autoroot_loading_ksu
                         AutoRootStage.VerifyingRoot -> R.string.autoroot_verifying_root
                     }
-                    val message = getString(messageRes)
-                    if (stage == AutoRootStage.LoadingKernelSu || stage == AutoRootStage.VerifyingRoot) {
-                        updateNotification(message)
-                    }
-                    appendHistory("[*] $message")
+                    val stageMessage = getString(messageRes)
+                    // Every coarse stage is visible. Notification work happens only
+                    // at stage boundaries, never inside the exploit race itself.
+                    updateNotification(stageMessage)
+                    appendHistory("[*] $stageMessage")
                 },
                 onLog = { snapshot ->
                     val delta = if (
@@ -147,7 +173,7 @@ class AutoRootExecutorService : Service() {
                     appendHistory(delta)
                 },
             )
-            runner.run(payloads)
+            runner.run(payloads, bootToken)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
             appendHistory("[+] Auto Root completed")
@@ -161,11 +187,11 @@ class AutoRootExecutorService : Service() {
                     stopGateAndSelf(removeNotification = true)
                     return
                 }
-                val message = getString(R.string.soft_reboot_failed, reboot.detail.take(160))
-                Log.w(TAG, message)
-                appendHistory("[-] $message")
+                val failureMessage = getString(R.string.soft_reboot_failed, reboot.detail.take(160))
+                Log.w(TAG, failureMessage)
+                appendHistory("[-] $failureMessage")
                 finishHistory(InstallRunResult.Succeeded)
-                finishWithResult(message)
+                finishWithResult(failureMessage)
                 return
             }
 
@@ -191,21 +217,41 @@ class AutoRootExecutorService : Service() {
         )
     }
 
+    /** Let the already-running foreground gate own the terminal notification. */
     private fun finishWithResult(message: String) {
-        getSystemService(NotificationManager::class.java).notify(
-            AUTO_ROOT_NOTIFICATION_ID,
-            buildNotification(message, ongoing = false),
-        )
-        stopGateAndSelf(removeNotification = false)
+        val delivered = deliverGateResult(message, removeNotification = false)
+        if (!delivered) {
+            getSystemService(NotificationManager::class.java).notify(
+                AUTO_ROOT_NOTIFICATION_ID,
+                buildNotification(message, ongoing = false),
+            )
+            stopService(Intent(this, AutoRootService::class.java))
+        }
+        stopSelf()
     }
 
     private fun stopGateAndSelf(removeNotification: Boolean) {
-        if (removeNotification) {
-            getSystemService(NotificationManager::class.java).cancel(AUTO_ROOT_NOTIFICATION_ID)
+        val delivered = deliverGateResult(message = null, removeNotification = removeNotification)
+        if (!delivered) {
+            if (removeNotification) {
+                getSystemService(NotificationManager::class.java).cancel(AUTO_ROOT_NOTIFICATION_ID)
+            }
+            stopService(Intent(this, AutoRootService::class.java))
         }
-        stopService(Intent(this, AutoRootService::class.java))
         stopSelf()
     }
+
+    private fun deliverGateResult(message: String?, removeNotification: Boolean): Boolean =
+        runCatching {
+            startService(
+                Intent(this, AutoRootService::class.java)
+                    .setAction(AutoRootService.ACTION_EXECUTOR_RESULT)
+                    .putExtra(AutoRootService.EXTRA_RESULT_MESSAGE, message)
+                    .putExtra(AutoRootService.EXTRA_REMOVE_NOTIFICATION, removeNotification),
+            ) != null
+        }.onFailure { error ->
+            Log.e(TAG, "Unable to deliver executor result to foreground gate", error)
+        }.getOrDefault(false)
 
     private fun buildNotification(message: String, ongoing: Boolean) =
         NotificationCompat.Builder(this, AUTO_ROOT_CHANNEL_ID)
@@ -240,6 +286,7 @@ class AutoRootExecutorService : Service() {
     companion object {
         const val ACTION_RUN_AUTO_ROOT = "dev.busung.s25uroot.action.RUN_FRESH_AUTO_ROOT"
         const val EXTRA_BOOT_TOKEN = "boot_token"
+        const val MSG_START_AUTO_ROOT = 1
 
         private const val TAG = "RootMyGalaxyAutoRootExec"
         private const val MAX_EXECUTOR_WAKELOCK_MILLIS = 20 * 60 * 1_000L
