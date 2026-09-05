@@ -42,6 +42,7 @@ class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
     private var handoffTimeoutJob: Job? = null
+    private var bindingLossJob: Job? = null
     private var executorBound = false
     private var executorConnected = false
     private var shuttingDown = false
@@ -81,11 +82,11 @@ class AutoRootService : Service() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            if (!shuttingDown) failWithoutExecutorResult("executor disconnected")
+            scheduleBindingLossFailure("executor disconnected")
         }
 
         override fun onBindingDied(name: ComponentName?) {
-            if (!shuttingDown) failWithoutExecutorResult("executor binding died")
+            scheduleBindingLossFailure("executor binding died")
         }
 
         override fun onNullBinding(name: ComponentName?) {
@@ -100,6 +101,8 @@ class AutoRootService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_EXECUTOR_RESULT) {
+            bindingLossJob?.cancel()
+            bindingLossJob = null
             val removeNotification = intent.getBooleanExtra(EXTRA_REMOVE_NOTIFICATION, false)
             val message = intent.getStringExtra(EXTRA_RESULT_MESSAGE)
             if (removeNotification) {
@@ -135,6 +138,8 @@ class AutoRootService : Service() {
         shuttingDown = true
         handoffTimeoutJob?.cancel()
         handoffTimeoutJob = null
+        bindingLossJob?.cancel()
+        bindingLossJob = null
         if (executorBound) {
             runCatching { unbindService(executorConnection) }
             executorBound = false
@@ -232,6 +237,18 @@ class AutoRootService : Service() {
             finishWithResult(getString(R.string.autoroot_failed, detail))
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
+        }
+    }
+
+    private fun scheduleBindingLossFailure(detail: String) {
+        if (shuttingDown) return
+        bindingLossJob?.cancel()
+        bindingLossJob = scope.launch {
+            // A normally finishing bound service can disconnect immediately before
+            // its terminal result intent is delivered. Give that result a brief
+            // ordering window before classifying the executor as lost.
+            delay(EXECUTOR_RESULT_GRACE_MILLIS)
+            if (!shuttingDown) failWithoutExecutorResult(detail)
         }
     }
 
@@ -340,6 +357,7 @@ class AutoRootService : Service() {
         private const val TAG = "RootMyGalaxyAutoRootGate"
         private const val LEGACY_STABILIZATION_DELAY_MILLIS = 45_000L
         private const val EXECUTOR_CONNECT_TIMEOUT_MILLIS = 10_000L
+        private const val EXECUTOR_RESULT_GRACE_MILLIS = 1_500L
         private const val MAX_GATE_WAKELOCK_MILLIS = 10 * 60 * 1_000L
     }
 }
