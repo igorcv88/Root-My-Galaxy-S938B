@@ -207,6 +207,8 @@ class AutoRootService : Service() {
     }
 
     private fun failWithoutExecutorResult(detail: String) {
+        if (shuttingDown) return
+        shuttingDown = true
         recordGateFailure(detail)
         finishWithResult(getString(R.string.autoroot_failed, detail))
     }
