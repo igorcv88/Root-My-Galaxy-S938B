@@ -7,7 +7,6 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
-import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.util.UUID
@@ -26,18 +25,13 @@ import kotlinx.coroutines.launch
  *
  * The foreground gate binds this service at the configured launch uptime with
  * BIND_IMPORTANT | BIND_ABOVE_CLIENT. Auto Root is always offline and always
- * standalone. The executor thread requests Android's highest public app-side
- * display priority before spawning the standalone helper.
+ * standalone. AutoRootRunner boosts only the child spawn window and lowers the
+ * parent polling thread during the race.
  */
 class AutoRootExecutorService : Service() {
     private val dispatcher: ExecutorCoroutineDispatcher =
         Executors.newSingleThreadExecutor { task ->
-            Thread({
-                // Best-effort only. Failure must not add logging/I/O immediately
-                // before the critical process spawn.
-                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
-                task.run()
-            }, "RootMyGalaxy-AutoRootExec")
+            Thread(task, "RootMyGalaxy-AutoRootExec")
         }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var runJob: Job? = null
@@ -118,9 +112,10 @@ class AutoRootExecutorService : Service() {
             require(payloads.source == PayloadSource.Offline) {
                 "Auto Root requires the last-known-good offline payload"
             }
-            historyEntry = historyEntry?.copy(
+            val currentHistory = historyEntry ?: error("Auto Root history state missing")
+            historyEntry = currentHistory.copy(
                 profileId = payloads.profile.profileId,
-                log = historyEntry!!.log + "\n[*] profile=${payloads.profile.profileId}",
+                log = currentHistory.log + "\n[*] profile=${payloads.profile.profileId}",
             )
 
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
