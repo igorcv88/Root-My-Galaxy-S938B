@@ -10,7 +10,10 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
+import android.os.Message
+import android.os.Messenger
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -30,37 +33,64 @@ internal const val AUTO_ROOT_CHANNEL_ID = "auto_root_postboot"
 /**
  * Foreground boot gate for Auto Root.
  *
- * BOOT_COMPLETED is the Android-readiness signal. This service does not launch a
- * second getprop/process readiness probe: after BOOT_COMPLETED it only enforces
- * the configurable minimum boot uptime and then hands execution to a fresh
- * :autoroot_exec process. Keeping this service as the already-authorized
- * foreground service avoids a delayed second startForegroundService() call.
+ * BOOT_COMPLETED is the Android-readiness signal. The gate owns the foreground
+ * lifecycle and minimum-uptime wait. The exploit still runs in a fresh
+ * :autoroot_exec process, but execution now starts only after that process has
+ * actually connected and accepted an explicit Messenger command.
  */
 class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
+    private var handoffTimeoutJob: Job? = null
+    private var bindingLossJob: Job? = null
     private var executorBound = false
+    private var executorConnected = false
     private var shuttingDown = false
+    private var pendingBootToken: String? = null
 
     private val executorConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            if (shuttingDown) return
+            if (service == null) {
+                failWithoutExecutorResult("executor connected without a binder")
+                return
+            }
+
+            val bootToken = pendingBootToken
+            if (bootToken.isNullOrBlank()) {
+                failWithoutExecutorResult("executor handoff lost the boot token")
+                return
+            }
+
+            try {
+                val command = Message.obtain(null, AutoRootExecutorService.MSG_START_AUTO_ROOT).apply {
+                    data = Bundle().apply {
+                        putString(AutoRootExecutorService.EXTRA_BOOT_TOKEN, bootToken)
+                    }
+                }
+                Messenger(service).send(command)
+                executorConnected = true
+                handoffTimeoutJob?.cancel()
+                handoffTimeoutJob = null
+                updateNotification(getString(R.string.autoroot_preparing_exploit))
+                Log.i(TAG, "Auto Root executor connected and start command delivered")
+            } catch (error: Throwable) {
+                failWithoutExecutorResult(
+                    "unable to start connected executor: ${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+        }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            if (!shuttingDown) {
-                failWithoutExecutorResult("executor disconnected")
-            }
+            scheduleBindingLossFailure("executor disconnected")
         }
 
         override fun onBindingDied(name: ComponentName?) {
-            if (!shuttingDown) {
-                failWithoutExecutorResult("executor binding died")
-            }
+            scheduleBindingLossFailure("executor binding died")
         }
 
         override fun onNullBinding(name: ComponentName?) {
-            if (!shuttingDown) {
-                failWithoutExecutorResult("executor returned a null binding")
-            }
+            if (!shuttingDown) failWithoutExecutorResult("executor returned a null binding")
         }
     }
 
@@ -70,6 +100,21 @@ class AutoRootService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_EXECUTOR_RESULT) {
+            bindingLossJob?.cancel()
+            bindingLossJob = null
+            val removeNotification = intent.getBooleanExtra(EXTRA_REMOVE_NOTIFICATION, false)
+            val message = intent.getStringExtra(EXTRA_RESULT_MESSAGE)
+            if (removeNotification) {
+                stopWithoutResult()
+            } else {
+                finishWithResult(
+                    message ?: getString(R.string.autoroot_failed, "executor returned no result"),
+                )
+            }
+            return START_NOT_STICKY
+        }
+
         if (runJob?.isActive == true || executorBound) return START_NOT_STICKY
 
         val initial = buildNotification(getString(R.string.autoroot_stabilizing_android), ongoing = true)
@@ -91,10 +136,15 @@ class AutoRootService : Service() {
 
     override fun onDestroy() {
         shuttingDown = true
+        handoffTimeoutJob?.cancel()
+        handoffTimeoutJob = null
+        bindingLossJob?.cancel()
+        bindingLossJob = null
         if (executorBound) {
             runCatching { unbindService(executorConnection) }
             executorBound = false
         }
+        pendingBootToken = null
         scope.cancel()
         stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
@@ -128,15 +178,6 @@ class AutoRootService : Service() {
                 return
             }
 
-            // Consume the once-per-kernel-boot automatic attempt well before the
-            // exploit. The only remaining gate is monotonic boot uptime.
-            require(AutoRootSupport.claimAttempt(this, initialBootToken)) {
-                getString(R.string.autoroot_already_attempted)
-            }
-
-            // Receiving BOOT_COMPLETED is already the readiness contract. A second
-            // `getprop sys.boot_completed` ProcessBuilder was redundant and, because
-            // readText() is blocking, could hang forever despite a coroutine timeout.
             if (isExactCzg3(DeviceSnapshot.current())) {
                 DiagnosticUptime.waitUntil(AppPreferences.czg3BootMinUptimeSeconds(this))
             } else {
@@ -158,9 +199,18 @@ class AutoRootService : Service() {
                 return
             }
 
+            updateNotification(getString(R.string.autoroot_checking_firmware))
+
+            // Consume the once-per-boot attempt only when execution is actually
+            // ready to hand off. A killed gate during the stabilization wait no
+            // longer burns the only automatic attempt for the boot.
+            require(AutoRootSupport.claimAttempt(this, bootToken)) {
+                getString(R.string.autoroot_already_attempted)
+            }
+
+            pendingBootToken = bootToken
             val executorIntent = Intent(this, AutoRootExecutorService::class.java)
                 .setAction(AutoRootExecutorService.ACTION_RUN_AUTO_ROOT)
-                .putExtra(AutoRootExecutorService.EXTRA_BOOT_TOKEN, bootToken)
             val bindFlags = Context.BIND_AUTO_CREATE or
                 Context.BIND_IMPORTANT or
                 Context.BIND_ABOVE_CLIENT
@@ -168,6 +218,17 @@ class AutoRootService : Service() {
                 "Unable to bind fresh Auto Root executor"
             }
             executorBound = true
+
+            // bindService(true) only means the bind request was accepted. It does
+            // not prove that :autoroot_exec exists or onServiceConnected ran.
+            handoffTimeoutJob = scope.launch {
+                delay(EXECUTOR_CONNECT_TIMEOUT_MILLIS)
+                if (!executorConnected && !shuttingDown) {
+                    failWithoutExecutorResult(
+                        "fresh Auto Root executor did not connect within ${EXECUTOR_CONNECT_TIMEOUT_MILLIS / 1_000}s",
+                    )
+                }
+            }
         } catch (error: Throwable) {
             if (!scope.isActive) return
             val detail = error.message ?: error.javaClass.simpleName
@@ -179,11 +240,18 @@ class AutoRootService : Service() {
         }
     }
 
-    /**
-     * Gate failures happen before the exploit executor owns a History entry.
-     * Persist one terminal record only after such a failure. This never performs
-     * History I/O while the exploit race is active.
-     */
+    private fun scheduleBindingLossFailure(detail: String) {
+        if (shuttingDown) return
+        bindingLossJob?.cancel()
+        bindingLossJob = scope.launch {
+            // A normally finishing bound service can disconnect immediately before
+            // its terminal result intent is delivered. Give that result a brief
+            // ordering window before classifying the executor as lost.
+            delay(EXECUTOR_RESULT_GRACE_MILLIS)
+            if (!shuttingDown) failWithoutExecutorResult(detail)
+        }
+    }
+
     private fun recordGateFailure(detail: String, bootToken: String? = AutoRootSupport.currentBootToken()) {
         runCatching {
             val now = System.currentTimeMillis()
@@ -208,12 +276,21 @@ class AutoRootService : Service() {
 
     private fun failWithoutExecutorResult(detail: String) {
         if (shuttingDown) return
-        shuttingDown = true
+        Log.e(TAG, "Auto Root executor handoff failed: $detail")
         recordGateFailure(detail)
         finishWithResult(getString(R.string.autoroot_failed, detail))
     }
 
+    private fun updateNotification(message: String) {
+        getSystemService(NotificationManager::class.java).notify(
+            AUTO_ROOT_NOTIFICATION_ID,
+            buildNotification(message, ongoing = true),
+        )
+    }
+
     private fun finishWithResult(message: String) {
+        if (shuttingDown) return
+        shuttingDown = true
         getSystemService(NotificationManager::class.java).notify(
             AUTO_ROOT_NOTIFICATION_ID,
             buildNotification(message, ongoing = false),
@@ -223,6 +300,9 @@ class AutoRootService : Service() {
     }
 
     private fun stopWithoutResult() {
+        if (shuttingDown) return
+        shuttingDown = true
+        getSystemService(NotificationManager::class.java).cancel(AUTO_ROOT_NOTIFICATION_ID)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -270,8 +350,14 @@ class AutoRootService : Service() {
     }
 
     companion object {
+        const val ACTION_EXECUTOR_RESULT = "dev.busung.s25uroot.action.AUTO_ROOT_EXECUTOR_RESULT"
+        const val EXTRA_RESULT_MESSAGE = "executor_result_message"
+        const val EXTRA_REMOVE_NOTIFICATION = "executor_remove_notification"
+
         private const val TAG = "RootMyGalaxyAutoRootGate"
         private const val LEGACY_STABILIZATION_DELAY_MILLIS = 45_000L
+        private const val EXECUTOR_CONNECT_TIMEOUT_MILLIS = 10_000L
+        private const val EXECUTOR_RESULT_GRACE_MILLIS = 1_500L
         private const val MAX_GATE_WAKELOCK_MILLIS = 10 * 60 * 1_000L
     }
 }
