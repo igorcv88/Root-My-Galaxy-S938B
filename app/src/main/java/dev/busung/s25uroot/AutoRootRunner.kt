@@ -4,13 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import java.io.File
 import java.io.InputStream
-import java.security.MessageDigest
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -28,60 +22,33 @@ internal class AutoRootRunner(
     private val useShizuku: Boolean,
     private val onStage: (AutoRootStage) -> Unit,
     private val onLog: (String) -> Unit = {},
-    private val onDiagnostic: (ExploitDiagnosticSnapshot) -> Unit = {},
-    private val onSupervisorAttempt: (Int, Long) -> Unit = { _, _ -> },
 ) {
-    suspend fun run(payloads: VerifiedPayloads, bootToken: String, runId: String) {
-        val runnerInvokedAt = SystemClock.elapsedRealtime()
-        val runnerInvocationContext = AndroidRunContext.snapshot(
-            context,
-            "autoroot_runner_invocation",
-            runnerInvokedAt,
-        )
-        require(!useShizuku) { "Auto Root is standalone-only" }
-        val requestShizukuRunning = false
-        val requestShizukuGranted = false
+    suspend fun run(payloads: VerifiedPayloads, bootToken: String) {
+        if (useShizuku) {
+            require(ShizukuController.isRunning() && ShizukuController.isGranted()) {
+                context.getString(R.string.error_shizuku_unavailable)
+            }
+        }
 
         onStage(AutoRootStage.PreparingExploit)
         onLog("[*] profile=${payloads.profile.profileId} transport=${if (useShizuku) "shizuku" else "standalone"}")
-        onLog("[*] boot_id=$bootToken")
-        onLog("[*] exploit_sha256=${payloads.exploit.sha256()}")
-        onLog("[*] helper_sha256=${nativeHelperFile().sha256()}")
-        onLog(runnerInvocationContext)
 
         onStage(AutoRootStage.RunningExploit)
-        executeExploit(
-            payloads,
-            bootToken,
-            runId,
-            runnerInvokedAt,
-            requestShizukuRunning,
-            requestShizukuGranted,
-        )
+        executeExploit(payloads.exploit, bootToken)
 
         onStage(AutoRootStage.LoadingKernelSu)
         stageKernelSu(payloads)
 
         onStage(AutoRootStage.VerifyingRoot)
         val lateLoad = runHelper("--late-load")
-        if (lateLoad.code != 0) throw ExploitRunException(
-            ExploitFailureClass.KernelSuVerification,
-            ExploitSafety.DoNotRetry,
-            context.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output),
-        )
+        require(lateLoad.code == 0) {
+            context.getString(R.string.error_ksu_verify, lateLoad.code, lateLoad.output)
+        }
         if (lateLoad.output.isNotBlank()) onLog(lateLoad.output)
         onLog(context.getString(R.string.log_ksu_control_verified))
     }
 
-    private suspend fun executeExploit(
-        payloads: VerifiedPayloads,
-        bootToken: String,
-        runId: String,
-        requestedAtUptimeMillis: Long,
-        requestShizukuRunning: Boolean,
-        requestShizukuGranted: Boolean,
-    ) {
-        val payload = payloads.exploit
+    private suspend fun executeExploit(payload: File, bootToken: String) {
         val logFile = if (useShizuku) File(SHIZUKU_LOG_PATH) else File(context.filesDir, "autoroot-exploit.log")
         if (useShizuku) {
             ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
@@ -94,266 +61,81 @@ internal class AutoRootRunner(
             require(helper.canExecute()) { context.getString(R.string.error_helper_unavailable) }
         }
 
-        val stagedPayload = if (useShizuku) {
-            shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
-        } else {
-            payload
-        }
-        val transport = if (useShizuku) "shizuku" else "standalone"
-        val externalObserverMode = payloads.profile.profileId == CZG3_PROFILE_ID
-        val minimumUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
-            AppPreferences.czg3BootMinUptimeSeconds(context)
-        } else {
-            null
-        }
-
-        // Match the successful manual standalone path: the Android side owns the
-        // minimum-uptime wait, and neither the helper nor External Observer exists
-        // during that boot allocator quiet window. RMG_BOOT_MIN_UPTIME_SEC remains
-        // in the payload environment as a fail-safe against an early Android-side
-        // release, but a normal CZG3 Auto Root launch should now enter the payload
-        // at or after the selected gate with payload_wait_ms=0.
-        val launchWindow = ExploitRunControl.waitForLaunchWindow(
-            requestedAtUptimeMillis,
-            minimumUptimeSeconds,
-        )
-        val releaseUptimeMillis = SystemClock.elapsedRealtime()
-        onLog(
-            ExploitRunControl.contextRecord(
-                AndroidRunContext.snapshot(context, "autoroot_root_request", releaseUptimeMillis),
-                InvocationMode.AutoRoot,
-                minimumUptimeSeconds,
-                launchWindow.waited,
-                launchWindow.actualWaitMillis,
-                requestShizukuRunning,
-                requestShizukuGranted,
-                transport,
-            ),
-        )
-
-        // The observer is intentionally created after the boot gate but before the
-        // helper. Keep its setup time out of process-spawn and attempt elapsed
-        // accounting so diagnostics measure the exploit process itself.
-        val observer = if (externalObserverMode) {
-            ExploitObserverSession.start(
-                context = context,
-                runId = runId,
-                invocationMode = InvocationMode.AutoRoot,
-                transport = transport,
-                payloadLog = if (useShizuku) null else logFile,
+        val process = if (useShizuku) {
+            val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+            ShizukuController.exec(
+                arrayOf("/system/bin/sh", "-c", "true"),
+                shizukuEnvironment(bootToken, stagedPayload.absolutePath, helper.absolutePath),
             )
         } else {
-            null
-        }
-        val observerChildSnapshot = if (externalObserverMode && !useShizuku) {
-            ExploitObserverChildLocator.snapshotCurrentThread()
-        } else {
-            null
-        }
-        val spawnUptimeMillis = SystemClock.elapsedRealtime()
-        onLog(
-            ExploitRunControl.contextRecord(
-                AndroidRunContext.snapshot(context, "payload_launch", spawnUptimeMillis),
-                InvocationMode.AutoRoot,
-                minimumUptimeSeconds,
-                launchWindow.waited,
-                launchWindow.actualWaitMillis,
-                false,
-                false,
-                transport,
-            ),
-        )
-        onLog(
-            "RMG_AUTOROOT_GATE_V1|request_uptime_ms=$requestedAtUptimeMillis|" +
-                "release_uptime_ms=${launchWindow.releasedAtUptimeMillis}|" +
-                "pre_spawn_uptime_ms=$spawnUptimeMillis|wait_ms=${launchWindow.actualWaitMillis}|" +
-                "observer_start=post_gate|payload_gate=fail_safe",
-        )
-        val environment = ExploitRunControl.environment(
-            ExploitEnvironmentRequest(
-                InvocationMode.AutoRoot,
-                minimumUptimeSeconds,
-                launchWindow,
-                spawnUptimeMillis,
-                runId,
-                cachedP0Offset(bootToken),
-            ),
-        )
-        val process = try {
-            observer?.let {
-                onLog(
-                    "RMG_OBSERVER_V2|event=controller_start|available=${it.available}|" +
-                        "transport=$transport|scope=${if (useShizuku) "system_remote_markers" else "process_tree_system"}",
-                )
+            val processBuilder = ProcessBuilder(
+                helper.absolutePath,
+                "--run-payload",
+                payload.absolutePath,
+                helper.absolutePath,
+                logFile.absolutePath,
+            ).redirectErrorStream(true)
+            processBuilder.environment().apply {
+                put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
+                put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
+                put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
+                cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
             }
-            ExploitRunControl.start(
-                useShizuku = useShizuku,
-                helper = helper,
-                payload = payload,
-                logFile = logFile,
-                environmentVariables = environment,
-                shizukuPayloadPath = stagedPayload.absolutePath,
-            )
-        } catch (error: Throwable) {
-            stopObserver(observer)
-            throw error
-        }
-        val diagnosticElapsedStartUptimeMillis = SystemClock.elapsedRealtime()
-        if (observerChildSnapshot != null) {
-            val localPid = ExploitObserverChildLocator.findSingleNewChild(observerChildSnapshot)
-            val attached = localPid?.let { observer?.attachPid(it) } ?: false
-            onLog(
-                "RMG_OBSERVER_V2|event=controller_attach|attached=$attached|" +
-                    "target_pid=${localPid ?: -1}",
-            )
+            processBuilder.start()
         }
 
-        val output = ProcessOutputCollector(process)
-        val incrementalLog = if (externalObserverMode && !useShizuku) {
-            IncrementalFileLogReader(logFile)
-        } else {
-            null
-        }
+        val captured = StringBuilder()
         val readLog: () -> String = if (useShizuku) {
-            { output.snapshot() + readShizukuLog() }
+            { drainProcessOutput(process, captured) }
         } else {
-            { output.snapshot(); incrementalLog?.snapshot() ?: logFile.readTextIfPresent() }
-        }
-        var publishedLog = ""
-        var consumedDiagnosticCharacters = 0
-        var consumedObserverCharacters = 0
-        var supervisorAttempt: Int? = null
-        var diagnosticSnapshot: ExploitDiagnosticSnapshot? = null
-        fun publishNewLog(rawLog: String, terminal: Boolean = false) {
-            val clean = stripAnsi(rawLog).trim()
-            if ((!externalObserverMode || terminal) && clean.isNotBlank() && clean != publishedLog) {
-                val addition = if (clean.startsWith(publishedLog)) {
-                    clean.substring(publishedLog.length).trim()
-                } else {
-                    clean
-                }
-                if (addition.isNotBlank()) onLog(addition)
-                publishedLog = clean
-            }
-
-            // Human-readable Shizuku output is a composite of stdout and the
-            // helper log file. That composite is not append-only because stdout
-            // grows in front of already-read file content. Machine diagnostics
-            // therefore consume only the authoritative append-only stdout stream
-            // under Shizuku; standalone mode consumes the payload log file.
-            val diagnosticLog = if (useShizuku) output.snapshot() else rawLog
-            if (externalObserverMode && useShizuku) {
-                val markerBatch = ExploitObserverMarkerParser.parseNewLines(
-                    diagnosticLog,
-                    consumedObserverCharacters,
-                    includeTrailingLine = !process.isAlive,
-                )
-                consumedObserverCharacters = markerBatch.consumedCharacters
-                markerBatch.lines.forEach { observer?.signalMarker(it) }
-            }
-            val parsed = SupervisorAttemptParser.parseNewEvents(
-                diagnosticLog,
-                consumedDiagnosticCharacters,
-                supervisorAttempt,
-                includeTrailingLine = !process.isAlive,
-            )
-            consumedDiagnosticCharacters = parsed.consumedCharacters
-            val previousSupervisorAttempt = supervisorAttempt
-            supervisorAttempt = parsed.supervisorAttempt
-            supervisorAttempt?.let { attempt ->
-                if (attempt != previousSupervisorAttempt) {
-                    onSupervisorAttempt(
-                        attempt,
-                        (SystemClock.elapsedRealtime() - diagnosticElapsedStartUptimeMillis)
-                            .coerceAtLeast(0L),
-                    )
-                }
-            }
-            parsed.events.forEach { (event, eventSupervisorAttempt) ->
-                val updated = (diagnosticSnapshot ?: ExploitDiagnosticSnapshot(runId)).apply(event)
-                    .withSupervisorAttempt(eventSupervisorAttempt)
-                diagnosticSnapshot = updated
-                onDiagnostic(updated)
-            }
+            { drainProcessOutput(process, captured); logFile.readTextIfPresent() }
         }
 
         try {
-            val startedAt = diagnosticElapsedStartUptimeMillis
-            val watchdogStartsAt = startedAt
-            var lastProgressAt = watchdogStartsAt
+            val startedAt = SystemClock.elapsedRealtime()
+            var lastProgressAt = startedAt
             var lastRawLog = ""
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
-                    if (!externalObserverMode) cacheP0Offset(bootToken, rawLog)
-                    publishNewLog(rawLog)
+                    cacheP0Offset(bootToken, rawLog)
+                    publishExploitLog(rawLog)
                     lastRawLog = rawLog
-                    lastProgressAt = maxOf(SystemClock.elapsedRealtime(), watchdogStartsAt)
+                    lastProgressAt = SystemClock.elapsedRealtime()
                 }
                 val now = SystemClock.elapsedRealtime()
-                if (now >= watchdogStartsAt) {
-                    require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
-                        context.getString(R.string.error_exploit_stalled)
-                    }
-                    require(now - watchdogStartsAt < EXPLOIT_TOTAL_MILLIS) {
-                        context.getString(R.string.error_exploit_timeout)
-                    }
+                require(now - lastProgressAt < EXPLOIT_STALL_MILLIS) {
+                    context.getString(R.string.error_exploit_stalled)
                 }
-                delay(
-                    if (useShizuku || externalObserverMode) {
-                        SHIZUKU_LOG_POLL_INTERVAL
-                    } else {
-                        LOG_POLL_INTERVAL
-                    },
-                )
+                require(now - startedAt < EXPLOIT_TOTAL_MILLIS) {
+                    context.getString(R.string.error_exploit_timeout)
+                }
+                delay(if (useShizuku) SHIZUKU_LOG_POLL_INTERVAL else LOG_POLL_INTERVAL)
             }
 
             val exitCode = process.waitFor()
-            output.awaitCompletion()
             val rawLog = readLog()
             cacheP0Offset(bootToken, rawLog)
-            publishNewLog(rawLog, terminal = true)
-            onLog("[*] stage=RunningExploit exit_code=$exitCode elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}")
-            validateTerminalExploit(
-                diagnosticSnapshot,
-                exitCode,
-                rawLog,
-                payloads.profile.profileId == CZG3_PROFILE_ID,
-            )
+            publishExploitLog(rawLog)
+            val earlyOutput = captured.toString().trim()
+            require(exitCode == 0) {
+                context.getString(
+                    R.string.error_payload_exit,
+                    exitCode,
+                    earlyOutput.takeIf(String::isNotBlank)?.let { " ($it)" } ?: "",
+                )
+            }
+            require(rawLog.contains("exploit completed") && rawLog.contains("done=1 root=1")) {
+                context.getString(R.string.error_success_marker)
+            }
         } finally {
-            withContext(NonCancellable) {
-                incrementalLog?.close()
-                if (process.isAlive) {
-                    process.destroy()
-                    delay(500.milliseconds)
-                    if (process.isAlive) process.destroyForcibly()
-                }
-                output.awaitCompletion()
-                stopObserver(observer)
+            if (process.isAlive) {
+                process.destroy()
+                delay(500.milliseconds)
+                if (process.isAlive) process.destroyForcibly()
             }
         }
-        currentCoroutineContext().ensureActive()
         onLog(context.getString(R.string.log_bootstrap_root))
-    }
-
-    private suspend fun stopObserver(observer: ExploitObserverSession?) {
-        if (observer == null) return
-        val report = try {
-            withContext(NonCancellable) { observer.stopAndCollect() }
-        } catch (error: Throwable) {
-            if (error is CancellationException) throw error
-            onLog(
-                "RMG_OBSERVER_V2|event=controller_error|message=" +
-                    (error.message ?: error.javaClass.simpleName),
-            )
-            return
-        }
-        currentCoroutineContext().ensureActive()
-        onLog(
-            "RMG_OBSERVER_V2|event=controller_stop|available=${report.available}|" +
-                "target_pid=${report.targetPid ?: -1}",
-        )
-        if (report.text.isNotBlank()) onLog(report.text.trimEnd())
     }
 
     private suspend fun stageKernelSu(payloads: VerifiedPayloads) {
@@ -367,11 +149,7 @@ internal class AutoRootRunner(
                     "/system/bin/cp $source $SHIZUKU_KSUD_STAGE_PATH && " +
                     "/system/bin/chmod 755 $SHIZUKU_KSUD_PATH $SHIZUKU_KSUD_STAGE_PATH"
             val stage = runHelper("-c", stageCommand)
-            if (stage.code != 0) throw ExploitRunException(
-                ExploitFailureClass.KernelSuStaging,
-                ExploitSafety.DoNotRetry,
-                context.getString(R.string.error_ksu_stage, stage.output),
-            )
+            require(stage.code == 0) { context.getString(R.string.error_ksu_stage, stage.output) }
         }
         onLog(context.getString(R.string.log_ksu_staged))
     }
@@ -398,6 +176,19 @@ internal class AutoRootRunner(
         }
         return staged
     }
+
+    private fun shizukuEnvironment(
+        bootToken: String,
+        payloadPath: String,
+        helperPath: String,
+    ): Array<String> = buildList {
+        add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
+        add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
+        add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
+        add("CVE43499_ROOT_HELPER=$helperPath")
+        add("LD_PRELOAD=$payloadPath")
+        cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
+    }.toTypedArray()
 
     private suspend fun runHelper(vararg arguments: String): AutoRootCommandResult {
         val helper = helperFile()
@@ -443,11 +234,6 @@ internal class AutoRootRunner(
         }
     }
 
-    private fun readShizukuLog(): String = runCatching {
-        val log = ShizukuController.exec(arrayOf("/system/bin/cat", SHIZUKU_LOG_PATH))
-        log.inputStream.bufferedReader().use { it.readText() }.also { log.waitFor() }
-    }.getOrDefault("")
-
     private fun drainStream(stream: InputStream, buffer: StringBuilder) {
         val data = ByteArray(4096)
         while (stream.available() > 0) {
@@ -455,6 +241,11 @@ internal class AutoRootRunner(
             if (count <= 0) break
             buffer.append(String(data, 0, count, Charsets.UTF_8))
         }
+    }
+
+    private fun publishExploitLog(rawLog: String) {
+        val clean = stripAnsi(rawLog).trim()
+        if (clean.isNotBlank()) onLog(clean)
     }
 
     private fun cachedP0Offset(bootToken: String): String? {
@@ -482,48 +273,17 @@ internal class AutoRootRunner(
 
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
 
-    private fun File.sha256(): String = inputStream().use { input ->
-        val digest = MessageDigest.getInstance("SHA-256")
-        val data = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            val count = input.read(data)
-            if (count < 0) break
-            digest.update(data, 0, count)
-        }
-        digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    /** Drains both remote pipes continuously; `available()` can miss their final bytes. */
-    private class ProcessOutputCollector(process: Process) {
-        private val buffer = StringBuilder()
-        private val readers = listOf(process.inputStream, process.errorStream).mapIndexed { index, stream ->
-            Thread({
-                runCatching {
-                    val data = ByteArray(4096)
-                    while (true) {
-                        val count = stream.read(data)
-                        if (count < 0) break
-                        synchronized(buffer) { buffer.append(String(data, 0, count, Charsets.UTF_8)) }
-                    }
-                }
-            }, "autoroot-output-$index").apply { start() }
-        }
-
-        fun snapshot(): String = synchronized(buffer) { buffer.toString() }
-
-        fun awaitCompletion() = readers.forEach { reader ->
-            runCatching { reader.join(2_000) }
-        }
-    }
-
     companion object {
+        private const val EXPLOIT_ATTEMPTS = "24"
+        private const val P0_ATTEMPT_TIMEOUT_SEC = "45"
+        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "120"
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
         private const val P0_CACHE = "p0_cache"
         private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"
         private const val P0_CACHE_OFFSET = "offset"
-        private const val CZG3_PROFILE_ID = "pa3q-S938BXXSBCZG3"
+        private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
         private const val P0_OFFSET_MAX = 0x1f0000L
         private const val P0_OFFSET_MASK = 0xffffL
         private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"

@@ -6,17 +6,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.io.PrintWriter
-import java.io.StringWriter
-import java.time.Instant
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,134 +19,45 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
 
 class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
-    private var watchdogJob: Job? = null
-    private var serviceStartedAtUptimeMillis: Long = -1
-    private var serviceStartedContext: String? = null
-    private var boundCzg3Mode = false
-
-    @Volatile
-    private var watchdogExpired = false
 
     override fun onCreate() {
         super.onCreate()
-        serviceStartedAtUptimeMillis = SystemClock.elapsedRealtime()
-        serviceStartedContext = AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis)
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startExecution(startAsForeground = true)
+        if (runJob?.isActive == true) return START_NOT_STICKY
+
+        val initial = buildNotification(getString(R.string.autoroot_waiting_android), ongoing = true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                AUTO_ROOT_NOTIFICATION_ID,
+                initial,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
+        }
+
+        runJob = scope.launch { runAutoRoot() }
         return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        if (intent?.action != ACTION_RUN_BOUND_CZG3) return null
-        boundCzg3Mode = true
-        startExecution(startAsForeground = false)
-        return Binder()
-    }
-
-    private fun startExecution(startAsForeground: Boolean) {
-        if (runJob?.isActive == true) return
-
-        // Non-CZG3 targets still arrive through the boot receiver's immediate FGS
-        // start. Exact CZG3 arrives through a fresh bound process while the gate
-        // service remains the sole FGS, avoiding a delayed second-FGS launch after
-        // the BOOT_COMPLETED exemption has expired.
-        if (startAsForeground) {
-            val initial = buildNotification(getString(R.string.autoroot_checking_firmware), ongoing = true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    AUTO_ROOT_NOTIFICATION_ID,
-                    initial,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
-            }
-        } else {
-            updateNotification(getString(R.string.autoroot_checking_firmware))
-        }
-
-        watchdogExpired = false
-        runJob = scope.launch {
-            try {
-                runAutoRoot()
-            } finally {
-                if (!watchdogExpired) watchdogJob?.cancel()
-                watchdogJob = null
-            }
-        }
-        watchdogJob = scope.launch {
-            delay(AUTO_ROOT_SERVICE_WATCHDOG_MILLIS)
-            if (runJob?.isActive == true) {
-                watchdogExpired = true
-                Log.e(TAG, "Auto Root service watchdog expired")
-                runJob?.cancel(CancellationException("Auto Root service watchdog expired"))
-                finishWithResult(
-                    getString(
-                        R.string.autoroot_failed,
-                        getString(R.string.autoroot_service_watchdog_timeout),
-                    ),
-                )
-            }
-        }
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        watchdogJob?.cancel()
-        watchdogJob = null
         scope.cancel()
         super.onDestroy()
     }
 
     private suspend fun runAutoRoot() {
-        val historyStore = InstallHistoryStore(this)
-        historyStore.recoverInterruptedRuns()
-        var historyEntry: InstallHistoryEntry? = null
-        var lastHistoryWriteAt = 0L
-        fun saveHistory(force: Boolean = false) {
-            val entry = historyEntry ?: return
-            val now = SystemClock.elapsedRealtime()
-            if (force || now - lastHistoryWriteAt >= HISTORY_CHECKPOINT_MILLIS) {
-                // Checkpoints must remain durable, but external observer
-                // normalization belongs to the terminal write only. Re-parsing a
-                // multi-megabyte trace at each checkpoint caused the post-root
-                // Staging/LateLoading/Verifying path to take minutes.
-                historyStore.saveCheckpoint(entry)
-                lastHistoryWriteAt = now
-            }
-        }
-        fun persist(line: String, force: Boolean = false) {
-            Log.i(TAG, line)
-            val entry = historyEntry ?: return
-            val timestamped = "${Instant.now()} $line"
-            val checkpoint = PreparationTelemetryParser.lastCheckpoint(line)
-            val updated = entry.copy(
-                log = (entry.log + "\n" + timestamped).trim(),
-                lastPrepCheckpoint = checkpoint?.let { "${it.scope}/${it.event}" }
-                    ?: entry.lastPrepCheckpoint,
-                lastPrepCheckpointUptimeMillis = checkpoint?.uptimeMillis
-                    ?: entry.lastPrepCheckpointUptimeMillis,
-            )
-            historyEntry = updated
-            saveHistory(force || checkpoint != null)
-        }
-        fun finishHistory(result: InstallRunResult, keepOpenForPostRootDiagnostics: Boolean = false) {
-            val entry = historyEntry ?: return
-            val completed = entry.copy(
-                completedAtMillis = System.currentTimeMillis(),
-                result = result,
-            )
-            val persisted = historyStore.saveTerminal(completed)
-            historyEntry = if (keepOpenForPostRootDiagnostics) persisted else null
-        }
         val initialBootToken = AutoRootSupport.currentBootToken()
         if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
             Log.i(TAG, "Auto Root skipped: kernel boot id is unchanged (soft/userspace reboot) or unverifiable")
@@ -180,17 +85,12 @@ class AutoRootService : Service() {
                 return
             }
 
-            // ACTION_BOOT_COMPLETED is the readiness gate for this service.
-            // CZG3 uses its explicit selected minimum uptime as the sole timing
-            // gate after boot completion. Keeping the legacy 45 s stabilization
-            // here would make a requested 120 s launch occur at 120 s on some
-            // boots and ~148 s on others depending on BOOT_COMPLETED.
-            if (shouldUseLegacyAutoRootStabilization(DeviceSnapshot.current())) {
-                updateNotification(getString(R.string.autoroot_stabilizing_android))
-                if (waitForStabilizationOrRoot(initialBootToken)) {
-                    finishWithResult(getString(R.string.autoroot_root_restored))
-                    return
-                }
+            require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
+            updateNotification(getString(R.string.autoroot_stabilizing_android))
+            if (isExactCzg3(DeviceSnapshot.current())) {
+                DiagnosticUptime.waitUntil(AppPreferences.czg3BootMinUptimeSeconds(this))
+            } else {
+                delay(LEGACY_STABILIZATION_DELAY_MILLIS)
             }
 
             if (!AppPreferences.autoRootEnabled(this)) {
@@ -211,48 +111,16 @@ class AutoRootService : Service() {
             updateNotification(getString(R.string.autoroot_checking_firmware))
             val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
 
-            // Auto Root is intentionally standalone-only. Shizuku is a manual
-            // transport and can still be racing its own post-boot initialization.
-            val useShizuku = false
-
             require(AutoRootSupport.claimAttempt(this, bootToken)) {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            historyEntry = historyStore.create(usedShizuku = false).copy(
-                profileId = payloads.profile.profileId,
-                usedShizuku = useShizuku,
-                payloadSha256 = payloads.profile.exploit.sha256,
-                payloadSize = payloads.profile.exploit.size,
-                invocationMode = InvocationMode.AutoRoot.wireValue,
-                selectedMinUptimeSeconds = if (payloads.profile.profileId == CZG3_PROFILE_ID) {
-                    AppPreferences.czg3BootMinUptimeSeconds(this)
-                } else {
-                    null
-                },
-            ).also(historyStore::saveCheckpoint)
-            // From this point the normal durable History entry owns recovery. The
-            // pre-History gate sentinel can be removed without losing reboot/crash
-            // attribution if the executor disappears later.
-            if (boundCzg3Mode) Czg3AutoRootGateState.clear(this)
-            persist(
-                serviceStartedContext
-                    ?: AndroidRunContext.snapshot(this, "autoroot_service_start", serviceStartedAtUptimeMillis),
-                force = true,
-            )
-            persist(
-                "[*] payload_mode=${if (BuildConfig.CZG3_DIAGNOSTIC_PAYLOAD) "diagnostic" else "production"} " +
-                    "sha256=${payloads.profile.exploit.sha256} size=${payloads.profile.exploit.size}",
-                force = true,
-            )
-            persist("[*] Auto Root transport policy=standalone")
-            persist("[*] Auto Root starting transport=standalone")
-            val externalObserverMode = payloads.profile.profileId == CZG3_PROFILE_ID
+            val useShizuku = ShizukuController.isRunning() && ShizukuController.isGranted()
+            Log.i(TAG, "Auto Root starting with ${if (useShizuku) "Shizuku" else "standalone"} transport")
             val runner = AutoRootRunner(
                 context = this,
                 useShizuku = useShizuku,
                 onStage = { stage ->
-                    persist("[*] stage=$stage")
                     val message = when (stage) {
                         AutoRootStage.PreparingExploit -> R.string.autoroot_preparing_exploit
                         AutoRootStage.RunningExploit -> R.string.autoroot_running_exploit
@@ -261,140 +129,60 @@ class AutoRootService : Service() {
                     }
                     updateNotification(getString(message))
                 },
-                onLog = { line -> persist(line) },
-                onSupervisorAttempt = { attempt, elapsedMillis ->
-                    historyEntry?.let { entry ->
-                        val timing = StageTiming(ExploitStage.AttemptingRace, elapsedMillis, attempt)
-                        historyEntry = entry.copy(
-                            stage = ExploitStage.AttemptingRace,
-                            attemptCount = maxOf(entry.attemptCount, attempt),
-                            exploitElapsedMillis = maxOf(entry.exploitElapsedMillis ?: 0L, elapsedMillis),
-                            stageTimings = if (entry.stageTimings.lastOrNull() == timing) {
-                                entry.stageTimings
-                            } else {
-                                entry.stageTimings + timing
-                            },
-                        )
-                        if (!externalObserverMode) {
-                            saveHistory(true)
-                            updateNotification(ExploitStage.AttemptingRace.userLabel(attempt, elapsedMillis))
-                        }
-                    }
-                },
-                onDiagnostic = { diagnostic ->
-                    historyEntry?.let { entry ->
-                        val timing = StageTiming(diagnostic.stage, diagnostic.elapsedMillis, diagnostic.attempt)
-                        historyEntry = entry.copy(
-                            stage = diagnostic.stage,
-                            attemptCount = maxOf(entry.attemptCount, diagnostic.attempt ?: 0),
-                            exploitElapsedMillis = diagnostic.elapsedMillis,
-                            failureClass = diagnostic.failureClass,
-                            safety = diagnostic.safety,
-                            outcome = diagnostic.outcome,
-                            stageTimings = if (entry.stageTimings.lastOrNull() == timing) entry.stageTimings else entry.stageTimings + timing,
-                        )
-                        if (!externalObserverMode) {
-                            saveHistory(diagnostic.outcome != null)
-                            updateNotification(diagnostic.stage.userLabel(diagnostic.attempt, diagnostic.elapsedMillis))
-                        }
-                    }
-                },
+                onLog = { line -> Log.i(TAG, line) },
             )
-            persist(AndroidRunContext.snapshot(this, "autoroot_runner_dispatch"), force = true)
-            runner.run(payloads, bootToken, requireNotNull(historyEntry).id)
+            runner.run(payloads, bootToken)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
-            persist("[+] Auto Root completed")
-            val softReboot = AppPreferences.softRebootAfterRoot(this)
-
-            if (softReboot) {
-                persist("[*] KernelSU soft reboot requested", force = true)
-                // Mark the root run successful before userspace can disappear, but
-                // keep the normalized in-memory entry available so a failed/no-op
-                // reboot is appended to the same History record instead of
-                // vanishing in Logcat or forcing another full telemetry parse.
-                finishHistory(InstallRunResult.Succeeded, keepOpenForPostRootDiagnostics = true)
+            if (AppPreferences.softRebootAfterRoot(this)) {
                 updateNotification(getString(R.string.soft_reboot_starting))
-                val result = runCatching { KernelSuSoftReboot.request(this) }
-                    .getOrElse { error ->
-                        SoftRebootResult(false, error.message ?: error.javaClass.simpleName)
-                    }
-                if (result.started) {
-                    persist(
-                        "[+] KernelSU soft reboot acknowledged\n${result.detail}",
-                        force = true,
-                    )
-                    historyEntry = null
-                    Log.i(TAG, "KernelSU soft reboot started: ${result.detail}")
+                val reboot = KernelSuSoftReboot.request(this)
+                if (reboot.started) {
+                    Log.i(TAG, "KernelSU soft reboot started")
                     stopWithoutResult()
                     return
                 }
-                persist(
-                    "[-] KernelSU soft reboot was not started\n${result.detail}",
-                    force = true,
-                )
-                historyEntry = null
-                Log.w(TAG, "KernelSU soft reboot was not started: ${result.detail}")
-            } else {
-                finishHistory(InstallRunResult.Succeeded)
+                Log.w(TAG, "KernelSU soft reboot was not started: ${reboot.detail}")
+                finishWithResult(getString(R.string.soft_reboot_failed, reboot.detail.take(160)))
+                return
             }
             finishWithResult(getString(R.string.autoroot_root_restored))
-        } catch (error: CancellationException) {
-            persist("[-] Auto Root cancelled: ${error.message ?: "cancelled"}", force = true)
-            finishHistory(InstallRunResult.Failed)
-            throw error
         } catch (error: Throwable) {
+            if (!scope.isActive) return
             val detail = error.message ?: error.javaClass.simpleName
-            if (error is ExploitRunException) {
-                historyEntry = historyEntry?.copy(failureClass = error.failureClass, safety = error.safety, outcome = ExploitOutcome.Failed)
-            }
             Log.e(TAG, "Auto Root failed", error)
-            val trace = StringWriter().also { error.printStackTrace(PrintWriter(it)) }.toString()
-            persist("[-] Auto Root failed\n$trace", force = true)
-            finishHistory(InstallRunResult.Failed)
-            finishWithResult(getString(R.string.autoroot_failed, detail.take(160)))
+            finishWithResult(getString(R.string.autoroot_failed, detail))
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
         }
     }
 
-    /**
-     * Keep the existing conservative stabilization window for non-CZG3 targets,
-     * but stop waiting if KernelSU becomes active during it.
-     */
-    private suspend fun waitForStabilizationOrRoot(bootToken: String): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + STABILIZATION_DELAY_MILLIS
-        while (scope.isActive && SystemClock.elapsedRealtime() < deadline) {
-            if (NativeProbe.isKernelSuActive()) {
-                AutoRootSupport.markVerifiedForBoot(this, bootToken)
-                return true
+    private suspend fun waitForAndroidReady(): Boolean =
+        withTimeoutOrNull(BOOT_COMPLETED_TIMEOUT_MILLIS) {
+            while (scope.isActive && readBootCompletedProperty() != "1") {
+                delay(BOOT_PROPERTY_POLL_MILLIS)
             }
-            val remaining = deadline - SystemClock.elapsedRealtime()
-            if (remaining > 0) delay(minOf(STABILIZATION_POLL_MILLIS, remaining))
-        }
-        return false
-    }
+            scope.isActive
+        } == true
+
+    private fun readBootCompletedProperty(): String = runCatching {
+        val process = ProcessBuilder("/system/bin/getprop", "sys.boot_completed")
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        process.waitFor()
+        output
+    }.getOrDefault("")
 
     private fun updateNotification(message: String) {
         getSystemService(NotificationManager::class.java).notify(
-            if (boundCzg3Mode) CZG3_AUTO_ROOT_GATE_NOTIFICATION_ID else AUTO_ROOT_NOTIFICATION_ID,
+            AUTO_ROOT_NOTIFICATION_ID,
             buildNotification(message, ongoing = true),
         )
     }
 
     private fun finishWithResult(message: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        if (boundCzg3Mode) {
-            Czg3AutoRootGateState.clear(this)
-            manager.notify(
-                AUTO_ROOT_NOTIFICATION_ID,
-                buildNotification(message, ongoing = false),
-            )
-            stopService(Intent(this, Czg3AutoRootGateService::class.java))
-            stopSelf()
-            return
-        }
-        manager.notify(
+        getSystemService(NotificationManager::class.java).notify(
             AUTO_ROOT_NOTIFICATION_ID,
             buildNotification(message, ongoing = false),
         )
@@ -403,12 +191,6 @@ class AutoRootService : Service() {
     }
 
     private fun stopWithoutResult() {
-        if (boundCzg3Mode) {
-            Czg3AutoRootGateState.clear(this)
-            stopService(Intent(this, Czg3AutoRootGateService::class.java))
-            stopSelf()
-            return
-        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -456,15 +238,11 @@ class AutoRootService : Service() {
     }
 
     companion object {
-        const val ACTION_RUN_BOUND_CZG3 = "dev.busung.s25uroot.action.RUN_BOUND_CZG3_AUTO_ROOT"
-
         private const val TAG = "RootMyGalaxyAutoRoot"
         private const val CHANNEL_ID = "auto_root_postboot"
-        private const val STABILIZATION_DELAY_MILLIS = 45_000L
-        private const val STABILIZATION_POLL_MILLIS = 5_000L
-        private const val AUTO_ROOT_SERVICE_WATCHDOG_MILLIS = 25 * 60 * 1_000L
-        private const val MAX_WAKELOCK_MILLIS = AUTO_ROOT_SERVICE_WATCHDOG_MILLIS
-        private const val HISTORY_CHECKPOINT_MILLIS = 2_000L
-        private const val CZG3_PROFILE_ID = "pa3q-S938BXXSBCZG3"
+        private const val LEGACY_STABILIZATION_DELAY_MILLIS = 45_000L
+        private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
+        private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
+        private const val MAX_WAKELOCK_MILLIS = 20 * 60 * 1_000L
     }
 }

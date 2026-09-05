@@ -36,8 +36,8 @@ object AppPreferences {
     private const val SHIZUKU_MODE = "shizuku_mode"
     private const val AUTO_ROOT_ENABLED = "auto_root_enabled"
     private const val SOFT_REBOOT_AFTER_ROOT = "soft_reboot_after_root"
-    private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
     private const val CZG3_BOOT_MIN_UPTIME_SEC = "czg3_boot_min_uptime_sec"
+    private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
         prefs(context).getString(ACCENT_COLOR, null),

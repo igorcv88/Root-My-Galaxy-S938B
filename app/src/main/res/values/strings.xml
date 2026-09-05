@@ -166,18 +166,6 @@
     <string name="updater_up_to_date">You\'re up to date</string>
     <string name="updater_failed">Failed to check for updates</string>
     <string name="history_delete">Delete</string>
-    <string name="history_unexpected_reboot" translatable="false">Unexpected reboot during run</string>
-    <string name="copy_diagnostic" translatable="false">Copy diagnostic report</string>
-    <string name="diagnostic_copied" translatable="false">Diagnostic report copied</string>
-    <string name="diagnostic_boot_uptime_title" translatable="false">CZG3 diagnostic launch uptime</string>
-    <string name="diagnostic_boot_uptime_description" translatable="false">Developer experiment control for pa3q CZG3. The app waits before starting the payload process.</string>
-    <string name="diagnostic_uptime_default" translatable="false">Default (120 s)</string>
-    <string name="diagnostic_uptime_seconds" translatable="false">%1$d s</string>
-    <string name="diagnostic_statistics" translatable="false">Recent reliability</string>
-    <string name="diagnostic_success_rate" translatable="false">Success: %1$d/%2$d (%3$.1f%%)</string>
-    <string name="diagnostic_latency" translatable="false">Acquisition time: median %1$.1fs, P90 %2$.1fs</string>
-    <string name="diagnostic_attempts" translatable="false">Median race attempts: %1$.1f</string>
-    <string name="diagnostic_uptime_bucket" translatable="false">Uptime %1$s: %2$d/%3$d succeeded</string>
     <string name="history_select_all">Select all</string>
     <string name="history_clear_selection">Clear selection</string>
     <string name="history_delete_selected">Delete (%1$d)</string>
@@ -189,8 +177,4 @@
         <item quantity="one">This %1$d run and its log will be permanently removed.</item>
         <item quantity="other">These %1$d runs and their logs will be permanently removed.</item>
     </plurals>
-    <string name="autoroot_battery_optimization_required" translatable="false">Disable battery optimization for Root My Galaxy to enable Auto Root.</string>
-    <string name="history_save_selected">Save selected logs</string>
-    <string name="history_logs_saved">Saved %1$d logs</string>
-    <string name="history_logs_saved_partial">Saved %1$d of %2$d logs</string>
 </resources>

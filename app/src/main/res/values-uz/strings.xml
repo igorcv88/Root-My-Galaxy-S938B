@@ -175,7 +175,4 @@
         <item quantity="other">Bu jarayonlar va ularning jurnallari butunlay o\'chiriladi.</item>
     </plurals>
     <string name="history_delete">O\'chirish</string>
-    <string name="history_save_selected">Tanlangan jurnallarni saqlash</string>
-    <string name="history_logs_saved">%1$d ta jurnal saqlandi</string>
-    <string name="history_logs_saved_partial">%2$d ta jurnaldan %1$d tasi saqlandi</string>
 </resources>

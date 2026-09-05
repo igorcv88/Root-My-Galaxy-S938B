@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">루팅 후 소프트 재부팅</string>
-    <string name="soft_reboot_description">루팅 성공 후 Android 사용자 공간을 다시 시작하여 전체 커널 재부팅 없이 KernelSU 서비스와 모듈을 초기화합니다.</string>
-    <string name="soft_reboot_starting">KernelSU를 위해 Android 사용자 공간을 다시 시작하는 중</string>
-    <string name="soft_reboot_failed">소프트 재부팅을 시작하지 못했습니다: %1$s</string>
-</resources>

@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">Rootdan keyin yumshoq qayta ishga tushirish</string>
-    <string name="soft_reboot_description">Root muvaffaqiyatli olingandan so‘ng KernelSU xizmatlari va modullarini yadro to‘liq qayta yuklanmasdan ishga tushirish uchun Android foydalanuvchi muhitini qayta ishga tushiradi.</string>
-    <string name="soft_reboot_starting">KernelSU uchun Android foydalanuvchi muhiti qayta ishga tushirilmoqda</string>
-    <string name="soft_reboot_failed">Yumshoq qayta ishga tushirishni boshlab bo‘lmadi: %1$s</string>
-</resources>

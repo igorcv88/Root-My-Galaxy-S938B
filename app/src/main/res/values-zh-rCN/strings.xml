@@ -61,7 +61,4 @@
         <item quantity="other">这些运行记录及其日志将被永久删除。</item>
     </plurals>
     <string name="history_delete">删除</string>
-    <string name="history_save_selected">保存所选日志</string>
-    <string name="history_logs_saved">已保存 %1$d 个日志</string>
-    <string name="history_logs_saved_partial">已保存 %2$d 个日志中的 %1$d 个</string>
 </resources>

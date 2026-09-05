@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="soft_reboot_title">Reinicialização suave após o root</string>
-    <string name="soft_reboot_description">Reinicia o espaço de usuário do Android após obter root com sucesso para inicializar serviços e módulos do KernelSU sem reiniciar completamente o kernel.</string>
-    <string name="soft_reboot_starting">Reiniciando o espaço de usuário do Android para o KernelSU</string>
-    <string name="soft_reboot_failed">Não foi possível iniciar a reinicialização suave: %1$s</string>
-</resources>

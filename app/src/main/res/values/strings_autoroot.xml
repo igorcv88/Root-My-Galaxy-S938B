@@ -23,6 +23,5 @@
     <string name="autoroot_boot_changed">The kernel boot identifier changed while Auto Root was waiting.</string>
     <string name="autoroot_already_attempted">Auto Root has already attempted this boot. No automatic retry will be performed.</string>
     <string name="autoroot_notification_permission">Notification permission is required before Auto Root can be enabled.</string>
-    <string name="autoroot_service_watchdog_timeout" translatable="false">Auto Root exceeded its 25-minute safety limit.</string>
     <string name="autoroot_fgs_subtype" translatable="false">User-enabled automatic post-boot KernelSU restoration using a locally cached, cryptographically verified payload for an exact supported device firmware.</string>
 </resources>
