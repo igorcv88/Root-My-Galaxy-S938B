@@ -77,12 +77,7 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
-        val payloads = VerifiedPayloads(profile, exploit, kernelSu, PayloadSource.Online)
-        runCatching { KnownGoodPayloadStore.stageCandidate(context, payloads) }
-            .onFailure { error ->
-                onProgress("Offline cache candidate was not staged: ${error.message ?: error.javaClass.simpleName}")
-            }
-        return payloads
+        return VerifiedPayloads(profile, exploit, kernelSu, PayloadSource.Online)
     }
 
     private fun downloadArtifact(
