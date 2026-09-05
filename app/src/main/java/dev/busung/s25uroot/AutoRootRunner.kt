@@ -1,6 +1,7 @@
 package dev.busung.s25uroot
 
 import android.content.Context
+import android.os.Process
 import android.os.SystemClock
 import java.io.File
 import java.io.InputStream
@@ -65,6 +66,7 @@ internal class AutoRootRunner(
             require(helper.canExecute()) { context.getString(R.string.error_helper_unavailable) }
         }
 
+        var originalThreadPriority: Int? = null
         val process = if (useShizuku) {
             val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
             ShizukuController.exec(
@@ -83,9 +85,23 @@ internal class AutoRootRunner(
                 put("EXPLOIT_ATTEMPTS", EXPLOIT_ATTEMPTS)
                 put("P0_ATTEMPT_TIMEOUT_SEC", P0_ATTEMPT_TIMEOUT_SEC)
                 put("EXPLOIT_ATTEMPT_TIMEOUT_SEC", EXPLOIT_ATTEMPT_TIMEOUT_SEC)
-                cachedP0Offset(bootToken)?.let { put(P0_OFFSET_ENV, it) }
             }
-            processBuilder.start()
+
+            // Boost only the exact fork/exec window so the child can inherit the
+            // best app-side nice value. Immediately de-prioritize the parent
+            // polling thread so it does not compete with the exploit race.
+            originalThreadPriority = runCatching {
+                Process.getThreadPriority(Process.myTid())
+            }.getOrDefault(Process.THREAD_PRIORITY_DEFAULT)
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
+            try {
+                processBuilder.start().also {
+                    runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+                }
+            } catch (error: Throwable) {
+                runCatching { Process.setThreadPriority(originalThreadPriority!!) }
+                throw error
+            }
         }
 
         val captured = StringBuilder()
@@ -102,7 +118,6 @@ internal class AutoRootRunner(
             while (process.isAlive) {
                 val rawLog = readLog()
                 if (rawLog != lastRawLog) {
-                    cacheP0Offset(bootToken, rawLog)
                     publishExploitLog(rawLog)
                     lastRawLog = rawLog
                     lastProgressAt = SystemClock.elapsedRealtime()
@@ -119,7 +134,6 @@ internal class AutoRootRunner(
 
             val exitCode = process.waitFor()
             val rawLog = readLog()
-            cacheP0Offset(bootToken, rawLog)
             publishExploitLog(rawLog)
             val earlyOutput = captured.toString().trim()
             require(exitCode == 0) {
@@ -137,6 +151,11 @@ internal class AutoRootRunner(
                 process.destroy()
                 delay(500.milliseconds)
                 if (process.isAlive) process.destroyForcibly()
+            }
+            if (!useShizuku) {
+                originalThreadPriority?.let { priority ->
+                    runCatching { Process.setThreadPriority(priority) }
+                }
             }
         }
         onLog(context.getString(R.string.log_bootstrap_root))
@@ -191,7 +210,6 @@ internal class AutoRootRunner(
         add("EXPLOIT_ATTEMPT_TIMEOUT_SEC=$EXPLOIT_ATTEMPT_TIMEOUT_SEC")
         add("CVE43499_ROOT_HELPER=$helperPath")
         add("LD_PRELOAD=$payloadPath")
-        cachedP0Offset(bootToken)?.let { add("$P0_OFFSET_ENV=$it") }
     }.toTypedArray()
 
     private suspend fun runHelper(vararg arguments: String): AutoRootCommandResult {
@@ -228,7 +246,7 @@ internal class AutoRootRunner(
         }
     }
 
-    private fun drainProcessOutput(process: Process, buffer: StringBuilder): String {
+    private fun drainProcessOutput(process: java.lang.Process, buffer: StringBuilder): String {
         return try {
             drainStream(process.inputStream, buffer)
             drainStream(process.errorStream, buffer)
@@ -252,27 +270,6 @@ internal class AutoRootRunner(
         if (clean.isNotBlank()) onLog(clean)
     }
 
-    private fun cachedP0Offset(bootToken: String): String? {
-        val stored = context.getSharedPreferences(P0_CACHE, Context.MODE_PRIVATE)
-        if (stored.getString(P0_CACHE_BOOT_TOKEN, null) != bootToken) return null
-        return stored.getString(P0_CACHE_OFFSET, null)
-    }
-
-    private fun cacheP0Offset(bootToken: String, log: String) {
-        val match = P0_OFFSET_PATTERN.findAll(log).lastOrNull() ?: return
-        val offset = match.groupValues[1].toLongOrNull(16) ?: return
-        if (offset !in 0..P0_OFFSET_MAX || offset and P0_OFFSET_MASK != 0L) return
-        val value = "0x${offset.toString(16)}"
-        val stored = context.getSharedPreferences(P0_CACHE, Context.MODE_PRIVATE)
-        if (stored.getString(P0_CACHE_BOOT_TOKEN, null) == bootToken &&
-            stored.getString(P0_CACHE_OFFSET, null) == value
-        ) return
-        stored.edit()
-            .putString(P0_CACHE_BOOT_TOKEN, bootToken)
-            .putString(P0_CACHE_OFFSET, value)
-            .apply()
-    }
-
     private fun shellQuote(value: String) = "'${value.replace("'", "'\\''")}'"
 
     private fun File.readTextIfPresent(): String = if (exists()) readText() else ""
@@ -284,12 +281,6 @@ internal class AutoRootRunner(
         private const val EXPLOIT_STALL_MILLIS = 90_000L
         private const val EXPLOIT_TOTAL_MILLIS = 900_000L
         private const val HELPER_TIMEOUT_MILLIS = 120_000L
-        private const val P0_CACHE = "p0_cache"
-        private const val P0_CACHE_BOOT_TOKEN = "kernel_boot_id"
-        private const val P0_CACHE_OFFSET = "offset"
-        private const val P0_OFFSET_ENV = "SLIDE_P0_OFFSET"
-        private const val P0_OFFSET_MAX = 0x1f0000L
-        private const val P0_OFFSET_MASK = 0xffffL
         private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"
         private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
         private const val SHIZUKU_PAYLOAD_PATH = "/data/local/tmp/ksu-payload"
@@ -298,10 +289,7 @@ internal class AutoRootRunner(
         private val LOG_POLL_INTERVAL = 250.milliseconds
         private val HELPER_POLL_INTERVAL = 250.milliseconds
         private val SHIZUKU_LOG_POLL_INTERVAL = 1.seconds
-        private val ANSI_ESCAPE = Regex("\\u001B\\[[0-?]*[ -/]*[@-~]")
-        private val P0_OFFSET_PATTERN = Regex(
-            "slide-kaslr-ok[^\\n]*slide=([0-9a-fA-F]{16})",
-        )
+        private val ANSI_ESCAPE = Regex("\u001B\\[[0-?]*[ -/]*[@-~]")
 
         private fun stripAnsi(value: String): String = ANSI_ESCAPE.replace(value, "").replace("\r", "")
     }
