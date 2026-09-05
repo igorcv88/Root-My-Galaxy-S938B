@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.util.UUID
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
@@ -32,8 +33,9 @@ class AutoRootExecutorService : Service() {
     private val dispatcher: ExecutorCoroutineDispatcher =
         Executors.newSingleThreadExecutor { task ->
             Thread({
+                // Best-effort only. Failure must not add logging/I/O immediately
+                // before the critical process spawn.
                 runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
-                    .onFailure { Log.w(TAG, "Unable to raise Auto Root executor thread priority", it) }
                 task.run()
             }, "RootMyGalaxy-AutoRootExec")
         }.asCoroutineDispatcher()
@@ -62,7 +64,6 @@ class AutoRootExecutorService : Service() {
         )
         wakeLock.acquire(MAX_EXECUTOR_WAKELOCK_MILLIS)
 
-        val historyStore = InstallHistoryStore(this)
         var historyEntry: InstallHistoryEntry? = null
 
         // No History disk writes while the exploit is active. We keep the runner's
@@ -81,7 +82,9 @@ class AutoRootExecutorService : Service() {
                 result = result,
             )
             historyEntry = updated
-            historyStore.save(updated)
+            // Constructing the store creates its directory, so even that is
+            // deferred until after the exploit has left the critical path.
+            InstallHistoryStore(this).save(updated)
         }
 
         try {
@@ -99,9 +102,6 @@ class AutoRootExecutorService : Service() {
                 return
             }
 
-            // The gate already performed the full known-good verification. Load
-            // the same private cache here and enforce the architectural invariant
-            // that Auto Root can never switch to an online or Shizuku path.
             val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
             require(payloads.source == PayloadSource.Offline) {
                 "Auto Root requires the last-known-good offline payload"
@@ -110,7 +110,11 @@ class AutoRootExecutorService : Service() {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            historyEntry = historyStore.create().copy(
+            historyEntry = InstallHistoryEntry(
+                id = UUID.randomUUID().toString(),
+                startedAtMillis = System.currentTimeMillis(),
+                completedAtMillis = null,
+                result = InstallRunResult.Running,
                 profileId = payloads.profile.profileId,
                 usedShizuku = false,
                 log = "[*] Auto Root started: fresh executor, offline cache, standalone transport\n" +
@@ -129,8 +133,6 @@ class AutoRootExecutorService : Service() {
                         AutoRootStage.VerifyingRoot -> R.string.autoroot_verifying_root
                     }
                     val message = getString(messageRes)
-                    // The gate already displays "running exploit". Avoid Binder
-                    // notification traffic immediately before/during the race.
                     if (stage == AutoRootStage.LoadingKernelSu || stage == AutoRootStage.VerifyingRoot) {
                         updateNotification(message)
                     }
