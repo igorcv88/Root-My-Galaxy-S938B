@@ -11,6 +11,11 @@ data class SoftRebootResult(
     val detail: String,
 )
 
+data class SoftRebootArmResult(
+    val armed: Boolean,
+    val detail: String,
+)
+
 /**
  * Soft reboot handoff that keeps the bootstrap-root connection open across
  * KernelSU late-load.
@@ -21,6 +26,10 @@ data class SoftRebootResult(
  * Therefore the root shell is opened before late-load, left blocked on stdin,
  * and released only after the caller has verified KernelSU and persisted the
  * successful-root receipt.
+ *
+ * The release path mirrors KernelSU Manager's important property: soft reboot is
+ * launched from a KernelSU global-mount root shell (`ksud debug su -g`). The app
+ * does not call a second bootstrap `su` connection after late-load.
  */
 object KernelSuSoftReboot {
     private val lock = Any()
@@ -37,12 +46,18 @@ object KernelSuSoftReboot {
         context: Context,
         helper: File,
         useShizuku: Boolean,
-    ) = withContext(Dispatchers.IO) {
+    ): SoftRebootArmResult = withContext(Dispatchers.IO) {
+        // Keep the Context parameter in the API because both manual and Auto Root
+        // callers own the lifecycle, but no Android service is touched here.
+        @Suppress("UNUSED_VARIABLE")
+        val appContext = context.applicationContext
+
         cancel()
 
         if (!useShizuku && !helper.canExecute()) {
-            recordArmFailure("Bootstrap root helper is unavailable")
-            return@withContext
+            val detail = "Bootstrap root helper is unavailable"
+            recordArmFailure(detail)
+            return@withContext SoftRebootArmResult(false, detail)
         }
 
         val process = runCatching {
@@ -56,8 +71,9 @@ object KernelSuSoftReboot {
                     .start()
             }
         }.getOrElse { error ->
-            recordArmFailure(error.message ?: error.javaClass.simpleName)
-            return@withContext
+            val detail = error.message ?: error.javaClass.simpleName
+            recordArmFailure(detail)
+            return@withContext SoftRebootArmResult(false, detail)
         }
 
         val output = StringBuilder()
@@ -68,7 +84,7 @@ object KernelSuSoftReboot {
         try {
             while (System.nanoTime() < deadline && process.isAlive) {
                 drainAvailable(process.inputStream, output)
-                if (useShizuku) drainAvailable(process.errorStream, errorOutput)
+                drainAvailable(process.errorStream, errorOutput)
                 if (output.contains(ARM_MARKER)) {
                     armed = true
                     break
@@ -76,18 +92,11 @@ object KernelSuSoftReboot {
                 Thread.sleep(ARM_HANDSHAKE_POLL_MILLIS)
             }
             drainAvailable(process.inputStream, output)
-            if (useShizuku) drainAvailable(process.errorStream, errorOutput)
+            drainAvailable(process.errorStream, errorOutput)
             if (output.contains(ARM_MARKER)) armed = true
 
             if (!armed) {
-                val detail = buildString {
-                    append(output.toString().trim())
-                    val stderr = errorOutput.toString().trim()
-                    if (stderr.isNotBlank()) {
-                        if (isNotBlank()) append("; ")
-                        append(stderr)
-                    }
-                }.ifBlank {
+                val detail = combinedOutput(output, errorOutput).ifBlank {
                     if (process.isAlive) {
                         "Bootstrap root soft-reboot arm handshake timed out"
                     } else {
@@ -97,7 +106,7 @@ object KernelSuSoftReboot {
                 }
                 destroy(process)
                 recordArmFailure(detail)
-                return@withContext
+                return@withContext SoftRebootArmResult(false, detail.take(400))
             }
 
             synchronized(lock) {
@@ -105,16 +114,23 @@ object KernelSuSoftReboot {
                 armFailure = null
             }
             scheduleExpiry(process)
+            SoftRebootArmResult(true, "Bootstrap root soft-reboot session armed")
         } catch (error: Throwable) {
             destroy(process)
-            recordArmFailure(error.message ?: error.javaClass.simpleName)
+            val detail = error.message ?: error.javaClass.simpleName
+            recordArmFailure(detail)
+            SoftRebootArmResult(false, detail)
         }
     }
 
     /**
-     * Release the root shell that was opened before KernelSU late-load. At this
-     * point the caller has already verified KernelSU and persisted success, so
-     * no second connection to the bootstrap daemon is needed.
+     * Release the root shell that was opened before KernelSU late-load.
+     *
+     * Writing the trigger alone is NOT success. After the trigger, this waits for
+     * the launch marker/exit status and then looks for the exact state transition
+     * performed at the start of KernelSU's soft_reboot(): sys.boot_completed=0.
+     * If Android never begins that transition, the caller receives a failure with
+     * the captured command output instead of a false "launched" result.
      */
     suspend fun request(context: Context): SoftRebootResult = withContext(Dispatchers.IO) {
         val process: Process?
@@ -133,16 +149,85 @@ object KernelSuSoftReboot {
             )
         }
 
-        return@withContext runCatching {
+        val output = StringBuilder()
+        val errorOutput = StringBuilder()
+        drainAvailable(process.inputStream, output)
+        drainAvailable(process.errorStream, errorOutput)
+
+        val triggerFailure = runCatching {
             process.outputStream.use { input ->
                 input.write(TRIGGER.toByteArray(Charsets.US_ASCII))
                 input.flush()
             }
-            SoftRebootResult(true, "KernelSU soft reboot trigger delivered")
-        }.getOrElse { error ->
+        }.exceptionOrNull()
+        if (triggerFailure != null) {
             destroy(process)
-            SoftRebootResult(false, error.message ?: error.javaClass.simpleName)
+            return@withContext SoftRebootResult(
+                false,
+                "Soft reboot trigger failed: ${triggerFailure.message ?: triggerFailure.javaClass.simpleName}",
+            )
         }
+
+        val deadline = System.nanoTime() + START_VERIFY_TIMEOUT_NANOS
+        var sawExec = false
+        var exitCode: Int? = null
+        var lastBootCompleted: String? = null
+
+        while (System.nanoTime() < deadline) {
+            drainAvailable(process.inputStream, output)
+            drainAvailable(process.errorStream, errorOutput)
+            if (output.contains(EXEC_MARKER)) sawExec = true
+
+            if (!process.isAlive && exitCode == null) {
+                exitCode = runCatching { process.exitValue() }.getOrNull()
+            }
+
+            if (sawExec) {
+                lastBootCompleted = readSystemPropertyBounded("sys.boot_completed")
+                if (lastBootCompleted == "0") {
+                    return@withContext SoftRebootResult(
+                        true,
+                        "KernelSU soft reboot started; sys.boot_completed reset to 0",
+                    )
+                }
+            }
+
+            if (exitCode != null && exitCode != 0) break
+            Thread.sleep(START_VERIFY_POLL_MILLIS)
+        }
+
+        drainAvailable(process.inputStream, output)
+        drainAvailable(process.errorStream, errorOutput)
+        if (!process.isAlive && exitCode == null) {
+            exitCode = runCatching { process.exitValue() }.getOrNull()
+        }
+
+        val captured = combinedOutput(output, errorOutput)
+            .lineSequence()
+            .filterNot { it == ARM_MARKER }
+            .joinToString(" | ")
+            .take(700)
+        val detail = when {
+            !sawExec -> buildString {
+                append("KernelSU soft reboot command never reached the launch point")
+                exitCode?.let { append(" (exit $it)") }
+                if (captured.isNotBlank()) append(": $captured")
+            }
+            exitCode != null && exitCode != 0 -> buildString {
+                append("KernelSU global-root soft reboot launcher exited $exitCode")
+                if (captured.isNotBlank()) append(": $captured")
+            }
+            else -> buildString {
+                append("KernelSU accepted the soft-reboot handoff")
+                exitCode?.let { append(" (exit $it)") }
+                append(", but sys.boot_completed never reset to 0")
+                lastBootCompleted?.let { append(" (last=$it)") }
+                if (captured.isNotBlank()) append(": $captured")
+            }
+        }
+
+        if (process.isAlive) destroy(process)
+        SoftRebootResult(false, detail)
     }
 
     fun cancel() {
@@ -158,7 +243,7 @@ object KernelSuSoftReboot {
     private fun recordArmFailure(detail: String) {
         synchronized(lock) {
             armedProcess = null
-            armFailure = detail.take(240)
+            armFailure = detail.take(400)
         }
     }
 
@@ -185,8 +270,38 @@ object KernelSuSoftReboot {
         }
     }
 
+    /**
+     * Read a property without the old blocking-read bug. We never read stdout
+     * until getprop has exited; a stuck child is forcibly destroyed on deadline.
+     */
+    private fun readSystemPropertyBounded(name: String): String? = runCatching {
+        val process = ProcessBuilder("/system/bin/getprop", name)
+            .redirectErrorStream(true)
+            .start()
+        val deadline = System.nanoTime() + PROPERTY_READ_TIMEOUT_NANOS
+        while (process.isAlive && System.nanoTime() < deadline) {
+            Thread.sleep(PROPERTY_READ_POLL_MILLIS)
+        }
+        if (process.isAlive) {
+            process.destroy()
+            if (process.isAlive) process.destroyForcibly()
+            return@runCatching null
+        }
+        process.inputStream.bufferedReader().use { it.readText().trim() }
+    }.getOrNull()
+
+    private fun combinedOutput(stdout: StringBuilder, stderr: StringBuilder): String =
+        buildString {
+            append(stdout.toString().trim())
+            val error = stderr.toString().trim()
+            if (error.isNotBlank()) {
+                if (isNotBlank()) append("\n")
+                append(error)
+            }
+        }
+
     private fun drainAvailable(stream: java.io.InputStream, output: StringBuilder) {
-        val buffer = ByteArray(1024)
+        val buffer = ByteArray(2048)
         while (stream.available() > 0) {
             val count = stream.read(buffer)
             if (count <= 0) break
@@ -201,13 +316,19 @@ object KernelSuSoftReboot {
     }
 
     private const val ARM_MARKER = "RMG_SOFT_REBOOT_ARMED"
+    private const val EXEC_MARKER = "RMG_SOFT_REBOOT_EXEC"
+    private const val EXIT_MARKER = "RMG_SOFT_REBOOT_EXIT"
     private const val TRIGGER = "go\n"
     private const val ARM_HANDSHAKE_POLL_MILLIS = 20L
     private const val ARM_HANDSHAKE_TIMEOUT_NANOS = 3_000_000_000L
     private const val ARM_LIFETIME_MILLIS = 150_000L
+    private const val START_VERIFY_POLL_MILLIS = 75L
+    private const val START_VERIFY_TIMEOUT_NANOS = 8_000_000_000L
+    private const val PROPERTY_READ_POLL_MILLIS = 10L
+    private const val PROPERTY_READ_TIMEOUT_NANOS = 300_000_000L
 
     private val ARM_SCRIPT = """
-set -eu
+set -u
 printf '%s\n' '$ARM_MARKER'
 IFS= read -r trigger || exit 64
 [ "${'$'}trigger" = "go" ] || exit 64
@@ -215,7 +336,14 @@ ksud=/data/local/tmp/ksud-s25u-kdp
 if [ ! -x "${'$'}ksud" ]; then
   ksud=/data/adb/ksud
 fi
-[ -x "${'$'}ksud" ] || exit 45
-exec "${'$'}ksud" soft-reboot
+if [ ! -x "${'$'}ksud" ]; then
+  printf '%s code=45 reason=ksud-not-found\n' '$EXIT_MARKER'
+  exit 45
+fi
+printf '%s ksud=%s\n' '$EXEC_MARKER' "${'$'}ksud"
+printf 'exec %s soft-reboot\n' "${'$'}ksud" | "${'$'}ksud" debug su -g
+rc=${'$'}?
+printf '%s code=%s\n' '$EXIT_MARKER' "${'$'}rc"
+exit "${'$'}rc"
 """.trimIndent()
 }
