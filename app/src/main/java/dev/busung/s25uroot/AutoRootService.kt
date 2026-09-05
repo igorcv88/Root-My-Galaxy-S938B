@@ -43,9 +43,7 @@ class AutoRootService : Service() {
     private var shuttingDown = false
 
     private val executorConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            Log.i(TAG, "Auto Root fresh executor connected")
-        }
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
 
         override fun onServiceDisconnected(name: ComponentName?) {
             if (!shuttingDown) {
@@ -98,10 +96,6 @@ class AutoRootService : Service() {
             executorBound = false
         }
         scope.cancel()
-        // The executor updates the same notification ID and may have already
-        // published a terminal result. Detach rather than remove here so that
-        // stopping the gate cannot erase that terminal notification. Explicit
-        // skip/disable paths call STOP_FOREGROUND_REMOVE before stopSelf().
         stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
     }
@@ -157,7 +151,6 @@ class AutoRootService : Service() {
                 return
             }
 
-            updateNotification(getString(R.string.autoroot_running_exploit))
             val executorIntent = Intent(this, AutoRootExecutorService::class.java)
                 .setAction(AutoRootExecutorService.ACTION_RUN_AUTO_ROOT)
                 .putExtra(AutoRootExecutorService.EXTRA_BOOT_TOKEN, bootToken)
@@ -168,7 +161,6 @@ class AutoRootService : Service() {
                 "Unable to bind fresh Auto Root executor"
             }
             executorBound = true
-            Log.i(TAG, "Auto Root handed off to fresh :autoroot_exec process")
         } catch (error: Throwable) {
             if (!scope.isActive) return
             val detail = error.message ?: error.javaClass.simpleName
