@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">Tự động hóa root</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">Thời gian tối thiểu kể từ khi khởi động trước khi chạy exploit CZG3. Cài đặt này không bật chẩn đoán.</string>
+    <string name="diagnostic_uptime_default">120 giây (mặc định)</string>
+    <string name="diagnostic_uptime_seconds">%1$d giây</string>
+    <string name="soft_reboot_title">Khởi động mềm sau khi root</string>
+    <string name="soft_reboot_description">Tự động khởi động lại Android userspace bằng KernelSU sau khi root thành công.</string>
+    <string name="soft_reboot_starting">Đang bắt đầu khởi động mềm KernelSU</string>
+    <string name="soft_reboot_failed">Root thành công nhưng không thể bắt đầu khởi động mềm: %1$s</string>
+    <string name="status_waiting_boot_uptime">Đang chờ đến %1$d giây sau khi khởi động</string>
+</resources>

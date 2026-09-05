@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="status_waiting_boot_uptime">Aguardando até %1$d segundos após o boot</string>
+</resources>

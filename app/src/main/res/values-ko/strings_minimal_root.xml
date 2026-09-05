@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">루트 자동화</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">CZG3 익스플로잇을 시작하기 전 최소 부팅 경과 시간입니다. 이 설정은 진단 기능을 활성화하지 않습니다.</string>
+    <string name="diagnostic_uptime_default">120초(기본값)</string>
+    <string name="diagnostic_uptime_seconds">%1$d초</string>
+    <string name="soft_reboot_title">루트 후 소프트 재부팅</string>
+    <string name="soft_reboot_description">루트 성공 후 KernelSU로 Android 사용자 공간을 자동으로 다시 시작합니다.</string>
+    <string name="soft_reboot_starting">KernelSU 소프트 재부팅 시작 중</string>
+    <string name="soft_reboot_failed">루트는 성공했지만 소프트 재부팅을 시작하지 못했습니다: %1$s</string>
+    <string name="status_waiting_boot_uptime">부팅 후 %1$d초가 될 때까지 기다리는 중</string>
+</resources>

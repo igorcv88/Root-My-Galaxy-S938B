@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">Root 自动化</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">启动 CZG3 漏洞利用前所需的最短开机时间。此设置不会启用诊断功能。</string>
+    <string name="diagnostic_uptime_default">120 秒（默认）</string>
+    <string name="diagnostic_uptime_seconds">%1$d 秒</string>
+    <string name="soft_reboot_title">Root 后软重启</string>
+    <string name="soft_reboot_description">Root 成功后使用 KernelSU 自动重启 Android 用户空间。</string>
+    <string name="soft_reboot_starting">正在启动 KernelSU 软重启</string>
+    <string name="soft_reboot_failed">Root 已成功，但软重启未启动：%1$s</string>
+    <string name="status_waiting_boot_uptime">等待开机时间达到 %1$d 秒</string>
+</resources>

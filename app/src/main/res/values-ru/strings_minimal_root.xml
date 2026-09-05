@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">Автоматизация root</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">Минимальное время после загрузки перед запуском эксплойта CZG3. Этот параметр не включает диагностику.</string>
+    <string name="diagnostic_uptime_default">120 секунд (по умолчанию)</string>
+    <string name="diagnostic_uptime_seconds">%1$d секунд</string>
+    <string name="soft_reboot_title">Мягкая перезагрузка после root</string>
+    <string name="soft_reboot_description">Автоматически перезапускает пользовательское пространство Android через KernelSU после успешного получения root.</string>
+    <string name="soft_reboot_starting">Запуск мягкой перезагрузки KernelSU</string>
+    <string name="soft_reboot_failed">Root получен, но мягкая перезагрузка не запустилась: %1$s</string>
+    <string name="status_waiting_boot_uptime">Ожидание до %1$d секунд после загрузки</string>
+</resources>

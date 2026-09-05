@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">ルート自動化</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">CZG3 exploit を開始する前の最小起動経過時間です。この設定では診断機能は有効になりません。</string>
+    <string name="diagnostic_uptime_default">120 秒（既定）</string>
+    <string name="diagnostic_uptime_seconds">%1$d 秒</string>
+    <string name="soft_reboot_title">ルート後にソフトリブート</string>
+    <string name="soft_reboot_description">ルート成功後に KernelSU で Android ユーザー空間を自動的に再起動します。</string>
+    <string name="soft_reboot_starting">KernelSU ソフトリブートを開始しています</string>
+    <string name="soft_reboot_failed">ルートには成功しましたが、ソフトリブートを開始できませんでした: %1$s</string>
+    <string name="status_waiting_boot_uptime">起動後 %1$d 秒まで待機しています</string>
+</resources>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">Root avtomatlashtirish</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">CZG3 exploitini ishga tushirishdan oldingi minimal yuklanish vaqti. Bu sozlama diagnostikani yoqmaydi.</string>
+    <string name="diagnostic_uptime_default">120 soniya (standart)</string>
+    <string name="diagnostic_uptime_seconds">%1$d soniya</string>
+    <string name="soft_reboot_title">Rootdan keyin soft reboot</string>
+    <string name="soft_reboot_description">Root muvaffaqiyatli bo‘lgach, Android foydalanuvchi muhitini KernelSU orqali avtomatik qayta ishga tushiradi.</string>
+    <string name="soft_reboot_starting">KernelSU soft reboot boshlanmoqda</string>
+    <string name="soft_reboot_failed">Root muvaffaqiyatli bo‘ldi, ammo soft reboot boshlanmadi: %1$s</string>
+    <string name="status_waiting_boot_uptime">Yuklanishdan keyin %1$d soniyagacha kutilmoqda</string>
+</resources>

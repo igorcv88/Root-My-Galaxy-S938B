@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="root_runtime_settings">Automatisation du root</string>
+    <string name="diagnostic_boot_uptime_title">Diagnostic Launch Time</string>
+    <string name="diagnostic_boot_uptime_description">Temps minimal écoulé depuis le démarrage avant de lancer l’exploit CZG3. Ce réglage n’active aucun diagnostic.</string>
+    <string name="diagnostic_uptime_default">120 secondes (par défaut)</string>
+    <string name="diagnostic_uptime_seconds">%1$d secondes</string>
+    <string name="soft_reboot_title">Redémarrage logiciel après le root</string>
+    <string name="soft_reboot_description">Redémarre automatiquement l’espace utilisateur Android avec KernelSU après un root réussi.</string>
+    <string name="soft_reboot_starting">Démarrage du redémarrage logiciel KernelSU</string>
+    <string name="soft_reboot_failed">Root réussi, mais le redémarrage logiciel n’a pas démarré : %1$s</string>
+    <string name="status_waiting_boot_uptime">Attente jusqu’à %1$d secondes après le démarrage</string>
+</resources>
