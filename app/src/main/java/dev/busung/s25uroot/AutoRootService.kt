@@ -98,7 +98,11 @@ class AutoRootService : Service() {
             executorBound = false
         }
         scope.cancel()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        // The executor updates the same notification ID and may have already
+        // published a terminal result. Detach rather than remove here so that
+        // stopping the gate cannot erase that terminal notification. Explicit
+        // skip/disable paths call STOP_FOREGROUND_REMOVE before stopSelf().
+        stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
     }
 
