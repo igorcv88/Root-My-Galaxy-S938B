@@ -122,7 +122,7 @@ internal object KnownGoodPayloadStore {
         }
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
-        return VerifiedPayloads(profile, exploit, kernelSu)
+        return VerifiedPayloads(profile, exploit, kernelSu, PayloadSource.Offline)
     }
 
     private fun cacheId(profile: TargetProfile): String =
