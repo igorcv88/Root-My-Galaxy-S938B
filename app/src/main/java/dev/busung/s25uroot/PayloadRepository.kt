@@ -10,8 +10,6 @@ import java.net.URL
 import java.security.MessageDigest
 import org.json.JSONObject
 
-enum class PayloadSource { Online, Offline }
-
 data class VerifiedPayloads(
     val profile: TargetProfile,
     val exploit: File,
@@ -20,8 +18,6 @@ data class VerifiedPayloads(
 )
 
 class PayloadRepository(private val context: Context) {
-    private var pendingOfflineProfileId: String? = null
-
     fun loadTargets(): List<TargetProfile> {
         val commit = resolveMainCommit()
         val manifestBytes = downloadBytes(rawUrl(commit, "support/targets-v3.json"), MAX_MANIFEST_BYTES)
@@ -37,31 +33,26 @@ class PayloadRepository(private val context: Context) {
         }
     }
 
-    fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile {
-        pendingOfflineProfileId = null
-        return loadTargets()
-            .firstOrNull { it.matches(snapshot) }
-            ?: error(context.getString(R.string.repo_no_profile))
-    }
+    fun resolveTarget(snapshot: DeviceSnapshot): TargetProfile = loadTargets()
+        .firstOrNull { it.matches(snapshot) }
+        ?: error(context.getString(R.string.repo_no_profile))
 
     fun resolveTarget(profileId: String): TargetProfile {
         if (profileId.startsWith(OFFLINE_REQUEST_PREFIX)) {
             val requestedProfileId = profileId
                 .removePrefix(OFFLINE_REQUEST_PREFIX)
                 .takeIf(String::isNotBlank)
-            val cached = KnownGoodPayloadStore.load(context, requestedProfileId)
-            pendingOfflineProfileId = cached.profile.profileId
-            return cached.profile
+            return KnownGoodPayloadStore.load(context, requestedProfileId)
+                .profile
+                .copy(source = PayloadSource.Offline)
         }
-        pendingOfflineProfileId = null
         return loadTargets()
             .firstOrNull { it.profileId == profileId }
             ?: error(context.getString(R.string.repo_profile_missing, profileId))
     }
 
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        if (pendingOfflineProfileId == profile.profileId) {
-            pendingOfflineProfileId = null
+        if (profile.source == PayloadSource.Offline) {
             onProgress("Payload source: last-known-good offline cache")
             return KnownGoodPayloadStore.load(context, profile.profileId)
         }
