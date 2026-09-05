@@ -43,7 +43,12 @@ internal class AutoRootRunner(
         stageKernelSu(payloads)
 
         if (AppPreferences.softRebootAfterRoot(context)) {
-            KernelSuSoftReboot.arm(context, helperFile(), false)
+            val arm = KernelSuSoftReboot.arm(context, helperFile(), false)
+            if (arm.armed) {
+                onLog("[+] ${arm.detail}")
+            } else {
+                onLog("[!] Soft reboot arm failed: ${arm.detail}")
+            }
         }
 
         onStage(AutoRootStage.VerifyingRoot)
