@@ -9,8 +9,9 @@ class AutoRootBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         if (!AppPreferences.autoRootEnabled(context)) return
-        if (!AutoRootSupport.hasVerifiedInstall(context)) return
 
+        // Keep BOOT_COMPLETED deliberately tiny: no payload hashing, network or
+        // file walking here. The foreground gate performs full cache validation.
         val bootToken = AutoRootSupport.currentBootToken() ?: return
         if (!AutoRootSupport.shouldRunForBoot(context, bootToken)) return
 
