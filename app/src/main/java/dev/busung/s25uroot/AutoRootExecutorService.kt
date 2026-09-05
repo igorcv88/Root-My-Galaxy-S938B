@@ -82,9 +82,9 @@ class AutoRootExecutorService : Service() {
                 result = result,
             )
             historyEntry = updated
-            // Constructing the store creates its directory, so even that is
-            // deferred until after the exploit has left the critical path.
-            InstallHistoryStore(this).save(updated)
+            // History must never change the root outcome. Constructing the store
+            // and writing its AtomicFile are both deferred until the exploit is over.
+            runCatching { InstallHistoryStore(this).save(updated) }
         }
 
         try {
@@ -102,24 +102,30 @@ class AutoRootExecutorService : Service() {
                 return
             }
 
-            val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
-            require(payloads.source == PayloadSource.Offline) {
-                "Auto Root requires the last-known-good offline payload"
-            }
-            require(AutoRootSupport.claimAttempt(this, bootToken)) {
-                getString(R.string.autoroot_already_attempted)
-            }
-
+            // Create only an in-memory record before any payload work. This makes
+            // preflight/cache failures visible in History without touching disk.
             historyEntry = InstallHistoryEntry(
                 id = UUID.randomUUID().toString(),
                 startedAtMillis = System.currentTimeMillis(),
                 completedAtMillis = null,
                 result = InstallRunResult.Running,
-                profileId = payloads.profile.profileId,
+                profileId = null,
                 usedShizuku = false,
-                log = "[*] Auto Root started: fresh executor, offline cache, standalone transport\n" +
-                    "[*] profile=${payloads.profile.profileId}",
+                log = "[*] Auto Root started: fresh executor, offline cache, standalone transport",
             )
+
+            val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
+            require(payloads.source == PayloadSource.Offline) {
+                "Auto Root requires the last-known-good offline payload"
+            }
+            historyEntry = historyEntry?.copy(
+                profileId = payloads.profile.profileId,
+                log = historyEntry!!.log + "\n[*] profile=${payloads.profile.profileId}",
+            )
+
+            require(AutoRootSupport.claimAttempt(this, bootToken)) {
+                getString(R.string.autoroot_already_attempted)
+            }
 
             var lastRunnerSnapshot = ""
             val runner = AutoRootRunner(
