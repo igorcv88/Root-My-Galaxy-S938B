@@ -40,8 +40,13 @@ class PayloadRepository(private val context: Context) {
         .firstOrNull { it.profileId == profileId }
         ?: error(context.getString(R.string.repo_profile_missing, profileId))
 
+    /** Manual Online only. A failed online run never modifies known-good cache. */
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
-        val directory = File(context.filesDir, "payloads/${profile.profileId}").apply { mkdirs() }
+        val directory = File(context.filesDir, "payloads/manual-online/${profile.profileId}")
+        directory.deleteRecursively()
+        require(directory.mkdirs() || directory.isDirectory) {
+            context.getString(R.string.repo_finalize_failed, directory.name)
+        }
         val exploit = downloadArtifact(
             profile.exploit,
             File(directory, "cve-2026-43499-app.so"),
