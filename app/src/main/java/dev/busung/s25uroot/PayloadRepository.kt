@@ -10,10 +10,13 @@ import java.net.URL
 import java.security.MessageDigest
 import org.json.JSONObject
 
+enum class PayloadSource { Online, Offline }
+
 data class VerifiedPayloads(
     val profile: TargetProfile,
     val exploit: File,
     val kernelSu: File,
+    val source: PayloadSource = PayloadSource.Online,
 )
 
 class PayloadRepository(private val context: Context) {
@@ -56,10 +59,6 @@ class PayloadRepository(private val context: Context) {
             ?: error(context.getString(R.string.repo_profile_missing, profileId))
     }
 
-    /**
-     * Manual Online downloads into a disposable working directory. Manual
-     * Offline is explicit and returns the already-verified known-good cache.
-     */
     fun download(profile: TargetProfile, onProgress: (String) -> Unit): VerifiedPayloads {
         if (pendingOfflineProfileId == profile.profileId) {
             pendingOfflineProfileId = null
@@ -87,7 +86,7 @@ class PayloadRepository(private val context: Context) {
         )
         Os.chmod(exploit.absolutePath, 0b100100100)
         Os.chmod(kernelSu.absolutePath, 0b100100100)
-        return VerifiedPayloads(profile, exploit, kernelSu)
+        return VerifiedPayloads(profile, exploit, kernelSu, PayloadSource.Online)
     }
 
     private fun downloadArtifact(
