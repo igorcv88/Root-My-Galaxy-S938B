@@ -22,6 +22,7 @@ class AutoRootActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_DISABLE_AUTO_ROOT) return
         AppPreferences.setAutoRootEnabled(context, false)
+        context.stopService(Intent(context, AutoRootExecutorService::class.java))
         context.stopService(Intent(context, AutoRootService::class.java))
         context.getSystemService(NotificationManager::class.java)
             .cancel(AUTO_ROOT_NOTIFICATION_ID)
