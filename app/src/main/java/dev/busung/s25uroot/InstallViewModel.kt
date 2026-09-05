@@ -109,22 +109,15 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     probeOutput = probe,
                     log = probe,
                 )
-                return@launch
-            }
-            try {
-                val profile = repository.resolveTarget(DeviceSnapshot.current())
+            } else {
+                // Keep ordinary refresh local. Online target discovery happens only
+                // when Manual Online or the explicit Advanced target picker asks
+                // for it, so opening Manual Offline never performs hidden network I/O.
                 mutableState.value = InstallUiState(
                     phase = InstallPhase.Ready,
                     message = app.getString(R.string.status_not_installed),
                     probeOutput = probe,
-                    log = "$probe\n${app.getString(R.string.log_profile, profile.profileId)}",
-                )
-            } catch (error: Throwable) {
-                mutableState.value = InstallUiState(
-                    phase = InstallPhase.Failed,
-                    message = app.getString(R.string.status_support_failed),
-                    probeOutput = probe,
-                    log = "$probe\n[-] ${error.message ?: error.javaClass.simpleName}",
+                    log = probe,
                 )
             }
         }
@@ -208,6 +201,17 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
                 setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.status_ksu_loading))
                 installKernelSu(payloads)
+
+                if (payloads.source == PayloadSource.Online) {
+                    runCatching { KnownGoodPayloadStore.publish(app, payloads) }
+                        .onSuccess { appendLog("[+] Offline payload cache updated") }
+                        .onFailure { error ->
+                            appendLog(
+                                "[!] Root succeeded, but offline payload cache was not updated: " +
+                                    (error.message ?: error.javaClass.simpleName),
+                            )
+                        }
+                }
 
                 setPhase(InstallPhase.Installed, app.getString(R.string.status_ksu_active))
                 appendLog(app.getString(R.string.log_install_complete))
