@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,7 +23,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
 internal const val AUTO_ROOT_CHANNEL_ID = "auto_root_postboot"
@@ -30,11 +30,11 @@ internal const val AUTO_ROOT_CHANNEL_ID = "auto_root_postboot"
 /**
  * Foreground boot gate for Auto Root.
  *
- * This process owns BOOT_COMPLETED readiness and the configurable minimum-uptime
- * wait only. The exploit itself is handed to AutoRootExecutorService in a fresh
- * :autoroot_exec process immediately before execution. Keeping this service as
- * the already-authorized foreground service avoids a delayed second
- * startForegroundService() call after the BOOT_COMPLETED exemption has expired.
+ * BOOT_COMPLETED is the Android-readiness signal. This service does not launch a
+ * second getprop/process readiness probe: after BOOT_COMPLETED it only enforces
+ * the configurable minimum boot uptime and then hands execution to a fresh
+ * :autoroot_exec process. Keeping this service as the already-authorized
+ * foreground service avoids a delayed second startForegroundService() call.
  */
 class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -47,19 +47,19 @@ class AutoRootService : Service() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             if (!shuttingDown) {
-                finishWithResult(getString(R.string.autoroot_failed, "executor disconnected"))
+                failWithoutExecutorResult("executor disconnected")
             }
         }
 
         override fun onBindingDied(name: ComponentName?) {
             if (!shuttingDown) {
-                finishWithResult(getString(R.string.autoroot_failed, "executor binding died"))
+                failWithoutExecutorResult("executor binding died")
             }
         }
 
         override fun onNullBinding(name: ComponentName?) {
             if (!shuttingDown) {
-                finishWithResult(getString(R.string.autoroot_failed, "executor returned a null binding"))
+                failWithoutExecutorResult("executor returned a null binding")
             }
         }
     }
@@ -72,7 +72,7 @@ class AutoRootService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (runJob?.isActive == true || executorBound) return START_NOT_STICKY
 
-        val initial = buildNotification(getString(R.string.autoroot_waiting_android), ongoing = true)
+        val initial = buildNotification(getString(R.string.autoroot_stabilizing_android), ongoing = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 AUTO_ROOT_NOTIFICATION_ID,
@@ -128,15 +128,15 @@ class AutoRootService : Service() {
                 return
             }
 
-            // Consume the once-per-kernel-boot automatic attempt here, before
-            // Android readiness/minimum-uptime waiting. This keeps the synchronous
-            // preference commit far away from the exploit execution window.
+            // Consume the once-per-kernel-boot automatic attempt well before the
+            // exploit. The only remaining gate is monotonic boot uptime.
             require(AutoRootSupport.claimAttempt(this, initialBootToken)) {
                 getString(R.string.autoroot_already_attempted)
             }
 
-            require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
-            updateNotification(getString(R.string.autoroot_stabilizing_android))
+            // Receiving BOOT_COMPLETED is already the readiness contract. A second
+            // `getprop sys.boot_completed` ProcessBuilder was redundant and, because
+            // readText() is blocking, could hang forever despite a coroutine timeout.
             if (isExactCzg3(DeviceSnapshot.current())) {
                 DiagnosticUptime.waitUntil(AppPreferences.czg3BootMinUptimeSeconds(this))
             } else {
@@ -172,34 +172,43 @@ class AutoRootService : Service() {
             if (!scope.isActive) return
             val detail = error.message ?: error.javaClass.simpleName
             Log.e(TAG, "Auto Root gate failed", error)
+            recordGateFailure(detail, initialBootToken)
             finishWithResult(getString(R.string.autoroot_failed, detail))
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
         }
     }
 
-    private suspend fun waitForAndroidReady(): Boolean =
-        withTimeoutOrNull(BOOT_COMPLETED_TIMEOUT_MILLIS) {
-            while (scope.isActive && readBootCompletedProperty() != "1") {
-                delay(BOOT_PROPERTY_POLL_MILLIS)
+    /**
+     * Gate failures happen before the exploit executor owns a History entry.
+     * Persist one terminal record only after such a failure. This never performs
+     * History I/O while the exploit race is active.
+     */
+    private fun recordGateFailure(detail: String, bootToken: String? = AutoRootSupport.currentBootToken()) {
+        runCatching {
+            val now = System.currentTimeMillis()
+            val log = buildString {
+                append("[*] Auto Root gate\n")
+                bootToken?.let { append("[*] boot_id=$it\n") }
+                append("[-] $detail")
             }
-            scope.isActive
-        } == true
+            InstallHistoryStore(this).save(
+                InstallHistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    startedAtMillis = now,
+                    completedAtMillis = now,
+                    result = InstallRunResult.Failed,
+                    log = log,
+                    profileId = null,
+                    usedShizuku = false,
+                ),
+            )
+        }
+    }
 
-    private fun readBootCompletedProperty(): String = runCatching {
-        val process = ProcessBuilder("/system/bin/getprop", "sys.boot_completed")
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-        process.waitFor()
-        output
-    }.getOrDefault("")
-
-    private fun updateNotification(message: String) {
-        getSystemService(NotificationManager::class.java).notify(
-            AUTO_ROOT_NOTIFICATION_ID,
-            buildNotification(message, ongoing = true),
-        )
+    private fun failWithoutExecutorResult(detail: String) {
+        recordGateFailure(detail)
+        finishWithResult(getString(R.string.autoroot_failed, detail))
     }
 
     private fun finishWithResult(message: String) {
@@ -261,8 +270,6 @@ class AutoRootService : Service() {
     companion object {
         private const val TAG = "RootMyGalaxyAutoRootGate"
         private const val LEGACY_STABILIZATION_DELAY_MILLIS = 45_000L
-        private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
-        private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
         private const val MAX_GATE_WAKELOCK_MILLIS = 10 * 60 * 1_000L
     }
 }
