@@ -47,8 +47,6 @@ object KernelSuSoftReboot {
         helper: File,
         useShizuku: Boolean,
     ): SoftRebootArmResult = withContext(Dispatchers.IO) {
-        // Keep the Context parameter in the API because both manual and Auto Root
-        // callers own the lifecycle, but no Android service is touched here.
         @Suppress("UNUSED_VARIABLE")
         val appContext = context.applicationContext
 
@@ -133,6 +131,11 @@ object KernelSuSoftReboot {
      * the captured command output instead of a false "launched" result.
      */
     suspend fun request(context: Context): SoftRebootResult = withContext(Dispatchers.IO) {
+        // Root acquisition is already complete here. Persist the launch intent now,
+        // before userspace can be stopped, so History never ends at a misleading
+        // bare "Installation complete" line again.
+        recordHistoryEvent(context, "[*] Launching KernelSU soft reboot")
+
         val process: Process?
         val failure: String?
         synchronized(lock) {
@@ -143,11 +146,15 @@ object KernelSuSoftReboot {
         }
 
         if (process == null) {
-            return@withContext SoftRebootResult(
+            val result = SoftRebootResult(
                 false,
                 failure ?: "Soft reboot root session was not armed before KernelSU late-load",
             )
+            recordHistoryEvent(context, "[-] Soft reboot did not start: ${result.detail}")
+            return@withContext result
         }
+
+        recordHistoryEvent(context, "[+] Bootstrap root soft-reboot session was armed")
 
         val output = StringBuilder()
         val errorOutput = StringBuilder()
@@ -162,10 +169,12 @@ object KernelSuSoftReboot {
         }.exceptionOrNull()
         if (triggerFailure != null) {
             destroy(process)
-            return@withContext SoftRebootResult(
+            val result = SoftRebootResult(
                 false,
                 "Soft reboot trigger failed: ${triggerFailure.message ?: triggerFailure.javaClass.simpleName}",
             )
+            recordHistoryEvent(context, "[-] Soft reboot did not start: ${result.detail}")
+            return@withContext result
         }
 
         val deadline = System.nanoTime() + START_VERIFY_TIMEOUT_NANOS
@@ -185,10 +194,12 @@ object KernelSuSoftReboot {
             if (sawExec) {
                 lastBootCompleted = readSystemPropertyBounded("sys.boot_completed")
                 if (lastBootCompleted == "0") {
-                    return@withContext SoftRebootResult(
+                    val result = SoftRebootResult(
                         true,
                         "KernelSU soft reboot started; sys.boot_completed reset to 0",
                     )
+                    recordHistoryEvent(context, "[+] ${result.detail}")
+                    return@withContext result
                 }
             }
 
@@ -227,7 +238,9 @@ object KernelSuSoftReboot {
         }
 
         if (process.isAlive) destroy(process)
-        SoftRebootResult(false, detail)
+        val result = SoftRebootResult(false, detail)
+        recordHistoryEvent(context, "[-] Soft reboot did not start: $detail")
+        result
     }
 
     fun cancel() {
@@ -244,6 +257,26 @@ object KernelSuSoftReboot {
         synchronized(lock) {
             armedProcess = null
             armFailure = detail.take(400)
+        }
+    }
+
+    /**
+     * Append post-root soft-reboot status to the just-completed successful run.
+     * This is deliberately outside the exploit path and is best-effort: logging
+     * can never turn a successful root into a failure.
+     */
+    private fun recordHistoryEvent(context: Context, line: String) {
+        runCatching {
+            val store = InstallHistoryStore(context.applicationContext)
+            val now = System.currentTimeMillis()
+            val entry = store.load().firstOrNull { candidate ->
+                candidate.result == InstallRunResult.Succeeded &&
+                    candidate.completedAtMillis?.let { completed ->
+                        now >= completed && now - completed <= HISTORY_MATCH_WINDOW_MILLIS
+                    } == true
+            } ?: return@runCatching
+            val updated = entry.copy(log = (entry.log + "\n" + line.trim()).trim())
+            store.save(updated)
         }
     }
 
@@ -326,6 +359,7 @@ object KernelSuSoftReboot {
     private const val START_VERIFY_TIMEOUT_NANOS = 8_000_000_000L
     private const val PROPERTY_READ_POLL_MILLIS = 10L
     private const val PROPERTY_READ_TIMEOUT_NANOS = 300_000_000L
+    private const val HISTORY_MATCH_WINDOW_MILLIS = 5 * 60 * 1_000L
 
     private val ARM_SCRIPT = """
 set -u
