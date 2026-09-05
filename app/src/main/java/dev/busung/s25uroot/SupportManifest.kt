@@ -61,41 +61,18 @@ data class TargetProfile(
         require(kernelVersions.isNotEmpty()) { "Payload must support at least one kernel version" }
     }
 
-    val manufacturer: String
-        get() = exactMatch?.manufacturer.orEmpty()
-
-    val model: String
-        get() = exactMatch?.model ?: models.firstOrNull().orEmpty()
-
-    val device: String
-        get() = exactMatch?.device.orEmpty()
-
-    val kernelRelease: String
-        get() = exactMatch?.kernelRelease.orEmpty()
-
-    val kernelBuildVersion: String
-        get() = exactMatch?.kernelVersionInfo.orEmpty()
-
-    val buildDisplay: String
-        get() = exactMatch?.buildDisplay.orEmpty()
-
-    val buildFingerprint: String
-        get() = exactMatch?.buildFingerprint.orEmpty()
-
-    val sdk: Int
-        get() = exactMatch?.sdk ?: -1
-
-    val abi: String
-        get() = exactMatch?.abi.orEmpty()
-
-    val pageSize: Long
-        get() = exactMatch?.pageSize ?: -1L
-
-    val supportedModels: String
-        get() = models.joinToString()
-
-    val supportedKernelVersions: String
-        get() = kernelVersions.joinToString()
+    val manufacturer: String get() = exactMatch?.manufacturer.orEmpty()
+    val model: String get() = exactMatch?.model ?: models.firstOrNull().orEmpty()
+    val device: String get() = exactMatch?.device.orEmpty()
+    val kernelRelease: String get() = exactMatch?.kernelRelease.orEmpty()
+    val kernelBuildVersion: String get() = exactMatch?.kernelVersionInfo.orEmpty()
+    val buildDisplay: String get() = exactMatch?.buildDisplay.orEmpty()
+    val buildFingerprint: String get() = exactMatch?.buildFingerprint.orEmpty()
+    val sdk: Int get() = exactMatch?.sdk ?: -1
+    val abi: String get() = exactMatch?.abi.orEmpty()
+    val pageSize: Long get() = exactMatch?.pageSize ?: -1L
+    val supportedModels: String get() = models.joinToString()
+    val supportedKernelVersions: String get() = kernelVersions.joinToString()
 
     fun matchesDevice(snapshot: DeviceSnapshot): Boolean =
         models.any { it.equals(snapshot.model, ignoreCase = true) }
@@ -110,11 +87,6 @@ data class TargetProfile(
                 it.machine == snapshot.machine
         } == true
 
-    /**
-     * Automatic selection is intentionally fail-closed. Generic v3 payloads can
-     * still appear in Advanced mode, but they are never selected automatically
-     * unless the controlled feed supplies a complete exactMatch identity.
-     */
     fun matches(snapshot: DeviceSnapshot): Boolean = exactMatch?.matches(snapshot) == true
 }
 
@@ -122,6 +94,15 @@ data class SupportManifest(
     val schemaVersion: Int,
     val targets: List<TargetProfile>,
 ) {
+    fun toJsonBytes(): ByteArray {
+        val payloads = JSONArray()
+        targets.forEach { payloads.put(it.toJsonObject()) }
+        return (JSONObject()
+            .put("schemaVersion", schemaVersion)
+            .put("payloads", payloads)
+            .toString(2) + "\n").toByteArray(Charsets.UTF_8)
+    }
+
     companion object {
         fun parse(bytes: ByteArray): SupportManifest {
             val root = JSONObject(bytes.toString(Charsets.UTF_8))
@@ -170,15 +151,47 @@ data class SupportManifest(
             }
             return SupportManifest(schemaVersion, payloads)
         }
-
-        private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
-            url = getString("url"),
-            size = getLong("size"),
-            sha256 = getString("sha256").lowercase(),
-        )
-
-        private fun JSONArray.strings(): Set<String> = buildSet {
-            for (index in 0 until length()) add(getString(index))
-        }
     }
 }
+
+private fun JSONObject.artifact(): RemoteArtifact = RemoteArtifact(
+    url = getString("url"),
+    size = getLong("size"),
+    sha256 = getString("sha256").lowercase(),
+)
+
+private fun JSONArray.strings(): Set<String> = buildSet {
+    for (index in 0 until length()) add(getString(index))
+}
+
+private fun TargetProfile.toJsonObject(): JSONObject = JSONObject()
+    .put("payloadId", profileId)
+    .put("displayName", displayName)
+    .put("models", JSONArray(models.toList()))
+    .put("kernelVersions", JSONArray(kernelVersions.toList()))
+    .apply { exactMatch?.let { put("exactMatch", it.toJsonObject()) } }
+    .put("exploit", exploit.toJsonObject())
+    .put(
+        "kernelsu",
+        kernelSu.artifact.toJsonObject()
+            .put("kmi", kernelSu.kmi)
+            .put("managerPackage", kernelSu.managerPackage),
+    )
+
+private fun ExactTargetMatch.toJsonObject(): JSONObject = JSONObject()
+    .put("manufacturer", manufacturer)
+    .put("model", model)
+    .put("device", device)
+    .put("buildDisplay", buildDisplay)
+    .put("buildFingerprint", buildFingerprint)
+    .put("kernelRelease", kernelRelease)
+    .put("kernelVersionInfo", kernelVersionInfo)
+    .put("machine", machine)
+    .put("sdk", sdk)
+    .put("abi", abi)
+    .put("pageSize", pageSize)
+
+private fun RemoteArtifact.toJsonObject(): JSONObject = JSONObject()
+    .put("url", url)
+    .put("size", size)
+    .put("sha256", sha256)
