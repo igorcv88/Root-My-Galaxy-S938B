@@ -128,6 +128,13 @@ class AutoRootService : Service() {
                 return
             }
 
+            // Consume the once-per-kernel-boot automatic attempt here, before
+            // Android readiness/minimum-uptime waiting. This keeps the synchronous
+            // preference commit far away from the exploit execution window.
+            require(AutoRootSupport.claimAttempt(this, initialBootToken)) {
+                getString(R.string.autoroot_already_attempted)
+            }
+
             require(waitForAndroidReady()) { getString(R.string.autoroot_boot_timeout) }
             updateNotification(getString(R.string.autoroot_stabilizing_android))
             if (isExactCzg3(DeviceSnapshot.current())) {
