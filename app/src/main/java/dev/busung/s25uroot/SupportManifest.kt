@@ -20,6 +20,8 @@ data class KernelSuArtifact(
     val managerPackage: String = "me.weishu.kernelsu",
 )
 
+enum class PayloadSource { Online, Offline }
+
 data class ExactTargetMatch(
     val manufacturer: String,
     val model: String,
@@ -55,6 +57,7 @@ data class TargetProfile(
     val exactMatch: ExactTargetMatch?,
     val exploit: RemoteArtifact,
     val kernelSu: KernelSuArtifact,
+    val source: PayloadSource = PayloadSource.Online,
 ) {
     init {
         require(models.isNotEmpty()) { "Payload must support at least one model" }
@@ -122,6 +125,15 @@ data class SupportManifest(
     val schemaVersion: Int,
     val targets: List<TargetProfile>,
 ) {
+    fun toJsonBytes(): ByteArray {
+        val payloads = JSONArray()
+        targets.forEach { payloads.put(it.toJsonObject()) }
+        return (JSONObject()
+            .put("schemaVersion", schemaVersion)
+            .put("payloads", payloads)
+            .toString(2) + "\n").toByteArray(Charsets.UTF_8)
+    }
+
     companion object {
         fun parse(bytes: ByteArray): SupportManifest {
             val root = JSONObject(bytes.toString(Charsets.UTF_8))
@@ -182,3 +194,35 @@ data class SupportManifest(
         }
     }
 }
+
+private fun TargetProfile.toJsonObject(): JSONObject = JSONObject()
+    .put("payloadId", profileId)
+    .put("displayName", displayName)
+    .put("models", JSONArray(models.toList()))
+    .put("kernelVersions", JSONArray(kernelVersions.toList()))
+    .apply { exactMatch?.let { put("exactMatch", it.toJsonObject()) } }
+    .put("exploit", exploit.toJsonObject())
+    .put(
+        "kernelsu",
+        kernelSu.artifact.toJsonObject()
+            .put("kmi", kernelSu.kmi)
+            .put("managerPackage", kernelSu.managerPackage),
+    )
+
+private fun ExactTargetMatch.toJsonObject(): JSONObject = JSONObject()
+    .put("manufacturer", manufacturer)
+    .put("model", model)
+    .put("device", device)
+    .put("buildDisplay", buildDisplay)
+    .put("buildFingerprint", buildFingerprint)
+    .put("kernelRelease", kernelRelease)
+    .put("kernelVersionInfo", kernelVersionInfo)
+    .put("machine", machine)
+    .put("sdk", sdk)
+    .put("abi", abi)
+    .put("pageSize", pageSize)
+
+private fun RemoteArtifact.toJsonObject(): JSONObject = JSONObject()
+    .put("url", url)
+    .put("size", size)
+    .put("sha256", sha256)

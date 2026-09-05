@@ -4,7 +4,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -22,10 +25,44 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 internal const val AUTO_ROOT_NOTIFICATION_ID = 43499
+internal const val AUTO_ROOT_CHANNEL_ID = "auto_root_postboot"
 
+/**
+ * Foreground boot gate for Auto Root.
+ *
+ * This process owns BOOT_COMPLETED readiness and the configurable minimum-uptime
+ * wait only. The exploit itself is handed to AutoRootExecutorService in a fresh
+ * :autoroot_exec process immediately before execution. Keeping this service as
+ * the already-authorized foreground service avoids a delayed second
+ * startForegroundService() call after the BOOT_COMPLETED exemption has expired.
+ */
 class AutoRootService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var runJob: Job? = null
+    private var executorBound = false
+    private var shuttingDown = false
+
+    private val executorConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) = Unit
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            if (!shuttingDown) {
+                finishWithResult(getString(R.string.autoroot_failed, "executor disconnected"))
+            }
+        }
+
+        override fun onBindingDied(name: ComponentName?) {
+            if (!shuttingDown) {
+                finishWithResult(getString(R.string.autoroot_failed, "executor binding died"))
+            }
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            if (!shuttingDown) {
+                finishWithResult(getString(R.string.autoroot_failed, "executor returned a null binding"))
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -33,7 +70,7 @@ class AutoRootService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (runJob?.isActive == true) return START_NOT_STICKY
+        if (runJob?.isActive == true || executorBound) return START_NOT_STICKY
 
         val initial = buildNotification(getString(R.string.autoroot_waiting_android), ongoing = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -46,18 +83,24 @@ class AutoRootService : Service() {
             startForeground(AUTO_ROOT_NOTIFICATION_ID, initial)
         }
 
-        runJob = scope.launch { runAutoRoot() }
+        runJob = scope.launch { runGate() }
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        shuttingDown = true
+        if (executorBound) {
+            runCatching { unbindService(executorConnection) }
+            executorBound = false
+        }
         scope.cancel()
+        stopForeground(STOP_FOREGROUND_DETACH)
         super.onDestroy()
     }
 
-    private suspend fun runAutoRoot() {
+    private suspend fun runGate() {
         val initialBootToken = AutoRootSupport.currentBootToken()
         if (initialBootToken == null || !AutoRootSupport.shouldRunForBoot(this, initialBootToken)) {
             Log.i(TAG, "Auto Root skipped: kernel boot id is unchanged (soft/userspace reboot) or unverifiable")
@@ -67,9 +110,9 @@ class AutoRootService : Service() {
 
         val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "$packageName:AutoRoot",
+            "$packageName:AutoRootGate",
         )
-        wakeLock.acquire(MAX_WAKELOCK_MILLIS)
+        wakeLock.acquire(MAX_GATE_WAKELOCK_MILLIS)
         try {
             if (!AppPreferences.autoRootEnabled(this)) {
                 stopWithoutResult()
@@ -108,49 +151,20 @@ class AutoRootService : Service() {
                 return
             }
 
-            updateNotification(getString(R.string.autoroot_checking_firmware))
-            val payloads = AutoRootSupport.loadVerifiedLocalPayloads(this)
-
-            require(AutoRootSupport.claimAttempt(this, bootToken)) {
-                getString(R.string.autoroot_already_attempted)
+            val executorIntent = Intent(this, AutoRootExecutorService::class.java)
+                .setAction(AutoRootExecutorService.ACTION_RUN_AUTO_ROOT)
+                .putExtra(AutoRootExecutorService.EXTRA_BOOT_TOKEN, bootToken)
+            val bindFlags = Context.BIND_AUTO_CREATE or
+                Context.BIND_IMPORTANT or
+                Context.BIND_ABOVE_CLIENT
+            require(bindService(executorIntent, executorConnection, bindFlags)) {
+                "Unable to bind fresh Auto Root executor"
             }
-
-            val useShizuku = ShizukuController.isRunning() && ShizukuController.isGranted()
-            Log.i(TAG, "Auto Root starting with ${if (useShizuku) "Shizuku" else "standalone"} transport")
-            val runner = AutoRootRunner(
-                context = this,
-                useShizuku = useShizuku,
-                onStage = { stage ->
-                    val message = when (stage) {
-                        AutoRootStage.PreparingExploit -> R.string.autoroot_preparing_exploit
-                        AutoRootStage.RunningExploit -> R.string.autoroot_running_exploit
-                        AutoRootStage.LoadingKernelSu -> R.string.autoroot_loading_ksu
-                        AutoRootStage.VerifyingRoot -> R.string.autoroot_verifying_root
-                    }
-                    updateNotification(getString(message))
-                },
-                onLog = { line -> Log.i(TAG, line) },
-            )
-            runner.run(payloads, bootToken)
-
-            AutoRootSupport.markVerifiedForBoot(this, bootToken)
-            if (AppPreferences.softRebootAfterRoot(this)) {
-                updateNotification(getString(R.string.soft_reboot_starting))
-                val reboot = KernelSuSoftReboot.request(this)
-                if (reboot.started) {
-                    Log.i(TAG, "KernelSU soft reboot started")
-                    stopWithoutResult()
-                    return
-                }
-                Log.w(TAG, "KernelSU soft reboot was not started: ${reboot.detail}")
-                finishWithResult(getString(R.string.soft_reboot_failed, reboot.detail.take(160)))
-                return
-            }
-            finishWithResult(getString(R.string.autoroot_root_restored))
+            executorBound = true
         } catch (error: Throwable) {
             if (!scope.isActive) return
             val detail = error.message ?: error.javaClass.simpleName
-            Log.e(TAG, "Auto Root failed", error)
+            Log.e(TAG, "Auto Root gate failed", error)
             finishWithResult(getString(R.string.autoroot_failed, detail))
         } finally {
             if (wakeLock.isHeld) wakeLock.release()
@@ -196,7 +210,7 @@ class AutoRootService : Service() {
     }
 
     private fun buildNotification(message: String, ongoing: Boolean) =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+        NotificationCompat.Builder(this, AUTO_ROOT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_app_logo)
             .setContentTitle(getString(R.string.autoroot_notification_title))
             .setContentText(message)
@@ -228,7 +242,7 @@ class AutoRootService : Service() {
     private fun createNotificationChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID,
+                AUTO_ROOT_CHANNEL_ID,
                 getString(R.string.autoroot_channel_name),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
@@ -238,11 +252,10 @@ class AutoRootService : Service() {
     }
 
     companion object {
-        private const val TAG = "RootMyGalaxyAutoRoot"
-        private const val CHANNEL_ID = "auto_root_postboot"
+        private const val TAG = "RootMyGalaxyAutoRootGate"
         private const val LEGACY_STABILIZATION_DELAY_MILLIS = 45_000L
         private const val BOOT_COMPLETED_TIMEOUT_MILLIS = 120_000L
         private const val BOOT_PROPERTY_POLL_MILLIS = 1_000L
-        private const val MAX_WAKELOCK_MILLIS = 20 * 60 * 1_000L
+        private const val MAX_GATE_WAKELOCK_MILLIS = 10 * 60 * 1_000L
     }
 }

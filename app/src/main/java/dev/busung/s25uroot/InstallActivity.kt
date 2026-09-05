@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -50,6 +51,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,9 +60,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -69,6 +71,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
 import kotlinx.coroutines.delay
+
+private enum class ManualPayloadMode {
+    Online,
+    Offline,
+}
 
 class InstallActivity : ComponentActivity() {
     private val installViewModel by viewModels<InstallViewModel>()
@@ -83,12 +90,16 @@ class InstallActivity : ComponentActivity() {
             intent.getStringExtra(EXTRA_INSTALL_REQUEST_ID),
         )
         intent.removeExtra(EXTRA_INSTALL_REQUEST_ID)
+        val restoredMode = intent.getStringExtra(EXTRA_MANUAL_PAYLOAD_MODE)
+            ?.let { stored -> runCatching { ManualPayloadMode.valueOf(stored) }.getOrNull() }
+
         setContent {
             RootMyGalaxyTheme(
                 accentColor = AppPreferences.accentColor(this),
                 themeMode = AppPreferences.themeMode(this),
             ) {
                 val installState by installViewModel.state.collectAsStateWithLifecycle()
+                var manualPayloadMode by remember { mutableStateOf(restoredMode) }
                 var autoRootEnabled by remember {
                     mutableStateOf(AppPreferences.autoRootEnabled(this@InstallActivity))
                 }
@@ -130,15 +141,41 @@ class InstallActivity : ComponentActivity() {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
+
+                if (startInstall && manualPayloadMode == null) {
+                    ManualPayloadModeDialog(
+                        onSelected = { mode ->
+                            manualPayloadMode = mode
+                            intent.putExtra(EXTRA_MANUAL_PAYLOAD_MODE, mode.name)
+                        },
+                        onCancel = ::finish,
+                    )
+                }
+
+                val requestedProfile = when (manualPayloadMode) {
+                    ManualPayloadMode.Online -> profileId
+                    ManualPayloadMode.Offline -> PayloadRepository.offlineRequest(profileId)
+                    null -> null
+                }
+
                 BackHandler(enabled = installState.busy) {}
-                LaunchedEffect(startInstall, profileId) {
-                    if (startInstall) installViewModel.install(profileId)
+                LaunchedEffect(startInstall, profileId, manualPayloadMode) {
+                    if (startInstall && manualPayloadMode != null) {
+                        installViewModel.install(requestedProfile)
+                    }
                 }
                 InstallScreen(
                     installState = installState,
                     autoRootEnabled = autoRootEnabled,
                     onAutoRootEnabledChanged = setAutoRoot,
-                    onRetry = { installViewModel.install(profileId) },
+                    onRetry = {
+                        val retryProfile = when (manualPayloadMode) {
+                            ManualPayloadMode.Online -> profileId
+                            ManualPayloadMode.Offline -> PayloadRepository.offlineRequest(profileId)
+                            null -> profileId
+                        }
+                        installViewModel.install(retryProfile)
+                    },
                     onClose = ::finish,
                 )
             }
@@ -148,7 +185,35 @@ class InstallActivity : ComponentActivity() {
     companion object {
         const val EXTRA_INSTALL_REQUEST_ID = "install_request_id"
         const val EXTRA_PROFILE_ID = "profile_id"
+        private const val EXTRA_MANUAL_PAYLOAD_MODE = "manual_payload_mode"
     }
+}
+
+@Composable
+private fun ManualPayloadModeDialog(
+    onSelected: (ManualPayloadMode) -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text(stringResource(R.string.manual_payload_source_title)) },
+        text = { Text(stringResource(R.string.manual_payload_source_description)) },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { onSelected(ManualPayloadMode.Online) }) {
+                    Text(stringResource(R.string.manual_online))
+                }
+                FilledTonalButton(onClick = { onSelected(ManualPayloadMode.Offline) }) {
+                    Text(stringResource(R.string.manual_offline))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }
 
 internal data class InstallerStep(
