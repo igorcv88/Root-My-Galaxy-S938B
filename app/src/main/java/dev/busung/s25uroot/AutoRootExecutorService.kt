@@ -67,26 +67,21 @@ class AutoRootExecutorService : Service() {
         val historyStore = InstallHistoryStore(this)
         var historyEntry: InstallHistoryEntry? = null
 
-        fun persistHistory(
-            line: String? = null,
-            result: InstallRunResult? = null,
-        ) {
+        // Keep exploit output in memory while the race is active. Persisting an
+        // AtomicFile on every 250 ms log poll would add fsync/I/O to the critical
+        // window and would also duplicate the runner's cumulative log snapshots.
+        fun appendHistory(line: String?) {
             val current = historyEntry ?: return
-            val updatedLog = line
-                ?.let { newLine ->
-                    val clean = newLine.trim()
-                    if (clean.isBlank()) current.log
-                    else (current.log + "\n" + clean).trim()
-                }
-                ?: current.log
+            val clean = line?.trim().orEmpty()
+            if (clean.isBlank()) return
+            historyEntry = current.copy(log = (current.log + "\n" + clean).trim())
+        }
+
+        fun finishHistory(result: InstallRunResult) {
+            val current = historyEntry ?: return
             val updated = current.copy(
-                completedAtMillis = if (result != null && result != InstallRunResult.Running) {
-                    System.currentTimeMillis()
-                } else {
-                    current.completedAtMillis
-                },
-                result = result ?: current.result,
-                log = updatedLog,
+                completedAtMillis = System.currentTimeMillis(),
+                result = result,
             )
             historyEntry = updated
             historyStore.save(updated)
@@ -118,12 +113,13 @@ class AutoRootExecutorService : Service() {
             historyEntry = historyStore.create().copy(
                 profileId = payloads.profile.profileId,
                 usedShizuku = false,
-                log = "[*] Auto Root started: fresh executor, standalone transport",
+                log = "[*] Auto Root started: fresh executor, standalone transport\n" +
+                    "[*] profile=${payloads.profile.profileId}",
             ).also(historyStore::save)
 
             Log.i(TAG, "Auto Root executing in fresh process with forced standalone transport")
-            persistHistory("[*] profile=${payloads.profile.profileId}")
 
+            var lastRunnerSnapshot = ""
             val runner = AutoRootRunner(
                 context = this,
                 useShizuku = false,
@@ -136,17 +132,27 @@ class AutoRootExecutorService : Service() {
                     }
                     val message = getString(messageRes)
                     updateNotification(message)
-                    persistHistory("[*] $message")
+                    appendHistory("[*] $message")
                 },
-                onLog = { line ->
-                    Log.i(TAG, line)
-                    persistHistory(line)
+                onLog = { snapshot ->
+                    Log.i(TAG, snapshot)
+                    val delta = if (
+                        lastRunnerSnapshot.isNotEmpty() &&
+                        snapshot.startsWith(lastRunnerSnapshot)
+                    ) {
+                        snapshot.substring(lastRunnerSnapshot.length).trimStart('\n', '\r')
+                    } else {
+                        snapshot
+                    }
+                    lastRunnerSnapshot = snapshot
+                    appendHistory(delta)
                 },
             )
             runner.run(payloads, bootToken)
 
             AutoRootSupport.markVerifiedForBoot(this, bootToken)
-            persistHistory("[+] Auto Root completed", InstallRunResult.Succeeded)
+            appendHistory("[+] Auto Root completed")
+            finishHistory(InstallRunResult.Succeeded)
 
             if (AppPreferences.softRebootAfterRoot(this)) {
                 updateNotification(getString(R.string.soft_reboot_starting))
@@ -158,7 +164,8 @@ class AutoRootExecutorService : Service() {
                 }
                 val message = getString(R.string.soft_reboot_failed, reboot.detail.take(160))
                 Log.w(TAG, message)
-                persistHistory("[-] $message")
+                appendHistory("[-] $message")
+                finishHistory(InstallRunResult.Succeeded)
                 finishWithResult(message)
                 return
             }
@@ -169,7 +176,8 @@ class AutoRootExecutorService : Service() {
             val detail = error.message ?: error.javaClass.simpleName
             Log.e(TAG, "Auto Root executor failed", error)
             if (historyEntry != null) {
-                persistHistory("[-] $detail", InstallRunResult.Failed)
+                appendHistory("[-] $detail")
+                finishHistory(InstallRunResult.Failed)
             }
             finishWithResult(getString(R.string.autoroot_failed, detail))
         } finally {
